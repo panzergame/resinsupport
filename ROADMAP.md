@@ -15,7 +15,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - [x] Move / Rotate / Scale tools (T, R, S): a gizmo ported from SolidCraft and a live panel, measured from the model as imported; supports follow their model
 - [x] SolidCraft's chrome: application bar, ribbon (workspace card, a tab per edit mode, icon buttons), tool dialog cards, theme
 - [x] UI text in catalogs (English), a Preferences window from SolidCraft's settings table, agent skills
-- Lay flat, drop to the plate, auto-arrange, mirroring, undo
+- [x] Undo and redo (Ctrl+Z, Ctrl+Y): every scene change is a step, a drag or a typed field one step, Cancel leaves the undo history alone
+- Lay flat, drop to the plate, auto-arrange, mirroring
 - Mesh checks: open edges, inverted normals, self-intersections
 
 ## 3. Hollowing and drain holes

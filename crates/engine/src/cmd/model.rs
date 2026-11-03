@@ -50,7 +50,7 @@ pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let models: Vec<Value> = s
         .scene
-        .models
+        .models()
         .iter()
         .map(|m| {
             json!({
@@ -67,7 +67,7 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
 }
 
 pub(crate) fn clear(s: &mut Session, _: &Value) -> Result<Value> {
-    let removed = s.scene.models.len();
+    let removed = s.scene.models().len();
     s.scene.remove_models(|_| true);
     Ok(json!({ "removed": removed }))
 }
@@ -105,7 +105,7 @@ fn replace(s: &mut Session, p: &Value, make: impl Fn(Placement, Vec3) -> Placeme
     let ids = targets(s, p)?;
     let centre = s.scene.bounds_of(&ids).center();
     let placements: Vec<(u64, Placement)> =
-        s.scene.models.iter().filter(|m| ids.contains(&m.id)).map(|m| (m.id, make(m.placement, centre))).collect();
+        s.scene.models().iter().filter(|m| ids.contains(&m.id)).map(|m| (m.id, make(m.placement, centre))).collect();
     s.scene.place(&placements)?;
     Ok(placed(s, &ids))
 }
@@ -113,7 +113,7 @@ fn replace(s: &mut Session, p: &Value, make: impl Fn(Placement, Vec3) -> Placeme
 fn placed(s: &Session, ids: &[u64]) -> Value {
     let models: Vec<Value> = s
         .scene
-        .models
+        .models()
         .iter()
         .filter(|m| ids.contains(&m.id))
         .map(|m| json!({ "id": m.id, "placement": m.placement, "bounds": { "min": m.bounds.min, "max": m.bounds.max } }))

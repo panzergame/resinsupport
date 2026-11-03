@@ -118,6 +118,17 @@ impl ResinApp {
         }
     }
 
+    /// Undo (`forward` false) or redo the last step. The tool is put away: what it remembers
+    /// (placements to cancel back to, a drag's start) may describe models the step removes.
+    pub fn step_history(&mut self, forward: bool) {
+        self.tool = None;
+        let (id, msg) = if forward { ("edit.redo", "status.redone") } else { ("edit.undo", "status.undone") };
+        if let Some(v) = self.run(id, json!({})) {
+            let step = i18n::tr_built(&format!("cmd.{}", v["command"].as_str().unwrap_or_default()));
+            self.status = Some((i18n::format(msg, &[("step", &step)]), false));
+        }
+    }
+
     /// Run a view command and animate the camera to where it leaves it. Taps add up: a command
     /// run during an animation starts from where that animation is going.
     pub fn animate_command(&mut self, id: &str, params: Value) {
@@ -184,12 +195,14 @@ impl ResinApp {
         if paths.is_empty() {
             return;
         }
-        let fit = self.session.scene.models.is_empty();
+        let fit = self.session.scene.models().is_empty();
         let from = self.session.camera;
+        self.session.begin_step();
         for path in &paths {
             self.import(path);
         }
-        if fit && !self.session.scene.models.is_empty() {
+        self.session.end_step();
+        if fit && !self.session.scene.models().is_empty() {
             self.run("view.fit", json!({ "aspect": self.aspect() }));
             self.animate_from(from);
         }
@@ -221,7 +234,7 @@ impl ResinApp {
         let mut select = None;
         let shift = ui.input(|i| i.modifiers.shift);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for m in &self.session.scene.models {
+            for m in self.session.scene.models() {
                 ui.horizontal(|ui| {
                     let selected = self.session.scene.selected_models.contains(&m.id);
                     let size = m.bounds.size();
@@ -257,7 +270,7 @@ impl ResinApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
         ui.horizontal(|ui| {
-            let tris: usize = self.session.scene.models.iter().map(|m| m.mesh.triangle_count()).sum();
+            let tris: usize = self.session.scene.models().iter().map(|m| m.mesh.triangle_count()).sum();
             let scene = &self.session.scene;
             ui.label(i18n::tr(self.mode.label()));
             ui.separator();
@@ -265,7 +278,10 @@ impl ResinApp {
                 EditMode::Object => scene.selected_models.len(),
                 EditMode::Support => scene.selected.len(),
             };
-            ui.label(i18n::format("status.summary", &[("models", &scene.models.len()), ("triangles", &tris), ("supports", &scene.supports.len())]));
+            ui.label(i18n::format(
+                "status.summary",
+                &[("models", &scene.models().len()), ("triangles", &tris), ("supports", &scene.supports().len())],
+            ));
             if selected > 0 {
                 ui.label(i18n::format("status.selected", &[("n", &selected)]));
             }
@@ -289,6 +305,13 @@ impl ResinApp {
         #[cfg(not(target_arch = "wasm32"))]
         if ctx.input_mut(|i| i.consume_shortcut(&IMPORT)) {
             self.import_dialog();
+        }
+        // Ctrl+Shift+Z first: Ctrl+Z would match it too, egui ignoring an extra Shift.
+        if ctx.input_mut(|i| i.consume_shortcut(&REDO_SHIFT_Z) || i.consume_shortcut(&REDO)) {
+            self.step_history(true);
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&UNDO)) {
+            self.step_history(false);
         }
         let pressed: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
             i.events
@@ -334,7 +357,9 @@ impl ResinApp {
         match self.mode {
             EditMode::Object => {
                 let ids: Vec<u64> = self.session.scene.selected_models.iter().copied().collect();
+                self.session.begin_step();
                 let n = ids.into_iter().filter(|id| self.run("model.delete", json!({ "id": id })).is_some()).count();
+                self.session.end_step();
                 if n > 0 {
                     self.status = Some((i18n::count("status.deleted_models", n, &[]), false));
                 }
@@ -349,6 +374,10 @@ impl ResinApp {
         }
     }
 }
+
+pub(crate) const UNDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+pub(crate) const REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+const REDO_SHIFT_Z: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }, egui::Key::Z);
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const IMPORT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I);
@@ -376,6 +405,12 @@ impl eframe::App for ResinApp {
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
         preferences::window(self, &ctx);
+        // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is
+        // held or the field is typed in; closing it here, not where it began, means a gesture cut
+        // short (Esc mid-drag) can't leave every later command merged into it.
+        if self.session.step_open() && !ctx.input(|i| i.pointer.any_down()) && !ctx.text_edit_focused() {
+            self.session.end_step();
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

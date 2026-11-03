@@ -1,5 +1,6 @@
 //! The command registry. A command id is dotted and lower-case: `<area>.<thing>[.<variant>]`.
 
+mod edit;
 mod model;
 mod support;
 mod view;
@@ -18,78 +19,55 @@ pub struct CommandSpec {
     /// The parameters, for documentation and error messages.
     pub params: &'static str,
     pub run: fn(&mut Session, &Value) -> Result<Value>,
+    /// A run that changes the scene is an undo step. True unless `noundo`: only undo and redo
+    /// opt out; a command that leaves the scene alone makes no step anyway.
+    pub undoable: bool,
+}
+
+impl CommandSpec {
+    pub const fn new(id: &'static str, label: &'static str, run: fn(&mut Session, &Value) -> Result<Value>) -> Self {
+        CommandSpec { id, label, params: "", run, undoable: true }
+    }
+    pub const fn params(mut self, p: &'static str) -> Self {
+        self.params = p;
+        self
+    }
+    pub const fn noundo(mut self) -> Self {
+        self.undoable = false;
+        self
+    }
 }
 
 /// Every command, sorted by id.
 pub fn commands() -> &'static [CommandSpec] {
     static ALL: &[CommandSpec] = &[
-        CommandSpec { id: "file.import_stl", label: "Import STL…", params: "path: string, fit?: bool (default true)", run: model::import_stl },
-        CommandSpec { id: "model.delete", label: "Delete Model", params: "id: integer", run: model::delete },
-        CommandSpec { id: "model.list", label: "List Models", params: "", run: model::list },
-        CommandSpec {
-            id: "model.move",
-            label: "Move",
-            params: "by: [x, y, z] mm, ids?: [integer] (default the selected models)",
-            run: model::translate,
-        },
-        CommandSpec {
-            id: "model.place",
-            label: "Place Models",
-            params: "models: [{ id, position?: [x, y, z] mm, rotation?: [x, y, z] degrees, scale?: [x, y, z] }], each measured from the model as imported",
-            run: model::place,
-        },
-        CommandSpec {
-            id: "model.rotate",
-            label: "Rotate",
-            params: "degrees: [x, y, z] (turned about X, then Y, then Z, around the models' centre), ids?: [integer] (default the selected models)",
-            run: model::rotate,
-        },
-        CommandSpec {
-            id: "model.scale",
-            label: "Scale",
-            params: "factors: [x, y, z] or one number, each 0.001 to 1000, along each model's own axes; ids?: [integer] (default the selected models)",
-            run: model::scale,
-        },
-        CommandSpec {
-            id: "model.select",
-            label: "Select Models",
-            params: "ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)",
-            run: model::select,
-        },
-        CommandSpec { id: "scene.clear", label: "Clear Scene", params: "", run: model::clear },
-        CommandSpec {
-            id: "support.add",
-            label: "Add Support",
-            params: "model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down)",
-            run: support::add,
-        },
-        CommandSpec { id: "support.delete", label: "Delete Supports", params: "ids?: [integer] (default the selection)", run: support::delete },
-        CommandSpec { id: "support.list", label: "List Supports", params: "", run: support::list },
-        CommandSpec {
-            id: "support.select",
-            label: "Select Supports",
-            params: "ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)",
-            run: support::select,
-        },
-        CommandSpec { id: "view.fit", label: "Fit All", params: "aspect?: number (width / height)", run: view::fit },
-        CommandSpec {
-            id: "view.projection",
-            label: "Projection",
-            params: "mode: \"perspective\" | \"orthographic\" | \"toggle\"",
-            run: view::projection,
-        },
-        CommandSpec {
-            id: "view.standard",
-            label: "Standard View",
-            params: "view: front | back | left | right | top | bottom | iso",
-            run: view::standard,
-        },
-        CommandSpec {
-            id: "view.turn",
-            label: "Turn View",
-            params: "direction: left | right | up | down, degrees?: number (default 15)",
-            run: view::turn,
-        },
+        CommandSpec::new("edit.redo", "Redo", edit::redo).noundo(),
+        CommandSpec::new("edit.undo", "Undo", edit::undo).noundo(),
+        CommandSpec::new("file.import_stl", "Import STL…", model::import_stl).params("path: string, fit?: bool (default true)"),
+        CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
+        CommandSpec::new("model.list", "List Models", model::list),
+        CommandSpec::new("model.move", "Move", model::translate).params("by: [x, y, z] mm, ids?: [integer] (default the selected models)"),
+        CommandSpec::new("model.place", "Place Models", model::place).params(
+            "models: [{ id, position?: [x, y, z] mm, rotation?: [x, y, z] degrees, scale?: [x, y, z] }], each measured from the model as imported",
+        ),
+        CommandSpec::new("model.rotate", "Rotate", model::rotate)
+            .params("degrees: [x, y, z] (turned about X, then Y, then Z, around the models' centre), ids?: [integer] (default the selected models)"),
+        CommandSpec::new("model.scale", "Scale", model::scale).params(
+            "factors: [x, y, z] or one number, each 0.001 to 1000, along each model's own axes; ids?: [integer] (default the selected models)",
+        ),
+        CommandSpec::new("model.select", "Select Models", model::select)
+            .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
+        CommandSpec::new("scene.clear", "Clear Scene", model::clear),
+        CommandSpec::new("support.add", "Add Support", support::add)
+            .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down)"),
+        CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection)"),
+        CommandSpec::new("support.list", "List Supports", support::list),
+        CommandSpec::new("support.select", "Select Supports", support::select)
+            .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
+        CommandSpec::new("view.fit", "Fit All", view::fit).params("aspect?: number (width / height)"),
+        CommandSpec::new("view.projection", "Projection", view::projection).params("mode: \"perspective\" | \"orthographic\" | \"toggle\""),
+        CommandSpec::new("view.standard", "Standard View", view::standard).params("view: front | back | left | right | top | bottom | iso"),
+        CommandSpec::new("view.turn", "Turn View", view::turn).params("direction: left | right | up | down, degrees?: number (default 15)"),
     ];
     ALL
 }

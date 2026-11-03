@@ -6,7 +6,7 @@ use resin_geom::{Aabb3, Affine3, Mesh, MeshIndex, Placement, RayHit, Vec3};
 use resin_render::Camera;
 use serde_json::Value;
 
-use crate::{EngineError, Result, cmd};
+use crate::{CommandSpec, EngineError, Result, cmd};
 
 /// How far from the origin a model may be moved or grown, in millimetres: well past any build
 /// plate, and still exact enough in the f32 the mesh is stored in.
@@ -89,10 +89,14 @@ impl Support {
     pub const TIP_DIAMETER: f64 = 0.5;
 }
 
+/// Everything an undo step puts back: what is in the scene and what is selected. The camera is
+/// not part of it. New user state belongs here, so that undo covers it without further work.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
-    pub models: Vec<Model>,
-    pub supports: Vec<Support>,
+    // Private so that every change goes through a method that bumps `revision`: that bump is what
+    // makes a command an undo step and invalidates pick caches.
+    models: Vec<Model>,
+    supports: Vec<Support>,
     /// Selected supports, by id; only ids in `supports`.
     pub selected: BTreeSet<u64>,
     /// Selected models, by id; only ids in `models`.
@@ -103,6 +107,12 @@ pub struct Scene {
 }
 
 impl Scene {
+    pub fn models(&self) -> &[Model] {
+        &self.models
+    }
+    pub fn supports(&self) -> &[Support] {
+        &self.supports
+    }
     pub fn bounds(&self) -> Aabb3 {
         self.models.iter().fold(Aabb3::EMPTY, |b, m| b.union(&m.bounds))
     }
@@ -145,6 +155,10 @@ impl Scene {
             let (xf, bounds) = m.placed(*p)?;
             placed.push((*id, *p, xf, bounds));
         }
+        // Placing where it already is must not bump: it would make an empty undo step.
+        if !placed.iter().any(|(id, p, ..)| self.model(*id).is_some_and(|m| m.placement != *p)) {
+            return Ok(());
+        }
         self.revision += 1;
         for (id, p, xf, bounds) in placed {
             if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
@@ -176,13 +190,29 @@ impl Scene {
         self.models.retain(|m| !gone(m.id));
         self.supports.retain(|s| !gone(s.model));
         self.prune_selection();
-        self.revision += 1;
-        self.models.len() != before
+        // Removing nothing must not bump: it would make an empty undo step.
+        let removed = self.models.len() != before;
+        if removed {
+            self.revision += 1;
+        }
+        removed
     }
     pub(crate) fn remove_supports(&mut self, ids: &[u64]) {
+        let before = self.supports.len();
         self.supports.retain(|t| !ids.contains(&t.id));
         self.prune_selection();
-        self.revision += 1;
+        if self.supports.len() != before {
+            self.revision += 1;
+        }
+    }
+    /// Become `older` (an undo or redo step). Ids and the revision only ever grow: a model id is
+    /// never reused for another mesh (the GPU keys meshes on it), and a cache keyed on the
+    /// revision never mistakes the restored scene for one it has seen.
+    pub(crate) fn restore(&mut self, mut older: Scene) -> Scene {
+        older.next_id = older.next_id.max(self.next_id);
+        older.next_support_id = older.next_support_id.max(self.next_support_id);
+        older.revision = older.revision.max(self.revision) + 1;
+        std::mem::replace(self, older)
     }
     fn prune_selection(&mut self) {
         let supports = &self.supports;
@@ -211,11 +241,38 @@ impl Scene {
     }
 }
 
-/// What is open: the models and the view onto them.
+/// How many undo steps are kept; the oldest go first.
+pub const MAX_UNDO: usize = 200;
+
+/// The scene before (on the undo stack) or after (on the redo stack) one step.
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    /// The label of the command that made the step.
+    pub label: &'static str,
+    /// The id of that command.
+    pub command: &'static str,
+    /// Numbers steps in the order they were made, so a mark survives the oldest steps dropping.
+    pub(crate) serial: u64,
+    pub scene: Scene,
+}
+
+/// Undo and redo. Taken out of the session while a command runs, so that `execute` copies only
+/// the scene and camera to put back on failure.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct History {
+    pub(crate) undo: Vec<Snapshot>,
+    pub(crate) redo: Vec<Snapshot>,
+    next_serial: u64,
+    /// `Some` between `begin_step` and `end_step`; true once the step has been recorded.
+    open: Option<bool>,
+}
+
+/// What is open: the models and the view onto them, and the undo history.
 #[derive(Clone, Debug, Default)]
 pub struct Session {
     pub scene: Scene,
     pub camera: Camera,
+    pub(crate) history: History,
 }
 
 impl Session {
@@ -225,27 +282,111 @@ impl Session {
 
     /// Run command `id` with `params`. A failing command leaves the session as it was; a panic
     /// inside one (which would be a bug) is caught, the session restored and
-    /// [`EngineError::Internal`] returned.
+    /// [`EngineError::Internal`] returned. A command that changes the scene (its revision) is one
+    /// undo step, unless it is [`CommandSpec::undoable`] false or a step is open
+    /// ([`Session::begin_step`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = cmd::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_owned()))?;
-        let before = self.clone();
+        let (scene, camera) = (self.scene.clone(), self.camera);
+        let history = if spec.undoable { None } else { Some(self.history.clone()) };
+        let restore = |s: &mut Session| {
+            s.scene = scene.clone();
+            s.camera = camera;
+            if let Some(h) = &history {
+                s.history = h.clone();
+            }
+        };
         let outcome = catch_unwind(AssertUnwindSafe(|| (spec.run)(self, params)));
-        match outcome {
+        let result = match outcome {
             Ok(Ok(v)) if self.camera.is_valid() => Ok(v),
             Ok(Ok(_)) => {
-                *self = before;
+                restore(self);
                 Err(EngineError::Internal(format!("{id} left the camera invalid")))
             }
             Ok(Err(e)) => {
-                *self = before;
+                restore(self);
                 Err(e)
             }
             Err(panic) => {
-                *self = before;
+                restore(self);
                 let msg = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
                 log::error!("command {id} panicked: {msg}");
                 Err(EngineError::Internal(format!("{id} panicked: {msg}")))
             }
+        };
+        if result.is_ok() && spec.undoable && self.scene.revision != scene.revision {
+            self.record(spec, scene);
         }
+        result
+    }
+
+    fn record(&mut self, spec: &CommandSpec, before: Scene) {
+        let h = &mut self.history;
+        h.redo.clear();
+        if h.open == Some(true) {
+            return;
+        }
+        if h.open.is_some() {
+            h.open = Some(true);
+        }
+        h.undo.push(Snapshot { label: spec.label, command: spec.id, serial: h.next_serial, scene: before });
+        h.next_serial += 1;
+        if h.undo.len() > MAX_UNDO {
+            h.undo.remove(0);
+        }
+    }
+
+    /// Make every command until [`Session::end_step`] one undo step: a drag, or a delete of
+    /// several models. Its label is the first command's. Opening a step already open does
+    /// nothing.
+    pub fn begin_step(&mut self) {
+        if self.history.open.is_none() {
+            self.history.open = Some(false);
+        }
+    }
+
+    pub fn end_step(&mut self) {
+        self.history.open = None;
+    }
+
+    /// Whether a step is open.
+    pub fn step_open(&self) -> bool {
+        self.history.open.is_some()
+    }
+
+    /// Where the history is now, for [`Session::forget_since`].
+    pub fn history_mark(&self) -> u64 {
+        self.history.next_serial
+    }
+
+    /// Drop the undo steps made since `mark`, if each was made by `command`: after a tool's
+    /// Cancel has put the scene back, the history reads as though the tool never ran. Whether
+    /// they were dropped; steps of any other command are kept, the scene and history must agree.
+    pub fn forget_since(&mut self, mark: u64, command: &str) -> bool {
+        let h = &mut self.history;
+        let since = h.undo.iter().position(|s| s.serial >= mark).unwrap_or(h.undo.len());
+        if !h.undo.get(since..).unwrap_or_default().iter().all(|s| s.command == command) {
+            return false;
+        }
+        h.undo.truncate(since);
+        // An open step may have been among them: the next change must record a new one.
+        if h.open.is_some() {
+            h.open = Some(false);
+        }
+        true
+    }
+
+    /// The command that made the step Undo would undo.
+    pub fn undo_command(&self) -> Option<&'static str> {
+        self.history.undo.last().map(|s| s.command)
+    }
+
+    /// The command that made the step Redo would redo.
+    pub fn redo_command(&self) -> Option<&'static str> {
+        self.history.redo.last().map(|s| s.command)
+    }
+
+    pub fn undo_depth(&self) -> usize {
+        self.history.undo.len()
     }
 }

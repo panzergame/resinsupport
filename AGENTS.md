@@ -7,6 +7,7 @@ ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resi
 - No GPL/LGPL/AGPL code, not even reading it (PrusaSlicer, Cura, CuraEngine, UVtools). `skills/resinsupport-ground-rules/SKILL.md`.
 - Never crash: no unwrap/expect/panic/unreachable/todo in non-test code, no `unsafe`; files and command parameters are hostile input. `cargo xtask crash-guards`, clippy `-D warnings`, `hostile_params_never_panic`: `skills/resinsupport-crash-safety/SKILL.md`.
 - Everything is a command, through `Session::execute(id, params)`; ids are sorted, dotted, lower-case; programmatic calls never open dialogs. `skills/resinsupport-commands/SKILL.md`.
+- Every scene change is undoable: state the user edits lives in `engine::Scene`, changed only through its methods (which bump the revision); a gesture is one step (`Session::begin_step`); a tool's Cancel leaves the undo history alone. `every_scene_change_is_undoable`: `skills/resinsupport-commands/SKILL.md`.
 - Layering: `geom` (L0) → `render` (L1) → `io` (L3) → `engine` (L4) → `ui-egui` (L5) → apps; nothing below L5 uses egui, eframe, wgpu, winit or rfd. `cargo xtask layers`.
 - Application code is Rust only and wasm-friendly: no `std::fs` outside `io` and the apps. `skills/resinsupport-performance/SKILL.md`.
 - The UI is SolidCraft's design system: colours from `theme::Tokens`, dialogs are `ui_kit::Card`s, one camera path `navigation::handle`. `skills/resinsupport-ui/SKILL.md`.

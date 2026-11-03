@@ -93,7 +93,7 @@ impl Cmd {
         let scene = &app.session.scene;
         let tool = |op| app.tool.as_ref().is_some_and(|t| t.op == op);
         let need_pick = scene.selected_models.is_empty().then_some("reason.select_model");
-        let need_models = scene.models.is_empty();
+        let need_models = scene.models().is_empty();
         let state = |shortcut, disabled, pressed| State { shortcut, disabled, pressed };
         match self {
             #[cfg(not(target_arch = "wasm32"))]
@@ -202,6 +202,22 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
         }
         ui.painter().galley(pos2(fr.left() + 8.0, fr.center().y - galley.size().y / 2.0), galley, t.app_bar_text);
         egui::Popup::menu(&file).show(|ui| file_menu(app, ui));
+        // Undo and Redo, as in the File menu and their shortcuts.
+        x = fr.right() + 24.0;
+        for forward in [false, true] {
+            let b = Rect::from_center_size(pos2(x, r.center().y), vec2(32.0, 32.0));
+            let (icon, tip) = history_button(app, ui.ctx(), forward);
+            let enabled = history_step(app, forward).is_some();
+            let resp = ui.interact(b, ui.id().with(icon), if enabled { Sense::click() } else { Sense::hover() });
+            if enabled && resp.hovered() {
+                ui.painter().rect_filled(b.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
+            }
+            icons::paint(ui.painter(), Rect::from_center_size(b.center(), vec2(18.0, 18.0)), icon, true, if enabled { 1.0 } else { 0.35 });
+            if resp.on_hover_text(tip).clicked() && enabled {
+                app.step_history(forward);
+            }
+            x += 34.0;
+        }
         // Right: version, then settings.
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         let vg = ui.painter().layout_no_wrap(version, FontId::proportional(FONT_SMALL), t.app_bar_text);
@@ -223,13 +239,42 @@ fn separator(ui: &Ui, bar: Rect, x: f32, t: &Tokens) {
     ui.painter().vline(x, bar.center().y - 9.0..=bar.center().y + 9.0, Stroke::new(1.0, t.app_bar_text.gamma_multiply(0.3)));
 }
 
+/// The command that made the step Undo (`forward` false) or Redo would take back or again.
+fn history_step(app: &ResinApp, forward: bool) -> Option<&'static str> {
+    if forward { app.session.redo_command() } else { app.session.undo_command() }
+}
+
+/// The app bar's Undo or Redo button: its icon and tooltip.
+fn history_button(app: &ResinApp, ctx: &egui::Context, forward: bool) -> (&'static str, String) {
+    let (icon, shortcut) = if forward { ("redo", &crate::REDO) } else { ("undo", &crate::UNDO) };
+    let tip = match (history_step(app, forward), forward) {
+        (Some(cmd), _) => {
+            let step = i18n::tr_built(&format!("cmd.{cmd}"));
+            let label = if forward { i18n::format("appbar.redo", &[("step", &step)]) } else { i18n::format("appbar.undo", &[("step", &step)]) };
+            format!("{label} ({})", ctx.format_shortcut(shortcut))
+        }
+        (None, true) => i18n::tr("appbar.nothing_to_redo").to_owned(),
+        (None, false) => i18n::tr("appbar.nothing_to_undo").to_owned(),
+    };
+    (icon, tip)
+}
+
 fn file_menu(app: &mut ResinApp, ui: &mut Ui) {
     #[cfg(not(target_arch = "wasm32"))]
     if ui.add(egui::Button::new(i18n::tr("menu.import")).shortcut_text(ui.ctx().format_shortcut(&crate::IMPORT))).clicked() {
         app.import_dialog();
     }
-    if ui.add_enabled(!app.session.scene.models.is_empty(), egui::Button::new(i18n::tr("menu.clear"))).clicked() {
+    if ui.add_enabled(!app.session.scene.models().is_empty(), egui::Button::new(i18n::tr("menu.clear"))).clicked() {
         app.run("scene.clear", json!({}));
+    }
+    ui.separator();
+    let undo = egui::Button::new(i18n::tr("menu.undo")).shortcut_text(ui.ctx().format_shortcut(&crate::UNDO));
+    if ui.add_enabled(history_step(app, false).is_some(), undo).clicked() {
+        app.step_history(false);
+    }
+    let redo = egui::Button::new(i18n::tr("menu.redo")).shortcut_text(ui.ctx().format_shortcut(&crate::REDO));
+    if ui.add_enabled(history_step(app, true).is_some(), redo).clicked() {
+        app.step_history(true);
     }
     ui.separator();
     if ui.button(i18n::tr("menu.quit")).clicked() {

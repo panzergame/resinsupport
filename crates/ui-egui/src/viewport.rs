@@ -90,7 +90,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         FontId::proportional(12.0),
         tokens.text_dim,
     );
-    if app.session.scene.models.is_empty() {
+    if app.session.scene.models().is_empty() {
         painter.text(rect.center(), Align2::CENTER_CENTER, i18n::tr("viewport.empty"), FontId::proportional(16.0), tokens.text_dim);
     }
     if ui.input(|i| !i.raw.hovered_files.is_empty()) {
@@ -103,7 +103,7 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
     let scene = &app.session.scene;
     let (plain, selected) = (linear(tokens.model), linear(tokens.model_selected));
     scene
-        .models
+        .models()
         .iter()
         .map(|m| {
             let picked = app.mode == EditMode::Object && scene.selected_models.contains(&m.id);
@@ -118,7 +118,7 @@ fn support_spheres(app: &ResinApp, tokens: &Tokens) -> Vec<Sphere> {
     let radius = (Support::TIP_DIAMETER / 2.0) as f32;
     let scene = &app.session.scene;
     let mut out: Vec<Sphere> = scene
-        .supports
+        .supports()
         .iter()
         .map(|s| Sphere {
             center: s.tip,

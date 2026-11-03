@@ -8,7 +8,7 @@ use resin_geom::Vec3;
 const BOUNDS_TOLERANCE: f64 = 0.01;
 
 fn check_known(s: &Session, ids: &[u64]) -> Result<()> {
-    match ids.iter().find(|id| !s.scene.supports.iter().any(|t| t.id == **id)) {
+    match ids.iter().find(|id| !s.scene.supports().iter().any(|t| t.id == **id)) {
         Some(id) => Err(EngineError::BadParams(format!("no support {id}"))),
         None => Ok(()),
     }
@@ -48,7 +48,7 @@ pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let supports: Vec<Value> = s
         .scene
-        .supports
+        .supports()
         .iter()
         .map(|t| json!({ "id": t.id, "model": t.model, "tip": t.tip, "normal": t.normal, "selected": s.scene.selected.contains(&t.id) }))
         .collect();
