@@ -1,0 +1,25 @@
+[package]
+name = "resin-ui-egui"
+description = "The egui desktop front end"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+resin-engine = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true, features = ["wgpu"] }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+sys-locale = { workspace = true }
+tiny-skia = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+rfd = { workspace = true }
