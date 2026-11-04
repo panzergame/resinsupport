@@ -7,6 +7,7 @@ pub mod gpu;
 pub mod i18n;
 pub mod icons;
 pub mod navigation;
+pub mod object_settings;
 pub mod objects;
 pub mod preferences;
 pub mod prefs;
@@ -102,6 +103,9 @@ impl ResinApp {
         if let Err(e) = session.set_support_settings(prefs.support_settings) {
             log::warn!("support settings: {e}");
         }
+        if let Err(e) = session.set_lift_height(prefs.lift_height) {
+            log::warn!("lift height: {e}");
+        }
         let status = (!problems.is_empty()).then(|| (i18n::format("status.prefs_reset", &[("fields", &problems.join(", "))]), true));
         let writer = prefs_writer::PrefsWriter::read(prefs::to_json(&prefs));
         let mut app = ResinApp {
@@ -124,7 +128,7 @@ impl ResinApp {
             confirm_reset: false,
             prefs_writer: writer,
         };
-        app.keep_support_settings();
+        app.keep_settings();
         app
     }
 
@@ -137,7 +141,7 @@ impl ResinApp {
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         match self.session.execute(id, &params) {
             Ok(v) => {
-                self.keep_support_settings();
+                self.keep_settings();
                 Some(v)
             }
             Err(e) => {
@@ -148,11 +152,15 @@ impl ResinApp {
         }
     }
 
-    /// Copy the session's support settings into the preferences when a command changed them,
-    /// whoever ran it (the card, a script), so they are saved.
-    fn keep_support_settings(&mut self) {
+    /// Copy the session's support settings and lift height into the preferences when a command
+    /// changed them, whoever ran it (a card, a script, undo), so they are saved.
+    fn keep_settings(&mut self) {
         if self.prefs.support_settings != *self.session.support_settings() {
             self.prefs.support_settings = *self.session.support_settings();
+        }
+        let lift = self.session.scene.lift_height();
+        if self.prefs.lift_height != lift {
+            self.prefs.lift_height = lift;
         }
     }
 
@@ -281,7 +289,7 @@ impl ResinApp {
             self.status = Some((i18n::format("status.bad_utf8", &[("path", &path.display())]), true));
             return;
         };
-        if let Some(v) = self.run("file.import_stl", json!({ "path": path_str, "fit": false })) {
+        if let Some(v) = self.run("file.import_stl", json!({ "path": path_str, "fit": false, "lifted": self.prefs.lift_on_import })) {
             let dropped = v["dropped"].as_u64().unwrap_or(0) as usize;
             let triangles = v["triangles"].as_u64().unwrap_or(0) as usize;
             let name = v["name"].as_str().unwrap_or(i18n::tr("models.unnamed"));
@@ -474,6 +482,7 @@ impl eframe::App for ResinApp {
         egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
+        object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
         preferences::window(self, &ctx);
         // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is

@@ -45,12 +45,16 @@ pub fn commands() -> &'static [CommandSpec] {
     static ALL: &[CommandSpec] = &[
         CommandSpec::new("edit.redo", "Redo", edit::redo).noundo(),
         CommandSpec::new("edit.undo", "Undo", edit::undo).noundo(),
-        CommandSpec::new("file.import_stl", "Import STL…", model::import_stl).params("path: string, fit?: bool (default true)"),
+        CommandSpec::new("file.import_stl", "Import STL…", model::import_stl)
+            .params("path: string, fit?: bool (default true), lifted?: bool (default false): its lowest point at the lift height"),
         CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
+        CommandSpec::new("model.lift", "Lift Models", model::lift).params(
+            "lifted: bool (true keeps their lowest points at the lift height, false leaves them where they are), ids?: [integer] (default the selected models)",
+        ),
         CommandSpec::new("model.list", "List Models", model::list),
         CommandSpec::new("model.move", "Move", model::translate).params("by: [x, y, z] mm, ids?: [integer] (default the selected models)"),
         CommandSpec::new("model.place", "Place Models", model::place).params(
-            "models: [{ id, position?: [x, y, z] mm, rotation?: [x, y, z] degrees, scale?: [x, y, z] }], each measured from the model as imported",
+            "models: [{ id, position?: [x, y, z] mm, rotation?: [x, y, z] degrees, scale?: [x, y, z], lifted?: bool }], each measured from the model as imported; without `lifted`, a change of Z alone stops the model following the lift",
         ),
         CommandSpec::new("model.rotate", "Rotate", model::rotate)
             .params("degrees: [x, y, z] (turned about X, then Y, then Z, around the models' centre), ids?: [integer] (default the selected models)"),
@@ -60,6 +64,8 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("model.select", "Select Models", model::select)
             .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
         CommandSpec::new("scene.clear", "Clear Scene", model::clear),
+        CommandSpec::new("scene.lift_height", "Lift Height", model::lift_height)
+            .params("height: mm, 0 to 500: where every lifted model's lowest point sits"),
         CommandSpec::new("support.add", "Add Support", support::add)
             .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down)"),
         CommandSpec::new("support.configure", "Support Settings", support_settings::configure).params(

@@ -12,7 +12,7 @@ pub use cmd::{CommandSpec, commands};
 pub use resin_geom as geom;
 pub use resin_render as render;
 pub use route::{Route, route};
-pub use session::{MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
+pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
 pub use support_settings::{Base, Body, BodyShape, ContactShape, GROUPS, PresetId, Raft, SEGMENTS, SupportPreset, SupportSettings, Tip, range};
 
 pub type Result<T, E = EngineError> = std::result::Result<T, E>;

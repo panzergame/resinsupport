@@ -54,17 +54,19 @@ const DIRS: [Vec3; 3] = [Vec3::X, Vec3::Y, Vec3::Z];
 pub struct Tool {
     pub op: Op,
     uniform: bool,
-    /// While a gizmo drag runs: the centre it turns about and the placements it began with.
-    drag: Option<(Vec3, Vec<(u64, Placement)>)>,
-    /// The selection's placements when the tool opened: what Cancel puts back.
-    before: Vec<(u64, Placement)>,
+    /// While a gizmo drag runs: the centre it turns about, and the placements it began with and
+    /// whether each model was lifted.
+    drag: Option<(Vec3, Vec<(u64, Placement, bool)>)>,
+    /// The selection's placements and whether each was lifted when the tool opened: what Cancel
+    /// puts back.
+    before: Vec<(u64, Placement, bool)>,
     /// The history then: Cancel forgets the steps made since.
     mark: u64,
 }
 
-fn placements(app: &ResinApp) -> Vec<(u64, Placement)> {
+fn placements(app: &ResinApp) -> Vec<(u64, Placement, bool)> {
     let scene = &app.session.scene;
-    scene.models().iter().filter(|m| scene.selected_models.contains(&m.id)).map(|m| (m.id, m.placement)).collect()
+    scene.models().iter().filter(|m| scene.selected_models.contains(&m.id)).map(|m| (m.id, m.placement, m.lifted)).collect()
 }
 
 /// Choose the tool for `op` on the selected models.
@@ -123,7 +125,7 @@ pub fn drag(app: &mut ResinApp, g: Drag) {
             [id] => scene.model(*id).map_or(Vec3::ZERO, |m| m.placement.position),
             _ => scene.bounds_of(&ids).center(),
         };
-        let start = scene.models().iter().filter(|m| ids.contains(&m.id)).map(|m| (m.id, m.placement)).collect();
+        let start = scene.models().iter().filter(|m| ids.contains(&m.id)).map(|m| (m.id, m.placement, m.lifted)).collect();
         tool.drag = Some((centre, start));
     }
     let uniform = tool.uniform;
@@ -133,7 +135,7 @@ pub fn drag(app: &mut ResinApp, g: Drag) {
     }
     let models: Vec<Value> = start
         .iter()
-        .map(|(id, p0)| {
+        .map(|(id, p0, lifted0)| {
             let p = match g.change {
                 Change::Translate(v) => Placement { position: p0.position + v, ..*p0 },
                 Change::Rotate { axis, angle } => {
@@ -157,7 +159,13 @@ pub fn drag(app: &mut ResinApp, g: Drag) {
                     Placement { scale: k.into(), ..*p0 }
                 }
             };
-            json!({ "id": id, "position": p.position, "rotation": p.rotation, "scale": p.scale })
+            // Said outright: from the second frame on, the start's Z is no longer the lifted
+            // model's, and the engine would read a turn that stopped on a snap as a move in Z.
+            let lifted = match g.change {
+                Change::Translate(v) => *lifted0 && v.z == 0.0,
+                _ => *lifted0,
+            };
+            json!({ "id": id, "position": p.position, "rotation": p.rotation, "scale": p.scale, "lifted": lifted })
         })
         .collect();
     // The app closes the step once the button is up (`ResinApp::ui`).
@@ -185,12 +193,12 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     };
     let ids = selection(app);
     // Selecting other models keeps what was done to the last ones: Cancel now concerns these.
+    let (now, mark) = (placements(app), app.session.history_mark());
     if let Some(tool) = app.tool.as_mut()
-        && !tool.before.iter().map(|(id, _)| *id).eq(ids.iter().copied())
+        && !tool.before.iter().map(|(id, ..)| *id).eq(now.iter().map(|(id, ..)| *id))
     {
-        let scene = &app.session.scene;
-        tool.before = scene.models().iter().filter(|m| ids.contains(&m.id)).map(|m| (m.id, m.placement)).collect();
-        tool.mark = app.session.history_mark();
+        tool.before = now;
+        tool.mark = mark;
     }
     let lone = match ids.as_slice() {
         [id] => app.session.scene.model(*id).cloned(),
@@ -309,8 +317,12 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
 /// steps go. Nothing when no tool is open.
 pub fn cancel(app: &mut ResinApp) {
     if let Some(tool) = app.tool.take() {
-        let models: Vec<Value> =
-            tool.before.iter().map(|(id, p)| json!({ "id": id, "position": p.position, "rotation": p.rotation, "scale": p.scale })).collect();
+        // `lifted` too: a Z move let the models go, and Cancel must give them back their lift.
+        let models: Vec<Value> = tool
+            .before
+            .iter()
+            .map(|(id, p, lifted)| json!({ "id": id, "position": p.position, "rotation": p.rotation, "scale": p.scale, "lifted": lifted }))
+            .collect();
         if !models.is_empty() && app.run("model.place", json!({ "models": models })).is_some() {
             // Steps of anything else (a model imported meanwhile) stay: they still describe the scene.
             app.session.forget_since(tool.mark, "model.place");

@@ -241,6 +241,8 @@ fn hostile_params_never_panic() {
         json!({ "joints": {}, "ids": [-1] }),
         json!({ "parts": [{ "support": 1, "joint": 0, "segment": 1 }, { "support": -1, "joint": 1e300 }, null], "mode": "add" }),
         json!({ "parts": [{ "support": u64::MAX, "segment": u64::MAX }, { "joint": 0 }], "ids": [1] }),
+        json!({ "lifted": "yes", "height": -1, "models": [{ "id": 1, "lifted": 1 }] }),
+        json!({ "lifted": true, "height": 1e308, "ids": [u64::MAX], "path": "/", "fit": false }),
         json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
     ];
     for spec in commands() {
@@ -255,8 +257,8 @@ fn hostile_params_never_panic() {
 
 /// What a step must put back, selection aside: the models, where they are, their supports.
 fn content(s: &Session) -> String {
-    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds)).collect();
-    format!("{models:?} {:?}", s.scene.supports())
+    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted)).collect();
+    format!("{models:?} {:?} {}", s.scene.supports(), s.scene.lift_height())
 }
 
 /// All of it, selection included.
@@ -515,7 +517,9 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "edit.redo" | "edit.undo" => None,
         "file.import_stl" => Some(json!({ "path": f.path, "fit": false })),
         "model.delete" => Some(json!({ "id": a })),
+        "model.lift" => Some(json!({ "lifted": true })),
         "model.list" | "support.list" | "scene.clear" => Some(json!({})),
+        "scene.lift_height" => Some(json!({ "height": 8 })),
         "model.move" => Some(json!({ "by": [1, 2, 3] })),
         "model.place" => Some(json!({ "models": [{ "id": b, "position": [0, 40, 5], "rotation": [0, 0, 30], "scale": [2, 1, 1] }] })),
         "model.rotate" => Some(json!({ "degrees": [0, 90, 0] })),
@@ -766,5 +770,78 @@ fn support_settings_are_never_an_undo_step() {
     // A failing command leaves them as they were.
     assert!(s.execute("support.configure", &json!({ "tip": { "length": 2.4 }, "body": { "segments": 0 } })).is_err());
     assert_eq!(*s.support_settings(), settings);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A lifted model's lowest point stays at the lift height through import, rotation, scaling,
+/// moves across the plate and a new height; moving it up or down lets it go, and the flag and
+/// height come back with undo.
+#[test]
+fn lifted_models_keep_to_the_lift_height() {
+    let dir = temp_dir("lift");
+    let path = write_cube_stl(&dir);
+    let mut s = Session::new();
+    let a = s.execute("file.import_stl", &json!({ "path": path, "lifted": true })).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("file.import_stl", &json!({ "path": path })).unwrap()["id"].as_u64().unwrap();
+    let model = |s: &Session, id: u64| s.scene.models().iter().find(|m| m.id == id).unwrap().clone();
+    assert_eq!(model(&s, a).bounds.min.z, crate::DEFAULT_LIFT_HEIGHT);
+    assert!(model(&s, a).lifted);
+    assert_eq!(model(&s, b).bounds.min.z, 0.0, "imports stay as they are unless asked");
+
+    // Turned onto an edge, the cube's lowest corner is back at the lift height.
+    s.execute("model.rotate", &json!({ "ids": [a], "degrees": [45, 0, 0] })).unwrap();
+    assert!((model(&s, a).bounds.min.z - 5.0).abs() < 1e-9);
+    s.execute("model.scale", &json!({ "ids": [a], "factors": 2 })).unwrap();
+    assert!((model(&s, a).bounds.min.z - 5.0).abs() < 1e-9);
+    s.execute("model.move", &json!({ "ids": [a], "by": [10, 3, 0] })).unwrap();
+    assert!(model(&s, a).lifted);
+    // The gizmo and panel send placements: X and Y alone keep it lifted, and a turn re-lifts.
+    let pl = model(&s, a).placement;
+    let at = |x: f64, z: f64| json!({ "models": [{ "id": a, "position": [x, pl.position.y, z] }] });
+    s.execute("model.place", &at(pl.position.x + 1.0, pl.position.z)).unwrap();
+    assert!(model(&s, a).lifted);
+    s.execute("model.place", &json!({ "models": [{ "id": a, "rotation": [0, 0, 0], "position": [0, 0, 50] }] })).unwrap();
+    assert!(model(&s, a).lifted);
+    assert!((model(&s, a).bounds.min.z - 5.0).abs() < 1e-9);
+
+    s.execute("scene.lift_height", &json!({ "height": 2.5 })).unwrap();
+    assert!((model(&s, a).bounds.min.z - 2.5).abs() < 1e-9);
+    assert_eq!(model(&s, b).bounds.min.z, 0.0, "a model that isn't lifted stays");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.lift_height(), 5.0);
+    assert!((model(&s, a).bounds.min.z - 5.0).abs() < 1e-9);
+    s.execute("edit.redo", &json!({})).unwrap();
+
+    // Up or down is the user's height: the model stays where it is put.
+    s.execute("model.move", &json!({ "ids": [a], "by": [0, 0, 4] })).unwrap();
+    assert!(!model(&s, a).lifted);
+    assert!((model(&s, a).bounds.min.z - 6.5).abs() < 1e-9);
+    s.execute("model.rotate", &json!({ "ids": [a], "degrees": [0, 0, 90] })).unwrap();
+    assert!((model(&s, a).bounds.min.z - 6.5).abs() < 1e-9);
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(model(&s, a).lifted);
+
+    // A Z typed in the panel lets it go too, and `lifted` given wins over that.
+    let z = model(&s, a).placement.position.z;
+    s.execute("model.place", &json!({ "models": [{ "id": a, "position": [0, 0, z + 1.0] }] })).unwrap();
+    assert!(!model(&s, a).lifted);
+    s.execute("model.place", &json!({ "models": [{ "id": a, "position": [0, 0, z + 2.0], "lifted": true }] })).unwrap();
+    assert!(model(&s, a).lifted);
+    assert!((model(&s, a).bounds.min.z - 2.5).abs() < 1e-9);
+
+    s.execute("model.lift", &json!({ "ids": [b], "lifted": true })).unwrap();
+    assert!((model(&s, b).bounds.min.z - 2.5).abs() < 1e-9);
+    s.execute("model.lift", &json!({ "ids": [b], "lifted": false })).unwrap();
+    assert!(!model(&s, b).lifted);
+    assert!((model(&s, b).bounds.min.z - 2.5).abs() < 1e-9, "let go, it stays where it was");
+    let depth = s.undo_depth();
+    s.execute("model.lift", &json!({ "ids": [b], "lifted": false })).unwrap();
+    s.execute("scene.lift_height", &json!({ "height": 2.5 })).unwrap();
+    assert_eq!(s.undo_depth(), depth, "no change, no step");
+    for bad in [json!({ "height": -1 }), json!({ "height": 501 }), json!({ "height": "5" })] {
+        assert!(matches!(s.execute("scene.lift_height", &bad), Err(EngineError::BadParams(_))), "{bad}");
+    }
+    assert_eq!(s.scene.lift_height(), 2.5);
     std::fs::remove_dir_all(dir).ok();
 }

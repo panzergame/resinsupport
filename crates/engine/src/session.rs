@@ -15,6 +15,13 @@ pub const MAX_EXTENT: f64 = 1.0e6;
 /// Scale factors outside this range are typos, not intents.
 pub const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.001..=1000.0;
 
+/// How high above the plate a lifted model's lowest point sits, in millimetres, until changed:
+/// room for supports under it.
+pub const DEFAULT_LIFT_HEIGHT: f64 = 5.0;
+
+/// The lift heights `scene.lift_height` takes.
+pub const LIFT_RANGE: std::ops::RangeInclusive<f64> = 0.0..=500.0;
+
 /// One imported model. Its mesh and index stay as imported, so the front end can key GPU buffers
 /// on `id`; where it sits is `placement`, always measured from the imported mesh.
 #[derive(Clone, Debug)]
@@ -32,12 +39,16 @@ pub struct Model {
     pub transform: Affine3,
     /// In the scene.
     pub bounds: Aabb3,
+    /// Its lowest point is kept at [`Scene::lift_height`]: placing it any way but moving it up or
+    /// down puts it back there.
+    pub lifted: bool,
 }
 
 impl Model {
-    /// The world placement: transform and bounds for `p`. Fails when the model would collapse
-    /// or leave [`MAX_EXTENT`].
-    fn placed(&self, p: Placement) -> Result<(Affine3, Aabb3)> {
+    /// The world placement for `p`, its Z moved so the lowest point is at `lift` if given:
+    /// placement, transform and bounds. Fails when the model would collapse or leave
+    /// [`MAX_EXTENT`].
+    fn placed(&self, mut p: Placement, lift: Option<f64>) -> Result<(Placement, Affine3, Aabb3)> {
         let bad = |why: &str| Err(EngineError::BadParams(format!("model {}: {why}", self.id)));
         if !p.is_finite() {
             return bad("the placement must be finite numbers");
@@ -45,13 +56,20 @@ impl Model {
         if ![p.scale.x, p.scale.y, p.scale.z].iter().all(|k| SCALE_RANGE.contains(k)) {
             return bad(&format!("scale factors must be from {} to {}", SCALE_RANGE.start(), SCALE_RANGE.end()));
         }
-        let xf = p.affine(self.pivot);
-        let bounds: Aabb3 = self.mesh.triangles.iter().flatten().map(|&v| xf.point(Vec3::from(v))).collect();
+        let mut xf = p.affine(self.pivot);
+        let mut bounds: Aabb3 = self.mesh.triangles.iter().flatten().map(|&v| xf.point(Vec3::from(v))).collect();
+        if let Some(h) = lift.filter(|_| !bounds.is_empty()) {
+            // A translation only: the bounds move with it, no vertex is walked again.
+            let up = Vec3::new(0.0, 0.0, h - bounds.min.z);
+            p.position += up;
+            xf = xf.then(&Affine3::translation(up));
+            bounds = Aabb3 { min: bounds.min + up, max: bounds.max + up };
+        }
         let far = bounds.min.min(-bounds.max);
         if bounds.is_empty() || !(far.x >= -MAX_EXTENT && far.y >= -MAX_EXTENT && far.z >= -MAX_EXTENT) {
             return bad(&format!("it would leave the {MAX_EXTENT} mm workspace"));
         }
-        Ok((xf, bounds))
+        Ok((p, xf, bounds))
     }
     /// The outward unit normal of triangle `i`, in the scene.
     pub fn face_normal(&self, i: usize) -> Option<Vec3> {
@@ -117,7 +135,7 @@ impl SupportPart {
 
 /// Everything an undo step puts back: what is in the scene and what is selected. The camera is
 /// not part of it. New user state belongs here, so that undo covers it without further work.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Scene {
     // Private so that every change goes through a method that bumps `revision`: that bump is what
     // makes a command an undo step and invalidates pick caches.
@@ -129,9 +147,28 @@ pub struct Scene {
     pub selected_parts: BTreeSet<(u64, SupportPart)>,
     /// Selected models, by id; only ids in `models`.
     pub selected_models: BTreeSet<u64>,
+    /// Where lifted models' lowest points sit. Here rather than beside the support settings:
+    /// changing it moves models, so undoing that must put it back with them.
+    lift_height: f64,
     next_id: u64,
     next_support_id: u64,
     revision: u64,
+}
+
+impl Default for Scene {
+    fn default() -> Scene {
+        Scene {
+            models: Vec::new(),
+            supports: Vec::new(),
+            selected: BTreeSet::new(),
+            selected_parts: BTreeSet::new(),
+            selected_models: BTreeSet::new(),
+            lift_height: DEFAULT_LIFT_HEIGHT,
+            next_id: 0,
+            next_support_id: 0,
+            revision: 0,
+        }
+    }
 }
 
 impl Scene {
@@ -146,6 +183,10 @@ impl Scene {
     }
     pub fn model(&self, id: u64) -> Option<&Model> {
         self.models.iter().find(|m| m.id == id)
+    }
+    /// How high above the plate lifted models sit.
+    pub fn lift_height(&self) -> f64 {
+        self.lift_height
     }
     /// Changes whenever a model or support is added, removed or placed: a cache of anything
     /// picked from the scene is stale once it does.
@@ -171,34 +212,57 @@ impl Scene {
             placement: Placement::at(pivot),
             transform: Affine3::IDENTITY,
             bounds,
+            lifted: false,
         });
         self.next_id
     }
-    /// Give each listed model its placement, carrying its supports along. All or nothing: a
-    /// placement that fails (unknown model, out of range) changes nothing.
-    pub(crate) fn place(&mut self, placements: &[(u64, Placement)]) -> Result<()> {
+    /// Give each listed model its placement and, when given, whether it is lifted (`None` keeps
+    /// what it is), carrying its supports along. A lifted model's Z is then moved to the lift
+    /// height. All or nothing: a placement that fails (unknown model, out of range) changes
+    /// nothing.
+    pub(crate) fn place(&mut self, placements: &[(u64, Placement, Option<bool>)]) -> Result<()> {
         let mut placed = Vec::with_capacity(placements.len());
-        for (id, p) in placements {
+        for (id, p, lifted) in placements {
             let m = self.model(*id).ok_or_else(|| EngineError::BadParams(format!("no model {id}")))?;
-            let (xf, bounds) = m.placed(*p)?;
-            placed.push((*id, *p, xf, bounds));
+            let lifted = lifted.unwrap_or(m.lifted);
+            let (p, xf, bounds) = m.placed(*p, lifted.then_some(self.lift_height))?;
+            placed.push((*id, p, lifted, xf, bounds));
         }
         // Placing where it already is must not bump: it would make an empty undo step.
-        if !placed.iter().any(|(id, p, ..)| self.model(*id).is_some_and(|m| m.placement != *p)) {
+        if !placed.iter().any(|(id, p, lifted, ..)| self.model(*id).is_some_and(|m| m.placement != *p || m.lifted != *lifted)) {
             return Ok(());
         }
         self.revision += 1;
-        for (id, p, xf, bounds) in placed {
+        for (id, p, lifted, xf, bounds) in placed {
             if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
                 m.placement = p;
                 m.transform = xf;
                 m.bounds = bounds;
+                m.lifted = lifted;
             }
             for s in self.supports.iter_mut().filter(|s| s.model == id) {
                 s.tip = xf.point(s.local_tip);
                 s.normal = xf.normal(s.local_normal).unwrap_or(s.normal);
             }
         }
+        Ok(())
+    }
+    /// Set the lift height and put every lifted model at it. All or nothing, as [`Scene::place`].
+    pub(crate) fn set_lift_height(&mut self, h: f64) -> Result<()> {
+        if !LIFT_RANGE.contains(&h) {
+            return Err(EngineError::BadParams(format!("the lift height must be from {} to {} mm", LIFT_RANGE.start(), LIFT_RANGE.end())));
+        }
+        if h == self.lift_height {
+            return Ok(());
+        }
+        let old = std::mem::replace(&mut self.lift_height, h);
+        let lifted: Vec<(u64, Placement, Option<bool>)> = self.models.iter().filter(|m| m.lifted).map(|m| (m.id, m.placement, None)).collect();
+        if let Err(e) = self.place(&lifted) {
+            self.lift_height = old;
+            return Err(e);
+        }
+        // The height alone is a change too: it decides where the next lifted model goes.
+        self.revision += 1;
         Ok(())
     }
     /// A tip at scene point `tip` with scene normal `normal` on `model`, which must exist.
@@ -443,6 +507,12 @@ impl Session {
 
     pub fn redo_depth(&self) -> usize {
         self.history.redo.len()
+    }
+
+    /// Set the lift height (the stored one, at start), moving lifted models. Outside the undo
+    /// history, as for [`Session::set_support_settings`].
+    pub fn set_lift_height(&mut self, h: f64) -> Result<()> {
+        self.scene.set_lift_height(h)
     }
 
     pub fn support_settings(&self) -> &SupportSettings {

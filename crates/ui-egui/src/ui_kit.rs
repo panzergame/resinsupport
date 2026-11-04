@@ -238,11 +238,19 @@ pub fn wide_row<R>(ui: &mut Ui, t: &Tokens, label: &str, control: impl FnOnce(&m
 }
 
 /// A checkbox setting: the box and its label across the row, `help` on hover.
-pub fn check_row(ui: &mut Ui, _t: &Tokens, label: &str, help: &str, value: &mut bool) -> Response {
+pub fn check_row(ui: &mut Ui, t: &Tokens, label: &str, help: &str, value: &mut bool) -> Response {
+    mixed_check_row(ui, t, label, help, value, false)
+}
+
+/// [`check_row`] for a setting of several things that may differ: `mixed` shows the box neither
+/// ticked nor clear.
+pub fn mixed_check_row(ui: &mut Ui, _t: &Tokens, label: &str, help: &str, value: &mut bool, mixed: bool) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::hover());
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| ui.checkbox(value, label))
-        .inner
-        .on_hover_text(help)
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+        ui.add(egui::Checkbox::new(value, label).indeterminate(mixed))
+    })
+    .inner
+    .on_hover_text(help)
 }
 
 /// A setting chosen from `options` (stored value, catalog id of its name), in a wide row.

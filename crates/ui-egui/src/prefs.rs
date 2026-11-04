@@ -84,6 +84,11 @@ preference_settings! {
     /// The support settings card's presets: tool data, on no page, so no page's Restore defaults
     /// wipes it. Read field by field ([`resin_engine::SupportSettings::from_stored`]).
     support_settings: resin_engine::SupportSettings = resin_engine::SupportSettings::default();
+    /// Imported models are lifted (off: they stay where the file puts them, as before lifting).
+    lift_on_import: bool = true, GENERAL => check("prefs.lift_on_import", "prefs.lift_on_import.help");
+    /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
+    /// page, like `support_settings`.
+    lift_height: f64 = resin_engine::DEFAULT_LIFT_HEIGHT;
 }
 
 const DOUBLE_CLICK: [(&str, &str); 3] = [("home", "prefs.double_click.home"), ("fit", "prefs.double_click.fit"), ("off", "prefs.double_click.off")];
@@ -501,7 +506,7 @@ mod tests {
     #[test]
     fn every_setting_has_a_page_and_restore_defaults_restores_it() {
         // Tool data has no page, so no page's Restore defaults wipes it.
-        const TOOL_DATA: &[&str] = &["support_settings"];
+        const TOOL_DATA: &[&str] = &["support_settings", "lift_height"];
         for (field, page) in FIELD_PAGES {
             assert!(page.is_some_and(|p| p < PAGES.len()) || (page.is_none() && TOOL_DATA.contains(field)), "{field}");
         }
