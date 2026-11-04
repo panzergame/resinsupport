@@ -1,6 +1,6 @@
 # Attribution
 
-Code ported from other projects, with its licence. Every ported file names its source in a header comment.
+ResinSupport is GPL-3.0-or-later (`LICENSE`). Code ported from other projects keeps its own licence, listed here; their licence texts are in `licenses/`. Every ported file names its source in a header comment.
 
 | Here | Source | Licence |
 |---|---|---|

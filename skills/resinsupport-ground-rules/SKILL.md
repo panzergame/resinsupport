@@ -13,9 +13,12 @@ The rules that cannot be broken. `AGENTS.md` lists them in one line each.
 - Do not drive, script or extract data from another slicer for this project: no test data, measurements, command lists, ids or files produced with them.
 - Command ids are our own: dotted, lower-case `<area>.<thing>[.<variant>]`.
 
-## No GPL, LGPL or AGPL code
-- Do not read, copy or link PrusaSlicer, Cura, CuraEngine or UVtools. Do not even read their sources.
-- Permissive dependencies are fine; say which one you add and why. Every crate below the apps must stay wasm-friendly (`skills/resinsupport-performance/SKILL.md`).
+## Licence: GPL-3.0-or-later
+- ResinSupport is GPL-3.0-or-later (`LICENSE`). Releases before the switch stay MIT OR Apache-2.0.
+- Code and dependencies taken in must be GPLv3-compatible: permissive (MIT, Apache-2.0, BSD, Zlib), LGPL-3.0, GPL-3.0(-or-later). GPL-2.0-only is not.
+- AGPL-3.0 code (UVtools) may be combined only when the owner decides it: those parts stay AGPL, and a served web build must then offer its source.
+- Code taken from a GPL or LGPL project keeps a header naming its source file and commit, and gets a row in `ATTRIBUTION.md`, as SolidCraft ports do.
+- Say which dependency you add and why. Every crate below the apps must stay wasm-friendly (`skills/resinsupport-performance/SKILL.md`).
 
 ## Code and assets from SolidCraft
 - SolidCraft (MIT OR Apache-2.0) is the reference for conventions, UI and geometry. Code ported from it keeps a header comment naming its source file and commit (`4bdffef0` so far), and gets a row in `ATTRIBUTION.md`.
