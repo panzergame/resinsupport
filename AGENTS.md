@@ -4,7 +4,7 @@ ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resi
 
 ## Hard rules
 - Other slicers: GPLv3-compatible open-source ones may be ported, nothing from proprietary ones (Chitubox, Lychee); printer formats come from public documentation or such a port; every port (SolidCraft's too) keeps a header and an `ATTRIBUTION.md` row. `skills/resinsupport-ground-rules/SKILL.md`.
-- GPL-3.0-or-later: code taken in must be GPLv3-compatible (no GPL-2.0-only; AGPL such as UVtools only on the owner's say), and keeps a header and an `ATTRIBUTION.md` row. `skills/resinsupport-ground-rules/SKILL.md`.
+- GPL-3.0-or-later: code taken in must be GPLv3-compatible (no GPL-2.0-only; AGPL-3.0 UVtools allowed, other AGPL only on the owner's say), and keeps a header and an `ATTRIBUTION.md` row. `skills/resinsupport-ground-rules/SKILL.md`.
 - Never crash: no unwrap/expect/panic/unreachable/todo in non-test code, no `unsafe`; files and command parameters are hostile input. `cargo xtask crash-guards`, clippy `-D warnings`, `hostile_params_never_panic`: `skills/resinsupport-crash-safety/SKILL.md`.
 - Everything is a command, through `Session::execute(id, params)`; ids are sorted, dotted, lower-case; programmatic calls never open dialogs. `skills/resinsupport-commands/SKILL.md`.
 - Every scene change is undoable: state the user edits lives in `engine::Scene`, changed only through its methods (which bump the revision); a gesture is one step (`Session::begin_step`); a tool's Cancel leaves the undo history alone. `every_scene_change_is_undoable`: `skills/resinsupport-commands/SKILL.md`.
