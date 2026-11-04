@@ -152,6 +152,18 @@ impl ResinApp {
         }
     }
 
+    /// Switch projection at once: a field-of-view blend reads as a dolly zoom, not a view change.
+    /// A move in progress carries on in the new projection.
+    pub fn toggle_projection(&mut self) {
+        if self.run("view.projection", json!({ "mode": "toggle" })).is_some() {
+            let fov = self.session.camera.fov;
+            if let Some(a) = &mut self.anim {
+                a.from.fov = fov;
+                a.to.fov = fov;
+            }
+        }
+    }
+
     fn animate_from(&mut self, from: Camera) {
         let to = self.session.camera;
         if to != from {
@@ -329,7 +341,7 @@ impl ResinApp {
             let plain = mods.is_none();
             match key {
                 egui::Key::F if plain => self.animate_command("view.fit", json!({ "aspect": self.aspect() })),
-                egui::Key::P if plain => self.animate_command("view.projection", json!({ "mode": "toggle" })),
+                egui::Key::P if plain => self.toggle_projection(),
                 egui::Key::Tab if plain => {
                     // egui has moved the focus on with this Tab; the key is ours.
                     ctx.memory_mut(|m| {

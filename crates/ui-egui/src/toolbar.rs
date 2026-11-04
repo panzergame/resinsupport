@@ -133,7 +133,7 @@ impl Cmd {
             Cmd::PlaceTips => {}
             Cmd::Fit => app.animate_command("view.fit", json!({ "aspect": app.aspect() })),
             Cmd::Home => app.animate_home(app.aspect()),
-            Cmd::Perspective => app.animate_command("view.projection", json!({ "mode": "toggle" })),
+            Cmd::Perspective => app.toggle_projection(),
         }
     }
 }
