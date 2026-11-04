@@ -99,7 +99,8 @@ pub struct Support {
     pub normal: Vec3,
     /// The body's corners the user placed (the head, then each knee), in the scene; the foot
     /// drops straight down from the last. `None` while the route is worked out from the tip.
-    /// They stay where they were put: moving the model carries the tip, not them.
+    /// Moving the model carries them with it, under the plate too (flagged); turning or scaling it
+    /// leaves them where they were put, and the tip stretches to them.
     pub corners: Option<Vec<Vec3>>,
     /// The same in the model's own coordinates: what the tip keeps as the model is placed.
     local_tip: Vec3,
@@ -234,7 +235,13 @@ impl Scene {
         }
         self.revision += 1;
         for (id, p, lifted, xf, bounds) in placed {
+            let mut shift = None;
             if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
+                // Only a move carries placed corners: turned or scaled, the model leaves them where
+                // the user put them, and the tip stretches to them.
+                if p.rotation == m.placement.rotation && p.scale == m.placement.scale {
+                    shift = Some(p.position - m.placement.position);
+                }
                 m.placement = p;
                 m.transform = xf;
                 m.bounds = bounds;
@@ -243,6 +250,12 @@ impl Scene {
             for s in self.supports.iter_mut().filter(|s| s.model == id) {
                 s.tip = xf.point(s.local_tip);
                 s.normal = xf.normal(s.local_normal).unwrap_or(s.normal);
+                if let (Some(d), Some(corners)) = (shift, s.corners.as_mut()) {
+                    // Even under the plate: the route is flagged, and the user moves the corners back.
+                    for c in corners {
+                        *c += d;
+                    }
+                }
             }
         }
         Ok(())

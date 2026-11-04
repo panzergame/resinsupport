@@ -377,11 +377,30 @@ fn placed_joints_keep_their_path() {
     let listed = s.execute("support.list", &json!({})).unwrap();
     assert_eq!((listed["supports"][0]["edited"].clone(), listed["supports"][0]["fault"].clone()), (json!(true), json!(false)));
 
-    // The tip follows the model; the corners stay where they were put, so the tip stretches.
-    s.execute("model.place", &json!({ "models": [{ "id": m, "position": [10, 10, 8] }] })).unwrap();
-    let r = routes(&s)[0].clone();
-    assert_eq!(r.body[1], knee);
-    assert!((r.contact.z - 13.0).abs() < 1e-9 && r.head == auto.body[0]);
+    // Moved, the model carries the corners: the support keeps its shape.
+    let up = Vec3::new(3.0, -2.0, 1.0);
+    s.execute("model.move", &json!({ "ids": [m], "by": up })).unwrap();
+    let moved = routes(&s)[0].clone();
+    assert!(moved.body[1].dist(knee + up) < 1e-9 && moved.head.dist(auto.body[0] + up) < 1e-9, "{moved:?}");
+    assert!((moved.contact.z - 13.0).abs() < 1e-9 && !moved.fault);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(routes(&s)[0].body, r.body);
+
+    // Turned or scaled, it leaves them where they were put, and the tip stretches to them.
+    s.execute("model.rotate", &json!({ "ids": [m], "degrees": [0, 0, 10] })).unwrap();
+    assert_eq!(routes(&s)[0].body[1], knee);
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("model.place", &json!({ "models": [{ "id": m, "position": [10, 10, 8], "scale": [1, 1, 1.2] }] })).unwrap();
+    let r2 = routes(&s)[0].clone();
+    assert!(r2.body[1] == knee && r2.head == auto.body[0], "{r2:?}");
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // Moved down past the plate, the corners go under it: kept, flagged, for the user to move.
+    s.execute("model.move", &json!({ "ids": [m], "by": [0, 0, -6] })).unwrap();
+    let low = routes(&s)[0].clone();
+    assert_eq!(low.body[1], Vec3::new(10.0, 15.0, -2.0));
+    assert!((low.head.z - (auto.body[0].z - 6.0)).abs() < 1e-9);
+    assert!(low.fault, "{low:?}");
     s.execute("edit.undo", &json!({})).unwrap();
 
     // A knee pulled out sideways leans past the limit: kept, flagged.
