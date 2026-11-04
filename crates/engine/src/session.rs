@@ -6,7 +6,7 @@ use resin_geom::{Aabb3, Affine3, Mesh, MeshIndex, Placement, RayHit, Vec3};
 use resin_render::Camera;
 use serde_json::Value;
 
-use crate::{CommandSpec, EngineError, Result, cmd};
+use crate::{CommandSpec, EngineError, Result, SupportSettings, cmd};
 
 /// How far from the origin a model may be moved or grown, in millimetres: well past any build
 /// plate, and still exact enough in the f32 the mesh is stored in.
@@ -267,11 +267,14 @@ pub(crate) struct History {
     open: Option<bool>,
 }
 
-/// What is open: the models and the view onto them, and the undo history.
+/// What is open: the models and the view onto them, the support settings, and the undo history.
 #[derive(Clone, Debug, Default)]
 pub struct Session {
     pub scene: Scene,
     pub camera: Camera,
+    /// Outside `scene` on purpose: a settings change is never an undo step, and undoing a support
+    /// edit never changes a setting. Changed only through validated commands or the setter.
+    pub(crate) support_settings: SupportSettings,
     pub(crate) history: History,
 }
 
@@ -287,11 +290,12 @@ impl Session {
     /// ([`Session::begin_step`]).
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = cmd::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_owned()))?;
-        let (scene, camera) = (self.scene.clone(), self.camera);
+        let (scene, camera, settings) = (self.scene.clone(), self.camera, self.support_settings);
         let history = if spec.undoable { None } else { Some(self.history.clone()) };
         let restore = |s: &mut Session| {
             s.scene = scene.clone();
             s.camera = camera;
+            s.support_settings = settings;
             if let Some(h) = &history {
                 s.history = h.clone();
             }
@@ -388,5 +392,21 @@ impl Session {
 
     pub fn undo_depth(&self) -> usize {
         self.history.undo.len()
+    }
+
+    pub fn redo_depth(&self) -> usize {
+        self.history.redo.len()
+    }
+
+    pub fn support_settings(&self) -> &SupportSettings {
+        &self.support_settings
+    }
+
+    /// Replace the support settings (stored ones, at start), if they pass
+    /// [`SupportSettings::validate`]. No undo step, as for `support.configure`.
+    pub fn set_support_settings(&mut self, s: SupportSettings) -> Result<()> {
+        s.validate()?;
+        self.support_settings = s;
+        Ok(())
     }
 }

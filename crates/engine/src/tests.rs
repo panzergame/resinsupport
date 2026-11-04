@@ -232,6 +232,10 @@ fn hostile_params_never_panic() {
         json!({ "models": [{ "id": 1, "position": [1e308, 0, 0], "rotation": "x", "scale": [-1, 0, 1e308] }] }),
         json!({ "models": "all" }),
         json!({ "models": [null, 1, {}] }),
+        json!({ "preset": "x", "active": 1, "tip": 1, "body": [], "base": "x", "raft": null }),
+        json!({ "preset": "light", "tip": { "contact_diameter": 1e308, "contact_shape": 3, "nope": 1 }, "body": { "segments": -1 } }),
+        json!({ "active": "heavy", "body": { "segments": 1e20, "diameter": null, "shape": "cube" }, "raft": { "enabled": "yes", "margin": -1 } }),
+        json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -291,7 +295,12 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "model.select" => Some(json!({ "ids": [b] })),
         "support.add" => Some(json!({ "model": b, "point": [35, 5, 0] })),
         "support.delete" => Some(json!({ "ids": [tip] })),
+        "support.configure" => {
+            Some(json!({ "preset": "light", "active": "heavy", "tip": { "contact_diameter": 0.3 }, "raft": { "enabled": false } }))
+        }
+        "support.reset_preset" => Some(json!({ "preset": "medium" })),
         "support.select" => Some(json!({ "ids": [], "mode": "replace" })),
+        "support.settings" => Some(json!({})),
         "view.fit" => Some(json!({ "aspect": 1.5 })),
         "view.projection" => Some(json!({ "mode": "toggle" })),
         "view.standard" => Some(json!({ "view": "top" })),
@@ -426,5 +435,106 @@ fn the_history_keeps_the_last_max_undo_steps() {
     // The marks still find the steps made since, though the oldest have gone.
     assert!(s.forget_since(mark, "model.place"));
     assert_eq!(s.undo_depth(), 0);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn support_settings_merge_validate_and_round_trip() {
+    use crate::{BodyShape, PresetId, SupportSettings};
+    let mut s = Session::new();
+    let all = s.execute("support.settings", &json!({})).unwrap();
+    assert_eq!(all["active"], "medium");
+    assert_eq!(all["light"]["tip"]["contact_shape"], "cone");
+    // What the command lists is what storage reads back, unchanged.
+    let (back, problems) = SupportSettings::from_stored(&all);
+    assert_eq!((back, problems), (*s.support_settings(), vec![]));
+
+    // A partial merge into the active preset touches only what it names.
+    s.execute("support.configure", &json!({ "tip": { "length": 2.5 }, "body": { "shape": "prism", "segments": 6 } })).unwrap();
+    let m = s.support_settings().medium;
+    assert_eq!((m.tip.length, m.body.shape, m.body.segments), (2.5, BodyShape::Prism, 6));
+    assert_eq!(m.tip.contact_diameter, PresetId::Medium.defaults().tip.contact_diameter);
+    assert_eq!(s.support_settings().light, PresetId::Light.defaults());
+    // `preset` defaults to the new active one.
+    s.execute("support.configure", &json!({ "active": "light", "raft": { "margin": 3 } })).unwrap();
+    assert_eq!((s.support_settings().active, s.support_settings().light.raft.margin), (PresetId::Light, 3.0));
+
+    // Rejections change nothing: bad types, ranges, names, and sizes that don't fit together.
+    let before = *s.support_settings();
+    for bad in [
+        json!({ "tip": { "contact_diameter": -1 } }),
+        json!({ "tip": { "contact_diameter": 1.0 } }),
+        json!({ "tip": { "penetration": 0.8, "length": 0.5 } }),
+        json!({ "body": { "diameter": 9.0 } }),
+        json!({ "body": { "segments": 2 } }),
+        json!({ "body": { "segments": 6.5 } }),
+        json!({ "body": { "shape": "cube" } }),
+        json!({ "tip": { "lenght": 2 } }),
+        json!({ "raft": { "enabled": 1 } }),
+        json!({ "raft": "on" }),
+        json!({ "preset": "huge" }),
+        json!({ "elevation": 5 }),
+        json!([1]),
+    ] {
+        assert!(matches!(s.execute("support.configure", &bad), Err(EngineError::BadParams(_))), "{bad}");
+        assert_eq!(*s.support_settings(), before, "{bad}");
+    }
+    assert!(s.set_support_settings(SupportSettings { light: PresetId::Heavy.defaults(), ..before }).is_ok());
+    let mut broken = before;
+    broken.heavy.tip.length = f64::NAN;
+    assert!(s.set_support_settings(broken).is_err());
+
+    // Restore defaults: one preset only.
+    s.execute("support.configure", &json!({ "preset": "heavy", "base": { "height": 2 } })).unwrap();
+    s.execute("support.reset_preset", &json!({ "preset": "heavy" })).unwrap();
+    assert_eq!(s.support_settings().heavy, PresetId::Heavy.defaults());
+    assert_eq!(s.support_settings().medium.tip.length, 2.5);
+    assert!(matches!(s.execute("support.reset_preset", &json!({ "preset": 3 })), Err(EngineError::BadParams(_))));
+}
+
+#[test]
+fn stored_support_settings_fall_back_field_by_field() {
+    use crate::{PresetId, SupportSettings};
+    let stored = json!({
+        "active": "heavy",
+        "light": { "tip": { "length": 3.0, "contact_diameter": "big", "from_the_future": 1 }, "body": { "segments": 1000 } },
+        "medium": { "tip": { "contact_diameter": 0.9 } },
+        "heavy": 7,
+        "extra": true,
+    });
+    let (s, mut problems) = SupportSettings::from_stored(&stored);
+    problems.sort();
+    assert_eq!(problems, ["heavy", "light.body.segments", "light.tip.contact_diameter", "medium"]);
+    assert_eq!(s.active, PresetId::Heavy);
+    assert_eq!(s.light.tip.length, 3.0);
+    assert_eq!(s.light.tip.contact_diameter, PresetId::Light.defaults().tip.contact_diameter);
+    assert_eq!(s.medium, PresetId::Medium.defaults(), "fields that read but don't fit together: the whole preset");
+    assert!(s.validate().is_ok());
+    // Through serde too, which is how preferences read it; nothing makes it fail.
+    let s2: SupportSettings = serde_json::from_value(stored).unwrap();
+    assert_eq!(s2, s);
+    assert_eq!(serde_json::from_value::<SupportSettings>(json!("junk")).unwrap(), SupportSettings::default());
+}
+
+#[test]
+fn support_settings_are_never_an_undo_step() {
+    let dir = temp_dir("settings_undo");
+    let f = fixture(&dir);
+    let mut s = f.session;
+    s.execute("support.add", &json!({ "model": f.a, "point": [2, 2, 0] })).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    let (undo, redo) = (s.undo_depth(), s.redo_depth());
+    s.execute("support.configure", &json!({ "tip": { "length": 2.2 } })).unwrap();
+    s.execute("support.reset_preset", &json!({ "preset": "light" })).unwrap();
+    assert_eq!((s.undo_depth(), s.redo_depth()), (undo, redo), "no step, and redo is kept");
+    let settings = *s.support_settings();
+    s.execute("edit.redo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("support.delete", &json!({ "ids": [f.tip] })).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(*s.support_settings(), settings, "undoing support edits leaves the settings alone");
+    // A failing command leaves them as they were.
+    assert!(s.execute("support.configure", &json!({ "tip": { "length": 2.4 }, "body": { "segments": 0 } })).is_err());
+    assert_eq!(*s.support_settings(), settings);
     std::fs::remove_dir_all(dir).ok();
 }

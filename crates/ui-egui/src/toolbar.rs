@@ -390,7 +390,7 @@ fn tabs(app: &mut ResinApp, ui: &mut Ui, row: Rect, t: &Tokens) {
         ui.painter().rect_filled(tr, CONTROL_RADIUS.saturating_sub(1), fill);
         ui.painter().text(tr.center(), Align2::CENTER_CENTER, label, font.clone(), ink);
         if resp.on_hover_text(i18n::format("tab.tip", &[("mode", &i18n::tr(mode.label()))])).clicked() {
-            app.mode = mode;
+            app.set_mode(mode);
         }
         x += width + 2.0;
     }

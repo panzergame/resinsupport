@@ -1,6 +1,7 @@
 //! Preferences, and the mouse mappings the navigation reads.
-// The preset table is ported from SolidCraft (MIT OR Apache-2.0), crates/ui-egui/src/prefs.rs at
-// 4bdffef0; see ATTRIBUTION.md.
+// The preset table and `lenient` are ported from SolidCraft (MIT OR Apache-2.0),
+// crates/ui-egui/src/prefs.rs at 4bdffef0; see ATTRIBUTION.md. `lenient` is reduced: no
+// migrations.
 
 use egui::Modifiers;
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,9 @@ preference_settings! {
     middle_double_click: String = "home".into(), NAVIGATION => choice("prefs.middle_double_click", &DOUBLE_CLICK);
     /// Off: a right drag that the mapping would orbit leaves the camera alone.
     right_drag_orbits: bool = true, NAVIGATION => check("prefs.right_drag_orbits", "prefs.right_drag_orbits.help");
+    /// The support settings card's presets: tool data, on no page, so no page's Restore defaults
+    /// wipes it. Read field by field ([`resin_engine::SupportSettings::from_stored`]).
+    support_settings: resin_engine::SupportSettings = resin_engine::SupportSettings::default();
 }
 
 const DOUBLE_CLICK: [(&str, &str); 3] = [("home", "prefs.double_click.home"), ("fit", "prefs.double_click.fit"), ("off", "prefs.double_click.off")];
@@ -130,6 +134,58 @@ fn orbit_row(p: &mut Prefs, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     });
+}
+
+/// Saved preferences, keeping every one that still reads, and the names of those that did not
+/// (`zoom_reverse`, `support_settings.light.tip.length`), which are back to their defaults. A value
+/// this version doesn't understand (a setting a newer or older release saved differently, a hand
+/// edit) falls back to its default on its own instead of discarding all of them. Unknown keys are
+/// ignored.
+pub fn lenient(saved: &serde_json::Value) -> (Prefs, Vec<String>) {
+    let mut problems: Vec<String> = saved
+        .get("support_settings")
+        .map(|v| resin_engine::SupportSettings::from_stored(v).1.into_iter().map(|p| format!("support_settings.{p}")).collect())
+        .unwrap_or_default();
+    if let Ok(p) = serde_json::from_value::<Prefs>(saved.clone()) {
+        return (p, problems);
+    }
+    let Ok(mut cur) = serde_json::to_value(Prefs::default()) else { return (Prefs::default(), problems) };
+    if let (Some(o), Some(src)) = (cur.as_object_mut(), saved.as_object()) {
+        for (k, v) in src.iter().take(1000) {
+            // Keys this version doesn't have are ignored anyway.
+            let Some(old) = o.get(k).cloned() else { continue };
+            o.insert(k.clone(), v.clone());
+            if serde_json::from_value::<Prefs>(serde_json::Value::Object(o.clone())).is_err() {
+                log::warn!("preferences: `{k}` is not understood by this version; using its default");
+                problems.push(k.clone());
+                o.insert(k.clone(), old);
+            }
+        }
+    } else {
+        problems.push(STORAGE_KEY.into());
+    }
+    (serde_json::from_value(cur).unwrap_or_default(), problems)
+}
+
+/// The stored preferences, read leniently, and what fell back to defaults. Stored as JSON; RON from
+/// before then (eframe's `set_value`) is still read.
+pub fn load(storage: &dyn eframe::Storage) -> (Prefs, Vec<String>) {
+    let Some(text) = storage.get_string(STORAGE_KEY) else { return (Prefs::default(), Vec::new()) };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(v) => lenient(&v),
+        Err(_) => match eframe::get_value::<Prefs>(storage, STORAGE_KEY) {
+            Some(p) => (p, Vec::new()),
+            None => {
+                log::warn!("preferences: the stored settings could not be read; using the defaults");
+                (Prefs::default(), vec![STORAGE_KEY.into()])
+            }
+        },
+    }
+}
+
+/// The preferences as stored.
+pub fn to_json(p: &Prefs) -> Option<String> {
+    serde_json::to_string(p).map_err(|e| log::warn!("preferences: {e}")).ok()
 }
 
 impl Prefs {
@@ -444,13 +500,108 @@ mod tests {
 
     #[test]
     fn every_setting_has_a_page_and_restore_defaults_restores_it() {
-        assert!(FIELD_PAGES.iter().all(|(_, page)| page.is_some_and(|p| p < PAGES.len())));
-        let mut p = Prefs { language: "en".into(), nav: "blender".into(), zoom_reverse: true, wheel_zoom_speed: 3.0, ..Prefs::default() };
+        // Tool data has no page, so no page's Restore defaults wipes it.
+        const TOOL_DATA: &[&str] = &["support_settings"];
+        for (field, page) in FIELD_PAGES {
+            assert!(page.is_some_and(|p| p < PAGES.len()) || (page.is_none() && TOOL_DATA.contains(field)), "{field}");
+        }
+        let settings = edited_settings();
+        let mut p = Prefs {
+            language: "en".into(),
+            nav: "blender".into(),
+            zoom_reverse: true,
+            wheel_zoom_speed: 3.0,
+            support_settings: settings,
+            ..Prefs::default()
+        };
         reset_page(&mut p, GENERAL);
         assert_eq!(p.language, i18n::SYSTEM);
         assert_eq!(p.nav, "blender");
         reset_page(&mut p, NAVIGATION);
-        assert_eq!(p, Prefs::default());
+        assert_eq!(p, Prefs { support_settings: settings, ..Prefs::default() });
+    }
+
+    fn edited_settings() -> resin_engine::SupportSettings {
+        let mut s = resin_engine::Session::new();
+        s.execute(
+            "support.configure",
+            &serde_json::json!({ "active": "heavy", "preset": "light", "tip": { "length": 2.75 }, "raft": { "enabled": false } }),
+        )
+        .unwrap();
+        *s.support_settings()
+    }
+
+    #[test]
+    fn saved_preferences_read_back_equal() {
+        let p = Prefs { nav: "maya".into(), support_settings: edited_settings(), ..Prefs::default() };
+        let saved: serde_json::Value = serde_json::from_str(&to_json(&p).unwrap()).unwrap();
+        assert_eq!(lenient(&saved), (p, vec![]));
+    }
+
+    #[test]
+    fn unreadable_settings_fall_back_alone_and_are_named() {
+        let saved = serde_json::json!({
+            "nav": "maya",
+            "zoom_reverse": "sometimes",
+            "from_a_newer_version": [1, 2],
+            "support_settings": {
+                "active": "light",
+                "light": { "tip": { "length": 2.5, "contact_diameter": 99 }, "raft": { "enabled": "maybe" } },
+                "heavy": { "body": { "diameter": 0.3 } },
+                "medium": { "base": { "height": 0.9 } },
+            },
+        });
+        let (p, mut problems) = lenient(&saved);
+        problems.sort();
+        assert_eq!(
+            problems,
+            ["support_settings.heavy", "support_settings.light.raft.enabled", "support_settings.light.tip.contact_diameter", "zoom_reverse"]
+        );
+        assert_eq!((p.nav.as_str(), p.zoom_reverse), ("maya", false));
+        let s = p.support_settings;
+        let light = resin_engine::PresetId::Light.defaults();
+        assert_eq!(
+            (s.active, s.light.tip.length, s.light.tip.contact_diameter, s.light.raft.enabled),
+            (resin_engine::PresetId::Light, 2.5, light.tip.contact_diameter, true)
+        );
+        assert_eq!(s.heavy, resin_engine::PresetId::Heavy.defaults());
+        assert_eq!(s.medium.base.height, 0.9);
+        assert!(s.validate().is_ok());
+
+        // Not settings at all: every default, and said so.
+        assert_eq!(lenient(&serde_json::json!([1])), (Prefs::default(), vec![STORAGE_KEY.to_string()]));
+        assert_eq!(lenient(&serde_json::json!({ "support_settings": 5 })).1, ["support_settings.support_settings"]);
+    }
+
+    #[test]
+    fn settings_stored_as_ron_before_still_load() {
+        #[derive(Default)]
+        struct Mem(std::collections::HashMap<String, String>);
+        impl eframe::Storage for Mem {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let mut storage = Mem::default();
+        assert_eq!(load(&storage), (Prefs::default(), vec![]));
+        // What an earlier version wrote: RON, through eframe's `set_value`.
+        #[derive(Serialize)]
+        struct Earlier {
+            nav: String,
+            zoom_reverse: bool,
+        }
+        eframe::set_value(&mut storage, STORAGE_KEY, &Earlier { nav: "creo".into(), zoom_reverse: true });
+        let (p, problems) = load(&storage);
+        assert_eq!((p.nav.as_str(), p.zoom_reverse, problems.len()), ("creo", true, 0));
+        storage.0.insert(STORAGE_KEY.into(), "not settings".into());
+        assert_eq!(load(&storage), (Prefs::default(), vec![STORAGE_KEY.to_string()]));
     }
 
     #[test]

@@ -299,18 +299,22 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     }
     match action {
         Action::Ok => app.tool = None,
-        Action::Cancel => {
-            if let Some(tool) = app.tool.take() {
-                let models: Vec<Value> =
-                    tool.before.iter().map(|(id, p)| json!({ "id": id, "position": p.position, "rotation": p.rotation, "scale": p.scale })).collect();
-                if !models.is_empty() && app.run("model.place", json!({ "models": models })).is_some() {
-                    // Steps of anything else (a model imported meanwhile) stay: they still describe the scene.
-                    app.session.forget_since(tool.mark, "model.place");
-                }
-            }
-        }
+        Action::Cancel => cancel(app),
         // A tool card has no Restore defaults.
         Action::Reset | Action::None => {}
+    }
+}
+
+/// Put the tool away as its Cancel does: the placements it opened with come back and its undo
+/// steps go. Nothing when no tool is open.
+pub fn cancel(app: &mut ResinApp) {
+    if let Some(tool) = app.tool.take() {
+        let models: Vec<Value> =
+            tool.before.iter().map(|(id, p)| json!({ "id": id, "position": p.position, "rotation": p.rotation, "scale": p.scale })).collect();
+        if !models.is_empty() && app.run("model.place", json!({ "models": models })).is_some() {
+            // Steps of anything else (a model imported meanwhile) stay: they still describe the scene.
+            app.session.forget_since(tool.mark, "model.place");
+        }
     }
 }
 

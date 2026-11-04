@@ -17,7 +17,7 @@ User-visible behaviour is a command. The ribbon, dialogs, gizmo, tests and futur
 7. A button or dialog for it: `skills/resinsupport-ui/SKILL.md`.
 
 ## Undo and redo
-Ported from SolidCraft. `Session::execute` makes the history: when a command succeeds and the scene's revision moved, the scene from before is pushed as one step (`MAX_UNDO`, 200, are kept) and redo is cleared. `edit.undo` and `edit.redo` swap the scene with a step through `Scene::restore`, which keeps ids and the revision growing, so the GPU never reuses a mesh for another model and the pick cache never mistakes the restored scene. The camera is not in a step.
+Ported from SolidCraft. `Session::execute` makes the history: when a command succeeds and the scene's revision moved, the scene from before is pushed as one step (`MAX_UNDO`, 200, are kept) and redo is cleared. `edit.undo` and `edit.redo` swap the scene with a step through `Scene::restore`, which keeps ids and the revision growing, so the GPU never reuses a mesh for another model and the pick cache never mistakes the restored scene. The camera is not in a step, nor are the support settings: settings that must never be undone live on `Session` beside the camera, change only through validated commands, and `execute` puts them back when a command fails; they make no step because they never touch `Scene`.
 
 So a new command is undoable with no work of its own, as long as:
 - What the user edits lives in `Scene` (`crates/engine/src/session.rs`). State kept in `Session` beside it would be left out of every step.

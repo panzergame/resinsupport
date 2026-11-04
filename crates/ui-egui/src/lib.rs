@@ -10,6 +10,8 @@ pub mod navigation;
 pub mod objects;
 pub mod preferences;
 pub mod prefs;
+pub mod prefs_writer;
+pub mod support_settings;
 pub mod supports;
 pub mod theme;
 pub mod toolbar;
@@ -73,6 +75,11 @@ pub struct ResinApp {
     status: Option<(String, bool)>,
     /// Files to import once the viewport has a size (from the command line).
     pending: Vec<std::path::PathBuf>,
+    /// The support settings card's tab.
+    pub(crate) settings_tab: usize,
+    /// Restore defaults was clicked: its confirmation is open.
+    pub(crate) confirm_reset: bool,
+    prefs_writer: prefs_writer::PrefsWriter,
 }
 
 impl ResinApp {
@@ -82,9 +89,20 @@ impl ResinApp {
         let rs = cc.wgpu_render_state.as_ref().ok_or("the window has no wgpu renderer")?;
         gpu::Renderer::install(rs);
         theme::apply(&cc.egui_ctx);
-        let prefs = cc.storage.and_then(|s| eframe::get_value::<Prefs>(s, prefs::STORAGE_KEY)).unwrap_or_default();
-        Ok(ResinApp {
-            session: Session::new(),
+        let (prefs, problems) = cc.storage.map(prefs::load).unwrap_or_default();
+        Ok(ResinApp::build(prefs, &problems))
+    }
+
+    /// The app on these preferences; `problems` names the stored ones that fell back to defaults.
+    pub(crate) fn build(prefs: Prefs, problems: &[String]) -> ResinApp {
+        let mut session = Session::new();
+        if let Err(e) = session.set_support_settings(prefs.support_settings) {
+            log::warn!("support settings: {e}");
+        }
+        let status = (!problems.is_empty()).then(|| (i18n::format("status.prefs_reset", &[("fields", &problems.join(", "))]), true));
+        let writer = prefs_writer::PrefsWriter::read(prefs::to_json(&prefs));
+        let mut app = ResinApp {
+            session,
             prefs,
             mode: EditMode::default(),
             tool: None,
@@ -96,9 +114,14 @@ impl ResinApp {
             viewport_rect: None,
             anim: None,
             time: 0.0,
-            status: None,
+            status,
             pending: Vec::new(),
-        })
+            settings_tab: 0,
+            confirm_reset: false,
+            prefs_writer: writer,
+        };
+        app.keep_support_settings();
+        app
     }
 
     /// Import these files once the window is up.
@@ -109,13 +132,40 @@ impl ResinApp {
     /// Run a command, reporting a failure in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         match self.session.execute(id, &params) {
-            Ok(v) => Some(v),
+            Ok(v) => {
+                self.keep_support_settings();
+                Some(v)
+            }
             Err(e) => {
                 log::warn!("{id}: {e}");
                 self.status = Some((e.to_string(), true));
                 None
             }
         }
+    }
+
+    /// Copy the session's support settings into the preferences when a command changed them,
+    /// whoever ran it (the card, a script), so they are saved.
+    fn keep_support_settings(&mut self) {
+        if self.prefs.support_settings != *self.session.support_settings() {
+            self.prefs.support_settings = *self.session.support_settings();
+        }
+    }
+
+    /// Switch edit mode. Every mode change comes here, so its side effects live in one place.
+    pub fn set_mode(&mut self, mode: EditMode) {
+        if mode == self.mode {
+            return;
+        }
+        if mode == EditMode::Support {
+            self.cancel_pending();
+        }
+        self.mode = mode;
+    }
+
+    /// Cancel whatever is pending, as its own Cancel would: the open Move, Rotate or Scale tool.
+    pub(crate) fn cancel_pending(&mut self) {
+        transform::cancel(self);
     }
 
     /// Undo (`forward` false) or redo the last step. The tool is put away: what it remembers
@@ -275,7 +325,7 @@ impl ResinApp {
             self.run("model.delete", json!({ "id": id }));
         }
         if let Some(id) = select {
-            self.mode = EditMode::Object;
+            self.set_mode(EditMode::Object);
             self.run("model.select", json!({ "ids": [id], "mode": if shift { "toggle" } else { "replace" } }));
         }
     }
@@ -349,7 +399,7 @@ impl ResinApp {
                             m.surrender_focus(id);
                         }
                     });
-                    self.mode = self.mode.other();
+                    self.set_mode(self.mode.other());
                 }
                 egui::Key::Escape if plain => self.tool = None,
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
@@ -395,7 +445,7 @@ const REDO_SHIFT_Z: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::M
 pub(crate) const IMPORT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I);
 
 impl eframe::App for ResinApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.time = ctx.input(|i| i.time);
         i18n::set_language(i18n::effective_language(&self.prefs.language));
@@ -416,6 +466,7 @@ impl eframe::App for ResinApp {
         egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
+        support_settings::panel(self, &ctx);
         preferences::window(self, &ctx);
         // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is
         // held or the field is typed in; closing it here, not where it began, means a gesture cut
@@ -423,9 +474,27 @@ impl eframe::App for ResinApp {
         if self.session.step_open() && !ctx.input(|i| i.pointer.any_down()) && !ctx.text_edit_focused() {
             self.session.end_step();
         }
+        // After the frame's UI, so a setting changed in it is written now. `Instant` is not there
+        // in the browser, where eframe's own saves are left to do it.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let now = std::time::Instant::now();
+            if self.prefs_writer.due(ctx.input(|i| i.events.iter().any(prefs_writer::changes_settings)), now)
+                && let Some(storage) = frame.storage_mut()
+                && let Some(json) = prefs::to_json(&self.prefs)
+                && let Some(wait) = self.prefs_writer.store(storage, json, now)
+            {
+                ctx.request_repaint_after(wait);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = frame;
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, prefs::STORAGE_KEY, &self.prefs);
+        if let Some(json) = prefs::to_json(&self.prefs) {
+            storage.set_string(prefs::STORAGE_KEY, json.clone());
+            self.prefs_writer.written = Some(json);
+        }
     }
 }

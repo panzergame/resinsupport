@@ -68,6 +68,7 @@ pub const MESSAGE_NAMESPACES: &[&str] = &[
     "ribbon",
     "status",
     "stdview",
+    "supports",
     "tab",
     "tool",
     "ui",
@@ -251,8 +252,16 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut missing = Vec::new();
         let mut seen = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
+        // `src` and its module folders (`ui_kit/`).
+        let mut files = Vec::new();
+        let mut dirs = vec![dir];
+        while let Some(d) = dirs.pop() {
+            for entry in std::fs::read_dir(&d).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() { dirs.push(path) } else { files.push(path) }
+            }
+        }
+        for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             for (i, literal) in text.split('"').enumerate() {
                 let id_like = i % 2 == 1

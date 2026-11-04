@@ -67,6 +67,10 @@ pub struct Tokens {
     pub gizmo_ball_edge: Color32,
     pub text_dim: Color32,
     pub error: Color32,
+    /// A confirmation that undoes the user's own work.
+    pub warning: Color32,
+    /// Behind a modal dialog.
+    pub backdrop: Color32,
     // ---- chrome (SolidCraft's palette) ----
     pub dark: bool,
     pub panel: Color32,
@@ -119,6 +123,8 @@ impl Tokens {
                 gizmo_ball_edge: Color32::from_gray(60),
                 text_dim: Color32::from_rgb(148, 155, 168),
                 error: Color32::from_rgb(240, 100, 96),
+                warning: Color32::from_rgb(236, 170, 70),
+                backdrop: Color32::from_black_alpha(120),
                 dark: true,
                 panel: Color32::from_rgb(39, 43, 52),
                 panel_header: Color32::from_rgb(47, 52, 62),
@@ -165,6 +171,8 @@ impl Tokens {
                 gizmo_ball_edge: Color32::from_gray(50),
                 text_dim: Color32::from_rgb(110, 116, 128),
                 error: Color32::from_rgb(214, 54, 54),
+                warning: Color32::from_rgb(222, 150, 30),
+                backdrop: Color32::from_black_alpha(80),
                 dark: false,
                 panel: Color32::from_rgb(250, 251, 252),
                 panel_header: Color32::from_rgb(236, 238, 242),

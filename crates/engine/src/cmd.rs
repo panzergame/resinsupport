@@ -3,6 +3,7 @@
 mod edit;
 mod model;
 mod support;
+mod support_settings;
 mod view;
 
 use std::collections::BTreeSet;
@@ -20,7 +21,8 @@ pub struct CommandSpec {
     pub params: &'static str,
     pub run: fn(&mut Session, &Value) -> Result<Value>,
     /// A run that changes the scene is an undo step. True unless `noundo`: only undo and redo
-    /// opt out; a command that leaves the scene alone makes no step anyway.
+    /// opt out; a command that leaves the scene alone (the view, the support settings) makes no
+    /// step anyway.
     pub undoable: bool,
 }
 
@@ -60,10 +62,16 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("scene.clear", "Clear Scene", model::clear),
         CommandSpec::new("support.add", "Add Support", support::add)
             .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down)"),
+        CommandSpec::new("support.configure", "Support Settings", support_settings::configure).params(
+            "preset?: light | medium | heavy (default the active one), active?: light | medium | heavy, tip?: { contact_shape: cone | sphere, contact_diameter, penetration, length, upper_diameter } mm, body?: { shape: cylinder | prism, diameter mm, max_angle degrees, segments }, base?: { diameter, height } mm, raft?: { enabled, thickness mm, margin mm, chamfer_angle degrees }; each partial, the result validated as a whole",
+        ),
         CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection)"),
         CommandSpec::new("support.list", "List Supports", support::list),
+        CommandSpec::new("support.reset_preset", "Restore Support Preset", support_settings::reset_preset)
+            .params("preset?: light | medium | heavy (default the active one)"),
         CommandSpec::new("support.select", "Select Supports", support::select)
             .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
+        CommandSpec::new("support.settings", "List Support Settings", support_settings::settings),
         CommandSpec::new("view.fit", "Fit All", view::fit).params("aspect?: number (width / height)"),
         CommandSpec::new("view.projection", "Projection", view::projection).params("mode: \"perspective\" | \"orthographic\" | \"toggle\""),
         CommandSpec::new("view.standard", "Standard View", view::standard).params("view: front | back | left | right | top | bottom | iso"),

@@ -23,7 +23,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 
 ## 4. Supports
 - [x] Manual tips, first step: preview under the pointer, left click places a 0.5 mm tip, click on a tip selects (Shift toggles), Delete removes
-- Tip settings (diameter, depth), supports from tip to plate, overhang and island detection, automatic generation, raft
+- [x] Support settings card: Light, Medium and Heavy presets of tip, body, base and raft sizes, validated, kept in the preferences, never undo steps
+- Supports from tip to plate, overhang and island detection, automatic generation, raft
 
 ## 5. Slicing
 - Layer images from the mesh, layer preview, exposure settings
