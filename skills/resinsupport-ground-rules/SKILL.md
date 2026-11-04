@@ -1,16 +1,17 @@
 ---
 name: resinsupport-ground-rules
-description: "Use before adding any dependency, icon, image, font, test reference data or product wording to ResinSupport, before porting code from another project, or when unsure whether something may be copied, read or named. Covers independence from other slicers, GPL code, SolidCraft ports, asset attribution and units."
+description: "Use before adding any dependency, icon, image, font, test reference data or product wording to ResinSupport, before porting code from another project, or when unsure whether something may be copied, read or named. Covers other slicers, the GPL licence, SolidCraft ports, asset attribution and units."
 ---
 
-# Independence, licences, assets and units
+# Other slicers, licences, assets and units
 
 The rules that cannot be broken. `AGENTS.md` lists them in one line each.
 
-## Independent
-- Behaviour comes from public documentation, general slicer conventions and user feedback. Printer file formats come from public specifications only.
-- Never copy another slicer's code, icons, artwork, help text, tooltips, templates or profiles (Chitubox, Lychee, PrusaSlicer, Cura, …).
-- Do not drive, script or extract data from another slicer for this project: no test data, measurements, command lists, ids or files produced with them.
+## Other slicers
+- Open-source slicers and tools under a GPLv3-compatible licence (mslicer GPL-3.0, Cura LGPL-3.0, …) may be read and ported: code, file formats, profiles, icons, text. Each port keeps a header naming its source file and commit and gets a row in `ATTRIBUTION.md`. AGPL ones (PrusaSlicer, CuraEngine, UVtools) follow the AGPL rule below.
+- Printer file formats come from public specifications or from such an implementation; name the document or source file followed in the format file's header.
+- Files produced by an open-source tool may be test reference data; say which tool and version made them beside the file.
+- Proprietary slicers (Chitubox, Lychee, …) stay out: never copy their code, icons, artwork, help text, tooltips, templates or profiles, and never drive, script or extract data from them (no test data, measurements, command lists, ids or files produced with them).
 - Command ids are our own: dotted, lower-case `<area>.<thing>[.<variant>]`.
 
 ## Licence: GPL-3.0-or-later

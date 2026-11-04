@@ -20,7 +20,7 @@ description: "Use when touching model import (STL today), project files (.rsup),
 - Never panic on a file: return `IoError` (`skills/resinsupport-crash-safety/SKILL.md`).
 
 ## Printer formats
-- From public documentation only, never from another slicer's code or output (`skills/resinsupport-ground-rules/SKILL.md`). Name the document you followed in the format file's header.
+- From public documentation or a GPLv3-compatible open-source implementation, never from a proprietary slicer's code or output (`skills/resinsupport-ground-rules/SKILL.md`). Name the document or source file you followed in the format file's header.
 - The first export will be layer images in a zip (`ROADMAP.md`).
 
 ## The browser

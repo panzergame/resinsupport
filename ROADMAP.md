@@ -35,7 +35,7 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - Layer images from the mesh, layer preview, exposure settings
 
 ## 6. Export
-- Layer images in a zip first, then printer formats from public documentation
+- Layer images in a zip first, then printer formats from public documentation or GPLv3-compatible implementations
 
 ## Languages
 - French, then others: one catalog each (`skills/resinsupport-ui-text/SKILL.md`)

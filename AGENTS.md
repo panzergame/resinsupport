@@ -3,7 +3,7 @@
 ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resin (MSLA) printers: place, support, slice. Its development philosophy follows SolidCraft's: layered crates, everything is a command, never crash, and every rule has a check that enforces it. Architecture: `docs/architecture.md`. Work: `ROADMAP.md`. Each rule below is one line; its skill has the how and the why.
 
 ## Hard rules
-- Independent: never copy another slicer's code, icons, text, templates or profiles; printer formats come from public documentation; SolidCraft ports keep a header and an `ATTRIBUTION.md` row. `skills/resinsupport-ground-rules/SKILL.md`.
+- Other slicers: GPLv3-compatible open-source ones may be ported, nothing from proprietary ones (Chitubox, Lychee); printer formats come from public documentation or such a port; every port (SolidCraft's too) keeps a header and an `ATTRIBUTION.md` row. `skills/resinsupport-ground-rules/SKILL.md`.
 - GPL-3.0-or-later: code taken in must be GPLv3-compatible (no GPL-2.0-only; AGPL such as UVtools only on the owner's say), and keeps a header and an `ATTRIBUTION.md` row. `skills/resinsupport-ground-rules/SKILL.md`.
 - Never crash: no unwrap/expect/panic/unreachable/todo in non-test code, no `unsafe`; files and command parameters are hostile input. `cargo xtask crash-guards`, clippy `-D warnings`, `hostile_params_never_panic`: `skills/resinsupport-crash-safety/SKILL.md`.
 - Everything is a command, through `Session::execute(id, params)`; ids are sorted, dotted, lower-case; programmatic calls never open dialogs. `skills/resinsupport-commands/SKILL.md`.
