@@ -1,10 +1,10 @@
 // Ported from SolidCraft (MIT OR Apache-2.0), crates/geom/src/bvh.rs at 4bdffef0; see
-// ATTRIBUTION.md. Reduced to ray queries; `MeshIndex` works on our triangle soup.
+// ATTRIBUTION.md. Reduced to ray and box queries; `MeshIndex` works on our triangle soup.
 //! A bounding volume hierarchy over boxes: the nearest hit along a ray without looking at each
 //! item. Built once (median split on the widest axis of the box centres, a few items per leaf)
 //! and only read afterwards. [`MeshIndex`] holds one over a mesh's triangles, for picking.
 
-use crate::{Aabb3, Mesh, RayHit, Vec3};
+use crate::{Aabb3, Affine3, Mesh, RayHit, Vec3};
 
 /// Most items in a leaf.
 const LEAF: usize = 4;
@@ -126,6 +126,29 @@ impl Bvh {
         }
         best
     }
+
+    /// Whether `test` holds for any item whose box overlaps `b`; stops at the first that does.
+    pub fn any_overlapping(&self, b: &Aabb3, mut test: impl FnMut(u32) -> bool) -> bool {
+        if b.is_empty() || !finite(b) {
+            return false;
+        }
+        let mut stack = vec![0usize];
+        while let Some(n) = stack.pop() {
+            let Some(node) = self.nodes.get(n) else { continue };
+            if !node.bounds.overlaps(b) {
+                continue;
+            }
+            if node.count > 0 {
+                let (a, z) = (node.first as usize, node.first as usize + node.count as usize);
+                if self.order.get(a..z).unwrap_or(&[]).iter().any(|&i| test(i)) {
+                    return true;
+                }
+                continue;
+            }
+            stack.extend([node.first as usize, node.first as usize + 1]);
+        }
+        false
+    }
 }
 
 fn finite(b: &Aabb3) -> bool {
@@ -196,6 +219,29 @@ impl MeshIndex {
             triangle: i as usize,
         })
     }
+
+    /// Whether any triangle of `mesh`, placed in the scene by `xf` (`inv` its inverse), comes
+    /// closer than `r` to the scene segment `p q`. The distance is measured in the scene, so a
+    /// stretched model is measured as it is drawn; the index is only asked for the triangles
+    /// whose boxes meet the segment's, mapped back into the mesh's coordinates.
+    pub fn near_segment(&self, mesh: &Mesh, xf: &Affine3, inv: &Affine3, p: Vec3, q: Vec3, r: f64) -> bool {
+        if !(p.is_finite() && q.is_finite() && r.is_finite()) {
+            return false;
+        }
+        let near =
+            |i: u32| mesh.triangles.get(i as usize).is_some_and(|t| crate::segment_triangle_distance(p, q, t.map(|c| xf.point(Vec3::from(c)))) < r);
+        if mesh.triangles.len() != self.triangle_count {
+            return (0..mesh.triangles.len().min(u32::MAX as usize) as u32).any(near);
+        }
+        let g = Vec3::new(r, r, r);
+        let (lo, hi) = (p.min(q) - g, p.max(q) + g);
+        let local: Aabb3 = (0..8)
+            .map(|k| {
+                inv.point(Vec3::new(if k & 1 == 0 { lo.x } else { hi.x }, if k & 2 == 0 { lo.y } else { hi.y }, if k & 4 == 0 { lo.z } else { hi.z }))
+            })
+            .collect();
+        self.triangles.any_overlapping(&local, near)
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +271,32 @@ mod tests {
         }
         assert!(index.ray_hit(&mesh, Vec3::new(f64::NAN, 0.0, 0.0), Vec3::Z).is_none());
         assert!(index.ray_hit(&mesh, Vec3::ZERO, Vec3::ZERO).is_none());
+    }
+
+    #[test]
+    fn near_segment_answers_as_the_scan_does() {
+        let mut tris = Vec::new();
+        for k in 0..20 {
+            let off = k as f32 * 15.0;
+            tris.extend(cube(10.0).triangles.iter().map(|t| t.map(|[x, y, z]| [x + off, y, z])));
+        }
+        let mesh = Mesh::new(tris);
+        let index = MeshIndex::new(&mesh);
+        // Turned and stretched: the box mapped back into the mesh must still find every triangle.
+        let xf = Affine3::rotation_xyz(Vec3::new(20.0, -35.0, 50.0)).then(&Affine3::scale(Vec3::new(1.0, 2.5, 0.5)));
+        let inv = xf.inverse().unwrap();
+        let mut hits = 0;
+        for i in 0..300 {
+            let x = f64::from(i) * 1.1 - 20.0;
+            let (p, q) = (Vec3::new(x, -40.0 + f64::from(i % 7) * 9.0, 30.0), Vec3::new(x * 0.7, 10.0, -30.0 + f64::from(i % 5) * 6.0));
+            for r in [0.0, 0.5, 3.0] {
+                let scan = mesh.triangles.iter().any(|t| crate::segment_triangle_distance(p, q, t.map(|c| xf.point(Vec3::from(c)))) < r);
+                assert_eq!(index.near_segment(&mesh, &xf, &inv, p, q, r), scan, "{p:?} {q:?} {r}");
+                hits += usize::from(scan);
+            }
+        }
+        assert!(hits > 20 && hits < 850, "the cases should go both ways: {hits}");
+        assert!(!index.near_segment(&mesh, &xf, &inv, Vec3::new(f64::NAN, 0.0, 0.0), Vec3::ZERO, 1.0));
     }
 
     #[test]

@@ -51,7 +51,7 @@ impl PresetId {
         };
         SupportPreset {
             tip: Tip { contact_shape: ContactShape::Cone, contact_diameter: contact, penetration, length, upper_diameter: upper },
-            body: Body { shape: BodyShape::Cylinder, diameter: body, max_angle: 40.0, segments },
+            body: Body { shape: BodyShape::Cylinder, diameter: body, max_angle: 40.0, clearance: 0.5, segments },
             base: Base { diameter: base, height: base_h },
             raft: Raft { enabled: true, thickness: raft, margin, chamfer_angle: 45.0 },
         }
@@ -111,6 +111,8 @@ pub struct Body {
     pub diameter: f64,
     /// Degrees from vertical.
     pub max_angle: f64,
+    /// The gap the body and base keep from every model; only the tip touches one.
+    pub clearance: f64,
     /// Sides of a prism, facets of a cylinder.
     pub segments: u32,
 }
@@ -150,6 +152,7 @@ const NUMBERS: &[(&str, &str, f64, f64)] = &[
     ("tip", "upper_diameter", 0.1, 5.0),
     ("body", "diameter", 0.2, 10.0),
     ("body", "max_angle", 0.0, 80.0),
+    ("body", "clearance", 0.0, 5.0),
     ("base", "diameter", 0.5, 30.0),
     ("base", "height", 0.1, 5.0),
     ("raft", "thickness", 0.1, 5.0),
@@ -180,6 +183,7 @@ impl SupportPreset {
             ("tip", "upper_diameter") => &mut self.tip.upper_diameter,
             ("body", "diameter") => &mut self.body.diameter,
             ("body", "max_angle") => &mut self.body.max_angle,
+            ("body", "clearance") => &mut self.body.clearance,
             ("base", "diameter") => &mut self.base.diameter,
             ("base", "height") => &mut self.base.height,
             ("raft", "thickness") => &mut self.raft.thickness,

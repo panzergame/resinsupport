@@ -24,7 +24,11 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 ## 4. Supports
 - [x] Manual tips, first step: preview under the pointer, left click places a 0.5 mm tip, click on a tip selects (Shift toggles), Delete removes
 - [x] Support settings card: Light, Medium and Heavy presets of tip, body, base and raft sizes, validated, kept in the preferences, never undo steps
-- Supports from tip to plate, overhang and island detection, automatic generation, raft
+- [x] Supports from tip to plate: straight down or with one knee within the max tilt, clear of every model by `body.clearance`; unreachable tips kept and flagged
+- [x] Support parts selectable: body segments and joints (a handle drawn over everything at the head and each knee)
+- [x] Move arrows on selected joints and segments; an edited support keeps its placed corners (only its tip follows the model), checked and flagged, never routed again
+- A button for `support.reset_route`; moving the tip along the surface
+- Overhang and island detection, automatic generation, raft
 
 ## 5. Slicing
 - Layer images from the mesh, layer preview, exposure settings

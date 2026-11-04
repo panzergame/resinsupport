@@ -67,10 +67,16 @@ pub fn commands() -> &'static [CommandSpec] {
         ),
         CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection)"),
         CommandSpec::new("support.list", "List Supports", support::list),
+        CommandSpec::new("support.place_joints", "Move Support Joints", support::place_joints).params(
+            "joints: [{ support: integer, joint: integer, position: [x, y, z] mm, Z from 0 }] in the scene; a support whose route was worked out keeps that route as placed corners first",
+        ),
         CommandSpec::new("support.reset_preset", "Restore Support Preset", support_settings::reset_preset)
             .params("preset?: light | medium | heavy (default the active one)"),
-        CommandSpec::new("support.select", "Select Supports", support::select)
-            .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
+        CommandSpec::new("support.reset_route", "Reset Support Path", support::reset_route)
+            .params("ids?: [integer] (default the selected supports and those with selected parts)"),
+        CommandSpec::new("support.select", "Select Supports", support::select).params(
+            "ids?: [integer], parts?: [{ support: integer, joint: integer } | { support: integer, segment: integer }] (one or both; empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace), over both",
+        ),
         CommandSpec::new("support.settings", "List Support Settings", support_settings::settings),
         CommandSpec::new("view.fit", "Fit All", view::fit).params("aspect?: number (width / height)"),
         CommandSpec::new("view.projection", "Projection", view::projection).params("mode: \"perspective\" | \"orthographic\" | \"toggle\""),
@@ -122,7 +128,7 @@ pub(crate) fn ids_param(p: &Value, what: &str) -> Result<Option<Vec<u64>>> {
 }
 
 /// Change `selected` by `ids` as the optional `mode` parameter says.
-pub(crate) fn select_ids(selected: &mut BTreeSet<u64>, ids: Vec<u64>, p: &Value) -> Result<()> {
+pub(crate) fn select_ids<T: Ord>(selected: &mut BTreeSet<T>, ids: Vec<T>, p: &Value) -> Result<()> {
     let mode = match p.get("mode") {
         None | Some(Value::Null) => "replace",
         Some(v) => v.as_str().ok_or_else(|| EngineError::BadParams("`mode` must be a string".into()))?,

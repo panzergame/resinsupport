@@ -48,6 +48,15 @@ impl Aabb3 {
     pub fn diagonal(&self) -> f64 {
         self.size().len()
     }
+    /// Whether the boxes share a point, sides included (never for an empty box).
+    pub fn overlaps(&self, o: &Aabb3) -> bool {
+        self.min.x <= o.max.x
+            && o.min.x <= self.max.x
+            && self.min.y <= o.max.y
+            && o.min.y <= self.max.y
+            && self.min.z <= o.max.z
+            && o.min.z <= self.max.z
+    }
     /// Whether `p` lies in the box, its sides included (never in an empty box, never for NaN).
     pub fn contains(&self, p: Vec3) -> bool {
         p.x >= self.min.x && p.y >= self.min.y && p.z >= self.min.z && p.x <= self.max.x && p.y <= self.max.y && p.z <= self.max.z

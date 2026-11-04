@@ -1,5 +1,6 @@
-//! The viewport's wgpu drawing: a background gradient, the models, support tips, the grid and axes, drawn
-//! through an egui paint callback into egui's own render pass.
+//! The viewport's wgpu drawing: a background gradient, the models, the supports, the grid and axes,
+//! then the joint handles over everything, drawn through an egui paint callback into egui's own
+//! render pass.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,6 +9,8 @@ use egui_wgpu::wgpu;
 use resin_engine::geom::{Affine3, Mesh, Vec3, unit_sphere};
 use resin_engine::render::Line;
 use wgpu::util::DeviceExt;
+
+use crate::support_routes::{Look, SupportMesh};
 
 /// What the window's render pass carries; the app's native options must ask for the same, and
 /// the viewport pipelines are built to match.
@@ -48,6 +51,10 @@ const INSTANCE_STRIDE: u64 = std::mem::size_of::<ModelInstance>() as u64;
 /// Triangle subdivisions of the drawn sphere: smooth enough at the size a tip is looked at.
 const SPHERE_DETAIL: u32 = 2;
 
+/// The opacity of a joint handle where the scene is in front of it: there, so it can be grabbed,
+/// and faded, so it doesn't read as in front.
+const HIDDEN_HANDLE_ALPHA: f32 = 0.35;
+
 /// A shaded sphere (a support tip), in linear RGBA.
 #[derive(Clone, Copy, Debug)]
 pub struct Sphere {
@@ -84,11 +91,13 @@ struct ModelInstance {
 
 impl ModelInstance {
     fn new(m: &ModelDraw) -> ModelInstance {
-        let a = &m.transform;
+        ModelInstance::placed(&m.transform, m.color)
+    }
+    fn placed(a: &Affine3, color: [f32; 4]) -> ModelInstance {
         let t: [f64; 3] = a.t.into();
         let rows = [0, 1, 2].map(|i| [a.m[i][0] as f32, a.m[i][1] as f32, a.m[i][2] as f32, t[i] as f32]);
         let normal_rows = a.normal_matrix().map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0]);
-        ModelInstance { rows, normal_rows, color: m.color }
+        ModelInstance { rows, normal_rows, color }
     }
 }
 
@@ -104,7 +113,12 @@ pub struct ViewFrame {
     pub grid_radius: f64,
     pub lines: Vec<Line>,
     pub spheres: Vec<Sphere>,
+    /// Joint handles: drawn after everything, faded where the scene hides them.
+    pub handles: Vec<Sphere>,
     pub models: Vec<ModelDraw>,
+    /// The supports' solids, already in the scene, and the colour of each [`Look`].
+    pub supports: Option<Arc<SupportMesh>>,
+    pub support_colors: [[f32; 4]; 3],
 }
 
 pub struct ViewportCallback(pub ViewFrame);
@@ -149,10 +163,19 @@ pub struct Renderer {
     sphere_mesh: (wgpu::Buffer, u32),
     sphere_buffer: Option<(wgpu::Buffer, u64)>,
     sphere_count: u32,
+    /// Handles where the scene hides them, then where it doesn't.
+    handle_hidden: wgpu::RenderPipeline,
+    handle_visible: wgpu::RenderPipeline,
+    handle_buffer: Option<(wgpu::Buffer, u64)>,
+    handle_count: u32,
     /// Uploaded meshes by model id (a model's mesh never changes).
     meshes: HashMap<u64, GpuMesh>,
-    /// One [`ModelInstance`] per model this frame, in `ViewFrame::models` order.
+    /// One [`ModelInstance`] per model this frame, in `ViewFrame::models` order, then one per
+    /// support [`Look`].
     model_instances: Option<(wgpu::Buffer, u64)>,
+    /// The supports' solids, and the ones uploaded there: uploaded again only when they change.
+    support_buffer: Option<(wgpu::Buffer, u64)>,
+    supports_uploaded: Option<Arc<SupportMesh>>,
 }
 
 impl Renderer {
@@ -285,6 +308,27 @@ impl Renderer {
             wgpu::CompareFunction::Less,
             None,
         );
+        // Hidden first: once the visible pass writes its depth, the far test would pass on it too.
+        let handle_hidden = pipeline(
+            "viewport_handle_hidden",
+            "sphere_vs",
+            "handle_fs",
+            &sphere_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            wgpu::CompareFunction::Greater,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        );
+        let handle_visible = pipeline(
+            "viewport_handle_visible",
+            "sphere_vs",
+            "handle_fs",
+            &sphere_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            wgpu::CompareFunction::LessEqual,
+            None,
+        );
         // Smooth shading: on a unit sphere the normal is the position.
         let sphere_verts: Vec<MeshVertex> = unit_sphere(SPHERE_DETAIL).iter().flatten().map(|&p| MeshVertex { pos: p, normal: p }).collect();
         let sphere_mesh = (
@@ -308,8 +352,14 @@ impl Renderer {
             sphere_mesh,
             sphere_buffer: None,
             sphere_count: 0,
+            handle_hidden,
+            handle_visible,
+            handle_buffer: None,
+            handle_count: 0,
             meshes: HashMap::new(),
             model_instances: None,
+            support_buffer: None,
+            supports_uploaded: None,
         }
     }
 
@@ -329,8 +379,20 @@ impl Renderer {
         for m in &f.models {
             self.meshes.entry(m.id).or_insert_with(|| upload_mesh(device, &m.mesh));
         }
-        let instances: Vec<ModelInstance> = f.models.iter().map(ModelInstance::new).collect();
+        let mut instances: Vec<ModelInstance> = f.models.iter().map(ModelInstance::new).collect();
+        instances.extend(f.support_colors.map(|c| ModelInstance::placed(&Affine3::IDENTITY, c)));
         write_growing(device, queue, &mut self.model_instances, "viewport_model_instances", bytemuck::cast_slice(&instances));
+
+        let fresh = match (&f.supports, &self.supports_uploaded) {
+            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+            (a, b) => a.is_some() != b.is_some(),
+        };
+        if fresh {
+            let verts: Vec<MeshVertex> =
+                f.supports.iter().flat_map(|m| m.vertices.iter()).map(|v| MeshVertex { pos: v.pos, normal: v.normal }).collect();
+            write_growing(device, queue, &mut self.support_buffer, "viewport_supports", bytemuck::cast_slice(&verts));
+            self.supports_uploaded = f.supports.clone();
+        }
 
         let verts: Vec<LineVertex> = f
             .lines
@@ -340,17 +402,13 @@ impl Renderer {
         write_growing(device, queue, &mut self.line_buffer, "viewport_lines", bytemuck::cast_slice(&verts));
         self.line_count = verts.len() as u32;
 
-        let instances: Vec<SphereInstance> = f
-            .spheres
-            .iter()
-            .filter(|s| s.center.is_finite() && s.radius.is_finite() && s.radius > 0.0)
-            .map(|s| {
-                let [x, y, z] = s.center.to_f32();
-                SphereInstance { center_radius: [x, y, z, s.radius], color: s.color }
-            })
-            .collect();
+        let instances = sphere_instances(&f.spheres, None);
         write_growing(device, queue, &mut self.sphere_buffer, "viewport_spheres", bytemuck::cast_slice(&instances));
         self.sphere_count = instances.len() as u32;
+        // The visible pass draws without blending, so the alpha only fades the hidden one.
+        let instances = sphere_instances(&f.handles, Some(HIDDEN_HANDLE_ALPHA));
+        write_growing(device, queue, &mut self.handle_buffer, "viewport_handles", bytemuck::cast_slice(&instances));
+        self.handle_count = instances.len() as u32;
     }
 
     fn paint(&self, pass: &mut wgpu::RenderPass<'static>, f: &ViewFrame) {
@@ -366,6 +424,15 @@ impl Renderer {
                 for (buffer, count) in &gpu.chunks {
                     pass.set_vertex_buffer(0, buffer.slice(..));
                     pass.draw(0..*count, 0..1);
+                }
+            }
+            if let (Some(mesh), Some((buffer, _))) = (&self.supports_uploaded, &self.support_buffer) {
+                for look in Look::ALL {
+                    let Some(range) = mesh.ranges.get(look.index()).filter(|r| !r.is_empty()) else { continue };
+                    let at = (f.models.len() + look.index()) as u64 * INSTANCE_STRIDE;
+                    pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
+                    pass.set_vertex_buffer(0, buffer.slice(..));
+                    pass.draw(range.clone(), 0..1);
                 }
             }
         }
@@ -384,7 +451,30 @@ impl Renderer {
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..self.line_count, 0..1);
         }
+        if let Some((buffer, _)) = &self.handle_buffer
+            && self.handle_count > 0
+        {
+            for pipeline in [&self.handle_hidden, &self.handle_visible] {
+                pass.set_pipeline(pipeline);
+                pass.set_vertex_buffer(0, self.sphere_mesh.0.slice(..));
+                pass.set_vertex_buffer(1, buffer.slice(..));
+                pass.draw(0..self.sphere_mesh.1, 0..self.handle_count);
+            }
+        }
     }
+}
+
+/// The drawable spheres as instances, their alpha replaced by `alpha` if given.
+fn sphere_instances(spheres: &[Sphere], alpha: Option<f32>) -> Vec<SphereInstance> {
+    spheres
+        .iter()
+        .filter(|s| s.center.is_finite() && s.radius.is_finite() && s.radius > 0.0)
+        .map(|s| {
+            let [x, y, z] = s.center.to_f32();
+            let [r, g, b, a] = s.color;
+            SphereInstance { center_radius: [x, y, z, s.radius], color: [r, g, b, alpha.unwrap_or(a)] }
+        })
+        .collect()
 }
 
 /// Write `bytes` to a per-frame vertex buffer, replacing it with a bigger one when they don't fit.

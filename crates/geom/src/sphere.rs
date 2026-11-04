@@ -1,4 +1,4 @@
-//! Spheres: the ray test for picking them, and a unit sphere to draw them with.
+//! Spheres and capsules: the ray tests for picking them, and a unit sphere to draw them with.
 
 use crate::Vec3;
 
@@ -20,6 +20,36 @@ pub fn ray_sphere(origin: Vec3, dir: Vec3, center: Vec3, radius: f64) -> Option<
     }
     let t = -b - disc.sqrt();
     t.is_finite().then_some(t.max(0.0))
+}
+
+/// The distance along unit `dir` from `origin` to where the ray enters the capsule of radius
+/// `radius` around segment `a b` (a sphere when `a == b`), or `0` when the origin is inside it;
+/// `None` when it misses or the capsule is behind.
+pub fn ray_capsule(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, radius: f64) -> Option<f64> {
+    if !(radius > 0.0) || !radius.is_finite() || !origin.is_finite() || !dir.is_finite() || !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let caps = [ray_sphere(origin, dir, a, radius), ray_sphere(origin, dir, b, radius)].into_iter().flatten().min_by(f64::total_cmp);
+    // The side: an infinite cylinder around the axis, kept between the ends (Ericson, Real-Time
+    // Collision Detection, 5.3.7).
+    let (d, m) = (b - a, origin - a);
+    let (dd, md, nd) = (d.len2(), m.dot(d), dir.dot(d));
+    let k = m.len2() - radius * radius;
+    let c = dd * k - md * md;
+    if dd > crate::EPS && c <= 0.0 && (0.0..=dd).contains(&md) {
+        return Some(0.0);
+    }
+    let qa = dd * dir.len2() - nd * nd;
+    let side = if dd > crate::EPS && qa > crate::EPS * dd {
+        let qb = dd * m.dot(dir) - nd * md;
+        let disc = qb * qb - qa * c;
+        let t = (-qb - disc.max(0.0).sqrt()) / qa;
+        let along = md + t * nd;
+        (disc >= 0.0 && t >= 0.0 && (0.0..=dd).contains(&along)).then_some(t)
+    } else {
+        None
+    };
+    [caps, side].into_iter().flatten().filter(|t| t.is_finite()).min_by(f64::total_cmp)
 }
 
 /// A unit sphere at the origin, outward-wound: an icosahedron with each face split
@@ -92,6 +122,26 @@ mod tests {
             assert_eq!(ray_sphere(Vec3::ZERO, Vec3::Z, c, bad), None);
         }
         assert_eq!(ray_sphere(Vec3::new(f64::NAN, 0.0, 0.0), Vec3::Z, c, 1.0), None);
+    }
+
+    #[test]
+    fn ray_enters_the_capsule() {
+        let (a, b) = (Vec3::new(-5.0, 0.0, 10.0), Vec3::new(5.0, 0.0, 10.0));
+        // The side, from below.
+        assert!((ray_capsule(Vec3::ZERO, Vec3::Z, a, b, 1.0).unwrap() - 9.0).abs() < 1e-12);
+        // An end cap, along the axis.
+        assert!((ray_capsule(Vec3::new(-20.0, 0.0, 10.0), Vec3::X, a, b, 1.0).unwrap() - 14.0).abs() < 1e-12);
+        // Past an end, beside it.
+        assert_eq!(ray_capsule(Vec3::new(7.0, 0.0, 0.0), Vec3::Z, a, b, 1.0), None);
+        assert_eq!(ray_capsule(Vec3::ZERO, -Vec3::Z, a, b, 1.0), None);
+        assert_eq!(ray_capsule(Vec3::new(0.0, 0.0, 10.5), Vec3::Z, a, b, 1.0), Some(0.0));
+        // A zero-length segment is a sphere.
+        assert_eq!(ray_capsule(Vec3::ZERO, Vec3::Z, b, b, 1.0), None);
+        assert_eq!(ray_capsule(Vec3::new(5.0, 0.0, 0.0), Vec3::Z, b, b, 1.0), Some(9.0));
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(ray_capsule(Vec3::ZERO, Vec3::Z, a, b, bad), None);
+        }
+        assert_eq!(ray_capsule(Vec3::ZERO, Vec3::Z, Vec3::new(f64::NAN, 0.0, 0.0), b, 1.0), None);
     }
 
     #[test]

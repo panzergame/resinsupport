@@ -95,7 +95,7 @@ fn supports_are_added_selected_and_deleted() {
     assert!(matches!(s.execute("support.add", &json!({ "model": 99, "point": [2, 2, 0] })), Err(EngineError::BadParams(_))));
 
     // The tip sphere is nearer than the face it sits on.
-    let (picked, t) = s.scene.support_hit(Vec3::new(5.0, 5.0, -50.0), Vec3::Z).unwrap();
+    let (picked, t) = s.scene.support_hit(Vec3::new(5.0, 5.0, -50.0), Vec3::Z, 0.25).unwrap();
     assert_eq!(json!(picked), a);
     assert!(t < hit.t);
 
@@ -235,6 +235,12 @@ fn hostile_params_never_panic() {
         json!({ "preset": "x", "active": 1, "tip": 1, "body": [], "base": "x", "raft": null }),
         json!({ "preset": "light", "tip": { "contact_diameter": 1e308, "contact_shape": 3, "nope": 1 }, "body": { "segments": -1 } }),
         json!({ "active": "heavy", "body": { "segments": 1e20, "diameter": null, "shape": "cube" }, "raft": { "enabled": "yes", "margin": -1 } }),
+        json!({ "parts": "all", "ids": null }),
+        json!({ "joints": [{ "support": 1, "joint": 0, "position": [0, 0, -1] }, { "support": 1, "joint": u64::MAX, "position": [0, 0, 1e308] }] }),
+        json!({ "joints": [{ "support": "1", "joint": -1, "position": "x" }, null], "ids": [u64::MAX] }),
+        json!({ "joints": {}, "ids": [-1] }),
+        json!({ "parts": [{ "support": 1, "joint": 0, "segment": 1 }, { "support": -1, "joint": 1e300 }, null], "mode": "add" }),
+        json!({ "parts": [{ "support": u64::MAX, "segment": u64::MAX }, { "joint": 0 }], "ids": [1] }),
         json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
     ];
     for spec in commands() {
@@ -255,7 +261,229 @@ fn content(s: &Session) -> String {
 
 /// All of it, selection included.
 fn fingerprint(s: &Session) -> String {
-    format!("{} {:?} {:?}", content(s), s.scene.selected_models, s.scene.selected)
+    format!("{} {:?} {:?} {:?}", content(s), s.scene.selected_models, s.scene.selected, s.scene.selected_parts)
+}
+
+/// Axis-aligned boxes `(min, max)` as one mesh, wound outward.
+fn boxes(list: &[([f64; 3], [f64; 3])]) -> resin_geom::Mesh {
+    let mut tris = Vec::new();
+    for (lo, hi) in list {
+        let c = |i: usize| {
+            [if i & 1 == 0 { lo[0] } else { hi[0] }, if i & 2 == 0 { lo[1] } else { hi[1] }, if i & 4 == 0 { lo[2] } else { hi[2] }].map(|v| v as f32)
+        };
+        for [a, b, cc, d] in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] {
+            tris.push([c(a), c(b), c(cc)]);
+            tris.push([c(a), c(cc), c(d)]);
+        }
+    }
+    resin_geom::Mesh::new(tris)
+}
+
+/// Every body segment and the base keep the clearance from every triangle, measured without
+/// the index; no segment leans past the limit; the foot is on the plate.
+fn check_route(s: &Session, r: &crate::Route) {
+    let p = s.support_settings().current();
+    let tris: Vec<[Vec3; 3]> =
+        s.scene.models().iter().flat_map(|m| m.mesh.triangles.iter().map(|t| t.map(|c| m.transform.point(Vec3::from(c))))).collect();
+    let near = |a: Vec3, b: Vec3| tris.iter().map(|t| resin_geom::segment_triangle_distance(a, b, *t)).fold(f64::INFINITY, f64::min);
+    let body_r = p.body.diameter / 2.0 + p.body.clearance;
+    for w in r.body.windows(2) {
+        assert!(near(w[0], w[1]) >= body_r - 1e-9, "{:?} comes within {} of a model", w, near(w[0], w[1]));
+        let lean = (w[0] - w[1]).normalized().unwrap().dot(Vec3::Z).acos().to_degrees();
+        assert!(lean <= p.body.max_angle + 1e-6, "{lean}° leans past the limit");
+    }
+    let foot = *r.body.last().unwrap();
+    assert_eq!(foot.z, 0.0);
+    assert!(near(foot, foot) >= p.base.diameter / 2.0 + p.body.clearance - 1e-9);
+    assert!((r.head.dist(r.contact) - p.tip.length).abs() < 1e-9);
+}
+
+fn routes(s: &Session) -> Vec<crate::Route> {
+    let p = *s.support_settings().current();
+    s.scene.supports().iter().map(|t| crate::route(s.scene.models(), t, &p)).collect()
+}
+
+#[test]
+fn a_support_goes_straight_down_when_it_can() {
+    let mut s = Session::new();
+    let m = s.scene.add("slab".into(), boxes(&[([0.0, 0.0, 10.0], [20.0, 20.0, 12.0])]));
+    s.execute("support.add", &json!({ "model": m, "point": [10, 10, 10], "normal": [0, 0, -1] })).unwrap();
+    let r = &routes(&s)[0];
+    assert_eq!(r.body, vec![Vec3::new(10.0, 10.0, 8.0), Vec3::new(10.0, 10.0, 0.0)]);
+    check_route(&s, r);
+    let listed = s.execute("support.list", &json!({})).unwrap();
+    assert_eq!(listed["supports"][0]["reachable"], true);
+    assert_eq!(listed["supports"][0]["path"], json!([[10.0, 10.0, 10.0], [10.0, 10.0, 8.0], [10.0, 10.0, 0.0]]));
+}
+
+#[test]
+fn joints_and_segments_are_selected_with_their_supports() {
+    let mut s = Session::new();
+    // A slab over a pillar: the support bends once, so it has two joints and two segments.
+    let m = s.scene.add("arch".into(), boxes(&[([-10.0, -10.0, 12.0], [30.0, 30.0, 14.0]), ([8.0, 8.0, 0.0], [12.0, 12.0, 4.0])]));
+    let a = s.execute("support.add", &json!({ "model": m, "point": [10, 10, 12], "normal": [0, 0, -1] })).unwrap()["id"].clone();
+    let b = s.execute("support.add", &json!({ "model": m, "point": [25, 25, 12], "normal": [0, 0, -1] })).unwrap()["id"].clone();
+    assert_eq!(routes(&s)[0].body.len(), 3);
+
+    s.execute("support.select", &json!({ "ids": [b] })).unwrap();
+    // A plain click on a part replaces the supports selected as well.
+    s.execute("support.select", &json!({ "parts": [{ "support": a, "joint": 1 }] })).unwrap();
+    assert!(s.scene.selected.is_empty());
+    s.execute("support.select", &json!({ "parts": [{ "support": a, "segment": 0 }, { "support": a, "joint": 1 }], "mode": "toggle" })).unwrap();
+    s.execute("support.select", &json!({ "parts": [{ "support": b, "segment": 0 }], "ids": [b], "mode": "add" })).unwrap();
+    assert_eq!(s.scene.selected_parts.len(), 2);
+    assert_eq!(json!(s.scene.selected), json!([b]));
+    // A number the route does not have is kept, and listed only while the route has it; the
+    // foot is no joint.
+    s.execute("support.select", &json!({ "parts": [{ "support": a, "joint": 2 }, { "support": a, "segment": 7 }], "mode": "add" })).unwrap();
+    let listed = s.execute("support.list", &json!({})).unwrap();
+    assert_eq!(listed["supports"][0]["selected_segments"], json!([0]));
+    assert_eq!(listed["supports"][0]["selected_joints"], json!([]));
+    assert_eq!(listed["supports"][1]["selected_segments"], json!([0]));
+    assert!(matches!(s.execute("support.select", &json!({ "parts": [{ "support": 99, "joint": 0 }] })), Err(EngineError::BadParams(_))));
+    assert!(matches!(s.execute("support.select", &json!({ "parts": [{ "support": a, "joint": 0, "segment": 0 }] })), Err(EngineError::BadParams(_))));
+    assert!(matches!(s.execute("support.select", &json!({})), Err(EngineError::BadParams(_))));
+    assert_eq!(s.scene.selected_parts.len(), 4, "a failed select changes nothing");
+
+    // Deleting a support drops its parts; undo brings both back.
+    let before = fingerprint(&s);
+    s.execute("support.delete", &json!({ "ids": [a] })).unwrap();
+    assert!(s.scene.selected_parts.iter().all(|(id, _)| json!(id) == b));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(fingerprint(&s), before);
+    s.execute("support.select", &json!({ "ids": [] })).unwrap();
+    assert!(s.scene.selected.is_empty() && s.scene.selected_parts.is_empty());
+}
+
+#[test]
+fn placed_joints_keep_their_path() {
+    let mut s = Session::new();
+    // The arch: a slab over a pillar, so the worked-out route has one knee.
+    let m = s.scene.add("arch".into(), boxes(&[([-10.0, -10.0, 12.0], [30.0, 30.0, 14.0]), ([8.0, 8.0, 0.0], [12.0, 12.0, 4.0])]));
+    let a = s.execute("support.add", &json!({ "model": m, "point": [10, 10, 12], "normal": [0, 0, -1] })).unwrap()["id"].clone();
+    let auto = routes(&s)[0].clone();
+    assert_eq!(auto.body.len(), 3);
+
+    // Moving the knee keeps the head where the search put it, and the foot drops below the knee.
+    let knee = Vec3::new(10.0, 15.0, 4.0);
+    let depth = s.undo_depth();
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": a, "joint": 1, "position": knee }] })).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+    let r = routes(&s)[0].clone();
+    assert_eq!(r.body, vec![auto.body[0], knee, Vec3::new(10.0, 15.0, 0.0)]);
+    assert!(!r.fault, "{r:?}");
+    let listed = s.execute("support.list", &json!({})).unwrap();
+    assert_eq!((listed["supports"][0]["edited"].clone(), listed["supports"][0]["fault"].clone()), (json!(true), json!(false)));
+
+    // The tip follows the model; the corners stay where they were put, so the tip stretches.
+    s.execute("model.place", &json!({ "models": [{ "id": m, "position": [10, 10, 8] }] })).unwrap();
+    let r = routes(&s)[0].clone();
+    assert_eq!(r.body[1], knee);
+    assert!((r.contact.z - 13.0).abs() < 1e-9 && r.head == auto.body[0]);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // A knee pulled out sideways leans past the limit: kept, flagged.
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": a, "joint": 1, "position": [10, 30, 7] }] })).unwrap();
+    assert!(routes(&s)[0].fault);
+    // Into the pillar: flagged too.
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": a, "joint": 1, "position": [10, 10, 6] }] })).unwrap();
+    assert!(routes(&s)[0].fault);
+
+    for bad in [
+        json!([{ "support": a, "joint": 2, "position": [0, 0, 1] }]),
+        json!([{ "support": a, "joint": 0, "position": [0, 0, -1] }]),
+        json!([{ "support": 99, "joint": 0, "position": [0, 0, 1] }]),
+    ] {
+        assert!(matches!(s.execute("support.place_joints", &json!({ "joints": bad })), Err(EngineError::BadParams(_))));
+    }
+
+    // Reset: the search's route again; by default for the supports with something selected.
+    s.execute("support.select", &json!({ "parts": [{ "support": a, "segment": 0 }] })).unwrap();
+    assert_eq!(s.execute("support.reset_route", &json!({})).unwrap()["reset"], json!([a]));
+    assert_eq!(routes(&s)[0], auto);
+    assert_eq!(s.undo_command(), Some("support.reset_route"));
+
+    // A support with no way down gets its head as its one corner, and a new place gives it a way.
+    let low = s.scene.add("low".into(), boxes(&[([40.0, 0.0, 2.0], [50.0, 10.0, 4.0])]));
+    let b = s.execute("support.add", &json!({ "model": low, "point": [49.5, 5, 2], "normal": [0, 0, -1] })).unwrap()["id"].clone();
+    assert!(!routes(&s)[1].reachable());
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": b, "joint": 0, "position": [52, 5, 1.5] }] })).unwrap();
+    let r = &routes(&s)[1];
+    assert!(r.reachable() && r.body.len() == 2);
+}
+
+#[test]
+fn a_tip_on_a_side_wall_leans_down_and_clears_it() {
+    let mut s = Session::new();
+    let m = s.scene.add("block".into(), boxes(&[([0.0, 0.0, 5.0], [10.0, 10.0, 25.0])]));
+    s.execute("support.add", &json!({ "model": m, "point": [10, 5, 15], "normal": [1, 0, 0] })).unwrap();
+    let r = &routes(&s)[0];
+    assert!(r.reachable());
+    // Medium: a 2 mm tip leaning 40° from straight down ends 2 sin 40° = 1.286 mm off the wall,
+    // past the body's 0.5 mm radius and 0.5 mm clearance, so the body goes straight down.
+    assert!((r.head.x - 10.0 - 2.0 * 40f64.to_radians().sin()).abs() < 1e-9);
+    assert_eq!(r.body.len(), 2);
+    check_route(&s, r);
+}
+
+#[test]
+fn a_support_bends_round_what_is_below_it() {
+    let mut s = Session::new();
+    // A slab over a pillar standing on the plate, right under the tip.
+    let m = s.scene.add("arch".into(), boxes(&[([-10.0, -10.0, 12.0], [30.0, 30.0, 14.0]), ([8.0, 8.0, 0.0], [12.0, 12.0, 4.0])]));
+    s.execute("support.add", &json!({ "model": m, "point": [10, 10, 12], "normal": [0, 0, -1] })).unwrap();
+    let r = &routes(&s)[0];
+    assert_eq!(r.body.len(), 3, "one knee: {:?}", r.body);
+    check_route(&s, r);
+    // No longer than it must be: the vertical drop beside the pillar is at most a few steps out.
+    let length: f64 = r.body.windows(2).map(|w| w[0].dist(w[1])).sum();
+    assert!(length < 14.0, "{length}");
+
+    // Straight down only: nowhere to go. A settings change, so no undo step.
+    let undo = s.undo_depth();
+    s.execute("support.configure", &json!({ "body": { "max_angle": 0 } })).unwrap();
+    assert!(!routes(&s)[0].reachable());
+    assert_eq!(s.execute("support.list", &json!({})).unwrap()["supports"][0]["reachable"], false);
+    assert_eq!(s.undo_depth(), undo);
+
+    // More clearance than the gap allows near the pillar moves the knee further out.
+    s.execute("support.configure", &json!({ "body": { "max_angle": 40, "clearance": 1.5 } })).unwrap();
+    let wide = &routes(&s)[0];
+    check_route(&s, wide);
+    let out = |r: &crate::Route| Vec3::new(r.body[2].x - 10.0, r.body[2].y - 10.0, 0.0).len();
+    assert!(out(wide) > out(r));
+}
+
+#[test]
+fn a_tip_with_no_way_down_is_kept_but_unreachable() {
+    let mut s = Session::new();
+    // The inner ceiling of a closed hollow box, and a tip too near the plate for a base.
+    let m = s.scene.add("box".into(), boxes(&[([0.0, 0.0, 0.0], [20.0, 20.0, 20.0]), ([2.0, 2.0, 2.0], [18.0, 18.0, 18.0])]));
+    let low = s.scene.add("low".into(), boxes(&[([40.0, 0.0, 2.0], [50.0, 10.0, 4.0])]));
+    s.execute("support.add", &json!({ "model": m, "point": [10, 10, 18], "normal": [0, 0, -1] })).unwrap();
+    s.execute("support.add", &json!({ "model": low, "point": [45, 5, 2], "normal": [0, 0, -1] })).unwrap();
+    s.execute("support.add", &json!({ "model": low, "point": [45, 5, 4], "normal": [0, 0, 1] })).unwrap();
+    assert!(routes(&s).iter().all(|r| !r.reachable()));
+    assert_eq!(s.scene.supports().len(), 3);
+    let listed = s.execute("support.list", &json!({})).unwrap();
+    assert_eq!(listed["supports"][0]["path"].as_array().map(Vec::len), Some(2), "the tip alone");
+}
+
+#[test]
+fn moving_a_model_moves_its_supports_routes() {
+    let mut s = Session::new();
+    let m = s.scene.add("slab".into(), boxes(&[([0.0, 0.0, 10.0], [20.0, 20.0, 12.0])]));
+    let other = s.scene.add("pillar".into(), boxes(&[([30.0, 30.0, 0.0], [34.0, 34.0, 3.0])]));
+    s.execute("support.add", &json!({ "model": m, "point": [10, 10, 10], "normal": [0, 0, -1] })).unwrap();
+    assert_eq!(routes(&s)[0].body.len(), 2);
+    // The other model's pillar moved under the tip blocks the straight path.
+    s.execute("model.move", &json!({ "ids": [other], "by": [-22, -22, 0] })).unwrap();
+    let r = &routes(&s)[0];
+    assert_eq!(r.body.len(), 3);
+    check_route(&s, r);
+    // Lifting the slab carries the tip and lengthens the support.
+    s.execute("model.move", &json!({ "ids": [m], "by": [0, 0, 5] })).unwrap();
+    assert_eq!(routes(&s)[0].head.z, 13.0);
 }
 
 /// Two cubes (the first selected, moved off the second) and a selected tip on the first.
@@ -299,7 +527,9 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
             Some(json!({ "preset": "light", "active": "heavy", "tip": { "contact_diameter": 0.3 }, "raft": { "enabled": false } }))
         }
         "support.reset_preset" => Some(json!({ "preset": "medium" })),
-        "support.select" => Some(json!({ "ids": [], "mode": "replace" })),
+        "support.place_joints" => Some(json!({ "joints": [{ "support": tip, "joint": 0, "position": [6, 5, 3] }] })),
+        "support.reset_route" => Some(json!({ "ids": [tip] })),
+        "support.select" => Some(json!({ "parts": [{ "support": tip, "joint": 0 }], "mode": "add" })),
         "support.settings" => Some(json!({})),
         "view.fit" => Some(json!({ "aspect": 1.5 })),
         "view.projection" => Some(json!({ "mode": "toggle" })),

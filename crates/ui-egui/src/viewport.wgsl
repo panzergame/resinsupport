@@ -105,7 +105,7 @@ struct SphereIn {
 struct SphereOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) color: vec4<f32>,
 };
 
 @vertex
@@ -114,17 +114,30 @@ fn sphere_vs(v: SphereIn) -> SphereOut {
     let world = v.center_radius.xyz + v.pos * v.center_radius.w;
     out.pos = frame.view_proj * vec4<f32>(world, 1.0);
     out.normal = v.normal;
-    out.color = v.color.rgb;
+    out.color = v.color;
     return out;
+}
+
+fn sphere_shade(in: SphereOut) -> vec3<f32> {
+    let n = normalize(in.normal);
+    let key = max(dot(n, frame.light.xyz), 0.0);
+    let fill = max(dot(n, frame.back.xyz), 0.0);
+    return encode(in.color.rgb * (0.25 + 0.55 * key + 0.3 * fill));
 }
 
 @fragment
 fn sphere_fs(in: SphereOut) -> @location(0) vec4<f32> {
-    let n = normalize(in.normal);
-    let key = max(dot(n, frame.light.xyz), 0.0);
-    let fill = max(dot(n, frame.back.xyz), 0.0);
-    let c = in.color * (0.25 + 0.55 * key + 0.3 * fill);
-    return vec4<f32>(encode(c), 1.0);
+    return vec4<f32>(sphere_shade(in), 1.0);
+}
+
+// Joint handles, drawn over everything: only the near side, so a handle without depth writes
+// doesn't show its far side through itself; the instance's alpha fades the part behind the scene.
+@fragment
+fn handle_fs(in: SphereOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if !front {
+        discard;
+    }
+    return vec4<f32>(sphere_shade(in), in.color.a);
 }
 
 // ---- lines: grid and axes ----

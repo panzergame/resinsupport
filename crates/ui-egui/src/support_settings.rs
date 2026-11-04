@@ -221,6 +221,7 @@ fn body_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {
     );
     shape_row(ui, t, "supports.body.shape", "body_shape", &mut p.body.shape, &BodyShape::ALL, body_name);
     number_row(ui, t, "supports.body.max_angle", &mut p.body.max_angle, "body", "max_angle", "°");
+    number_row(ui, t, "supports.body.clearance", &mut p.body.clearance, "body", "clearance", " mm");
     ui_kit::row(ui, t, i18n::tr("supports.body.segments"), |ui| {
         ui.add_sized([ui.available_width(), CONTROL_HEIGHT], DragValue::new(&mut p.body.segments).range(SEGMENTS).speed(0.1));
     });

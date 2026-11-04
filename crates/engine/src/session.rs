@@ -70,8 +70,8 @@ impl Model {
     }
 }
 
-/// A support's tip: where it touches a model's surface.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A support: where its tip touches a model's surface, and the path the user gave it, if any.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Support {
     pub id: u64,
     pub model: u64,
@@ -79,14 +79,40 @@ pub struct Support {
     pub tip: Vec3,
     /// The surface's outward unit normal at the tip, in the scene.
     pub normal: Vec3,
+    /// The body's corners the user placed (the head, then each knee), in the scene; the foot
+    /// drops straight down from the last. `None` while the route is worked out from the tip.
+    /// They stay where they were put: moving the model carries the tip, not them.
+    pub corners: Option<Vec<Vec3>>,
     /// The same in the model's own coordinates: what the tip keeps as the model is placed.
     local_tip: Vec3,
     local_normal: Vec3,
 }
 
-impl Support {
-    /// The tip's contact sphere, in millimetres. Fixed until supports get settings.
-    pub const TIP_DIAMETER: f64 = 0.5;
+/// A part of a support, numbered along its route's body ([`crate::Route::body`]): joint `i` is
+/// corner `i` (the head is 0, a knee 1), segment `i` runs from corner `i` to corner `i + 1`.
+/// Routes are derived, so a number can outlive the route it named: anything reading one skips a
+/// number the route no longer has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SupportPart {
+    Joint(u32),
+    Segment(u32),
+}
+
+impl SupportPart {
+    /// The corners of `body` it spans, if the route still has it: one for a joint (never the
+    /// foot), two for a segment.
+    pub fn corners(self, body: &[Vec3]) -> Option<(Vec3, Option<Vec3>)> {
+        match self {
+            SupportPart::Joint(i) => {
+                let i = i as usize;
+                (i + 1 < body.len()).then(|| body.get(i).map(|&p| (p, None))).flatten()
+            }
+            SupportPart::Segment(i) => {
+                let i = i as usize;
+                Some((*body.get(i)?, Some(*body.get(i + 1)?)))
+            }
+        }
+    }
 }
 
 /// Everything an undo step puts back: what is in the scene and what is selected. The camera is
@@ -99,6 +125,8 @@ pub struct Scene {
     supports: Vec<Support>,
     /// Selected supports, by id; only ids in `supports`.
     pub selected: BTreeSet<u64>,
+    /// Selected parts of supports: (support id, part); only ids in `supports`.
+    pub selected_parts: BTreeSet<(u64, SupportPart)>,
     /// Selected models, by id; only ids in `models`.
     pub selected_models: BTreeSet<u64>,
     next_id: u64,
@@ -181,8 +209,26 @@ impl Scene {
         let local_normal = inv.normal(normal).unwrap_or(normal);
         self.next_support_id += 1;
         self.revision += 1;
-        self.supports.push(Support { id: self.next_support_id, model, tip, normal, local_tip, local_normal });
+        self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: None, local_tip, local_normal });
         Ok(self.next_support_id)
+    }
+    /// Give each listed support the corners the user placed, or (`None`) its worked-out route
+    /// back. All or nothing: an unknown support changes nothing.
+    pub(crate) fn set_corners(&mut self, corners: Vec<(u64, Option<Vec<Vec3>>)>) -> Result<()> {
+        if let Some((id, _)) = corners.iter().find(|(id, _)| !self.supports.iter().any(|s| s.id == *id)) {
+            return Err(EngineError::BadParams(format!("no support {id}")));
+        }
+        // Setting what is already there must not bump: it would make an empty undo step.
+        if corners.iter().all(|(id, c)| self.supports.iter().any(|s| s.id == *id && s.corners == *c)) {
+            return Ok(());
+        }
+        self.revision += 1;
+        for (id, c) in corners {
+            if let Some(s) = self.supports.iter_mut().find(|s| s.id == id) {
+                s.corners = c;
+            }
+        }
+        Ok(())
     }
     /// Remove these models and their supports; whether any model went.
     pub(crate) fn remove_models(&mut self, gone: impl Fn(u64) -> bool) -> bool {
@@ -217,6 +263,7 @@ impl Scene {
     fn prune_selection(&mut self) {
         let supports = &self.supports;
         self.selected.retain(|id| supports.iter().any(|s| s.id == *id));
+        self.selected_parts.retain(|(id, _)| supports.iter().any(|s| s.id == *id));
         let models = &self.models;
         self.selected_models.retain(|id| models.iter().any(|m| m.id == *id));
     }
@@ -234,9 +281,9 @@ impl Scene {
             })
             .min_by(|a, b| a.1.t.total_cmp(&b.1.t))
     }
-    /// The nearest support tip along the ray: its id and the distance to it.
-    pub fn support_hit(&self, origin: Vec3, dir: Vec3) -> Option<(u64, f64)> {
-        let r = Support::TIP_DIAMETER / 2.0;
+    /// The nearest support tip along the ray, a sphere of `r` around its contact: its id and the
+    /// distance to it.
+    pub fn support_hit(&self, origin: Vec3, dir: Vec3, r: f64) -> Option<(u64, f64)> {
         self.supports.iter().filter_map(|s| resin_geom::ray_sphere(origin, dir, s.tip, r).map(|t| (s.id, t))).min_by(|a, b| a.1.total_cmp(&b.1))
     }
 }

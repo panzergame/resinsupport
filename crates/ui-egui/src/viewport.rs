@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
-use resin_engine::Support;
 use resin_engine::geom::Vec3;
 use resin_engine::render::Overlay;
 
 use crate::gpu::{ModelDraw, Sphere, ViewFrame, ViewportCallback};
+use crate::support_routes::SupportMesh;
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
 use crate::{EditMode, ResinApp, gizmo, i18n, navigation, objects, supports, transform};
@@ -22,18 +22,21 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let scene_slot = painter.add(egui::Shape::Noop);
     let gizmo_id = egui::Id::new("transform_gizmo");
     // A press on a gizmo handle belongs to it: neither the camera nor picking may take it.
-    let triad = transform::triad(app);
+    let pressed_triad = triad(app);
     let pressed_on = ui.input(|i| i.pointer.press_origin().filter(|_| i.pointer.primary_pressed()));
     let proj = navigation::Proj { cam: app.session.camera, rect };
     app.gizmo_grab = gizmo::dragging(ui.ctx(), gizmo_id)
-        || triad.zip(pressed_on).is_some_and(|(t, p)| resp.contains_pointer() && gizmo::contains_pointer(&proj, &t, p));
+        || pressed_triad.zip(pressed_on).is_some_and(|(t, p)| resp.contains_pointer() && gizmo::contains_pointer(&proj, &t, p));
     navigation::handle(app, ui, rect, &resp);
     let proj = navigation::Proj { cam: app.session.camera, rect };
-    if let Some(t) = transform::triad(app) {
+    if let Some(t) = triad(app) {
         let free = ui.input(|i| i.modifiers.ctrl || i.modifiers.command || i.modifiers.alt);
         let step = gizmo::snap_step(app.session.camera.half_height());
         if let Some(g) = gizmo::show(ui, &painter, &proj, gizmo_id, &t, step, free, tokens) {
-            transform::drag(app, g);
+            match app.mode {
+                EditMode::Object => transform::drag(app, g),
+                EditMode::Support => supports::drag(app, g),
+            }
         }
     } else {
         gizmo::cancel(ui.ctx(), gizmo_id);
@@ -50,9 +53,16 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let aspect = f64::from(rect.width().max(1.0)) / f64::from(rect.height().max(1.0));
     let overlay = Overlay::build(&cam, aspect, &tokens.overlay());
     let r = overlay.radius;
-    let spheres = support_spheres(app, tokens);
-    let mut bounds = app.session.scene.bounds();
-    for s in &spheres {
+    let preset = *app.session.support_settings().current();
+    if app.routes.update(&app.session.scene, &preset) {
+        ui.ctx().request_repaint();
+    }
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset);
+    let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
+    let spheres = support_spheres(app, &support_mesh, &colors, tokens);
+    let handles = joint_handles(app, &support_mesh, tokens);
+    let mut bounds = app.session.scene.bounds().union(&support_mesh.bounds);
+    for s in spheres.iter().chain(&handles) {
         let r = f64::from(s.radius);
         bounds.add(s.center - Vec3::new(r, r, r));
         bounds.add(s.center + Vec3::new(r, r, r));
@@ -72,7 +82,10 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         grid_radius: overlay.radius,
         lines: overlay.lines,
         spheres,
+        handles,
         models: model_draws(app, tokens),
+        supports: Some(support_mesh),
+        support_colors: colors,
     };
     painter.set(scene_slot, egui_wgpu::Callback::new_paint_callback(rect, ViewportCallback(frame)));
 
@@ -98,6 +111,14 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     }
 }
 
+/// The gizmo of the edit mode: the transform tool's, or the arrows on selected support joints.
+fn triad(app: &ResinApp) -> Option<gizmo::Triad> {
+    match app.mode {
+        EditMode::Object => transform::triad(app),
+        EditMode::Support => supports::triad(app),
+    }
+}
+
 /// Every model, the selected ones in their own colour while in Object mode.
 fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
     let scene = &app.session.scene;
@@ -112,24 +133,24 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
         .collect()
 }
 
-/// Placed tips, the selected ones in their own colour, and where a tip would go under the
+/// The supports' round joints in their look's colour, and where a tip would go under the
 /// pointer.
-fn support_spheres(app: &ResinApp, tokens: &Tokens) -> Vec<Sphere> {
-    let radius = (Support::TIP_DIAMETER / 2.0) as f32;
-    let scene = &app.session.scene;
-    let mut out: Vec<Sphere> = scene
-        .supports()
-        .iter()
-        .map(|s| Sphere {
-            center: s.tip,
-            radius,
-            color: linear(if scene.selected.contains(&s.id) { tokens.support_selected } else { tokens.support }),
-        })
-        .collect();
+fn support_spheres(app: &ResinApp, mesh: &SupportMesh, colors: &[[f32; 4]; 3], tokens: &Tokens) -> Vec<Sphere> {
+    let mut out: Vec<Sphere> =
+        mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect();
     if let Some(Hover::Surface { point, .. }) = app.supports.hover {
-        out.push(Sphere { center: point, radius, color: linear(tokens.support_preview) });
+        out.push(Sphere { center: point, radius: supports::tip_radius(app) as f32, color: linear(tokens.support_preview) });
     }
     out
+}
+
+/// The selected joints' handles, in Support edition only: the joints are what it edits.
+fn joint_handles(app: &ResinApp, mesh: &SupportMesh, tokens: &Tokens) -> Vec<Sphere> {
+    if app.mode != EditMode::Support {
+        return Vec::new();
+    }
+    let color = linear(tokens.support_selected);
+    mesh.handles.iter().filter(|h| h.selected).map(|h| Sphere { center: h.center, radius: h.radius, color }).collect()
 }
 
 fn fmt_step(step: f64) -> String {

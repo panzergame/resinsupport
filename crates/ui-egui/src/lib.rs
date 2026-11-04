@@ -11,6 +11,7 @@ pub mod objects;
 pub mod preferences;
 pub mod prefs;
 pub mod prefs_writer;
+pub mod support_routes;
 pub mod support_settings;
 pub mod supports;
 pub mod theme;
@@ -67,6 +68,8 @@ pub struct ResinApp {
     pub(crate) prefs_page: usize,
     pub(crate) nav: navigation::NavState,
     pub(crate) supports: supports::SupportTool,
+    /// Every support's route to the plate, and the solids it is drawn with.
+    pub(crate) routes: support_routes::RouteCache,
     pub(crate) viewport_rect: Option<egui::Rect>,
     anim: Option<CameraAnim>,
     /// egui's clock this frame, for camera animations.
@@ -111,6 +114,7 @@ impl ResinApp {
             prefs_page: 0,
             nav: Default::default(),
             supports: Default::default(),
+            routes: Default::default(),
             viewport_rect: None,
             anim: None,
             time: 0.0,
@@ -338,7 +342,7 @@ impl ResinApp {
             ui.separator();
             let selected = match self.mode {
                 EditMode::Object => scene.selected_models.len(),
-                EditMode::Support => scene.selected.len(),
+                EditMode::Support => scene.selected.len() + scene.selected_parts.len(),
             };
             ui.label(i18n::format(
                 "status.summary",
@@ -346,6 +350,10 @@ impl ResinApp {
             ));
             if selected > 0 {
                 ui.label(i18n::format("status.selected", &[("n", &selected)]));
+            }
+            let unreachable = self.routes.unreachable();
+            if unreachable > 0 {
+                ui.colored_label(tokens.support_unreachable, i18n::count("status.unreachable", unreachable, &[]));
             }
             if let Some((msg, error)) = &self.status {
                 ui.separator();
