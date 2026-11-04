@@ -1,6 +1,7 @@
 //! The command registry. A command id is dotted and lower-case: `<area>.<thing>[.<variant>]`.
 
 mod edit;
+mod file;
 mod model;
 mod support;
 mod support_settings;
@@ -20,8 +21,8 @@ pub struct CommandSpec {
     /// The parameters, for documentation and error messages.
     pub params: &'static str,
     pub run: fn(&mut Session, &Value) -> Result<Value>,
-    /// A run that changes the scene is an undo step. True unless `noundo`: only undo and redo
-    /// opt out; a command that leaves the scene alone (the view, the support settings) makes no
+    /// A run that changes the scene is an undo step. True unless `noundo`: only undo, redo and
+    /// opening a project (which starts a fresh history) opt out; a command that leaves the scene alone (the view, the support settings) makes no
     /// step anyway.
     pub undoable: bool,
 }
@@ -47,6 +48,12 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("edit.undo", "Undo", edit::undo).noundo(),
         CommandSpec::new("file.import_stl", "Import STL…", model::import_stl)
             .params("path: string, fit?: bool (default true), lifted?: bool (default false): its lowest point at the lift height"),
+        CommandSpec::new("file.open", "Open Project", file::open).noundo().params(
+            "path: a .rsup project; its models and supports replace the scene's, unlifted, where they were saved, the view is fitted, and the undo history starts afresh",
+        ),
+        CommandSpec::new("file.save", "Save Project", file::save).params(
+            "path?: string ending in .rsup (default the scene's file); the models (mesh, name, placement) and supports (tip, normal, placed corners), not the lift or any setting; the file it replaces is kept as <path>.bak",
+        ),
         CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
         CommandSpec::new("model.lift", "Lift Models", model::lift).params(
             "lifted: bool (true keeps their lowest points at the lift height, false leaves them where they are), ids?: [integer] (default the selected models)",

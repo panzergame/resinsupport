@@ -3,6 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use resin_geom::{Aabb3, Affine3, Mesh, MeshIndex, Placement, RayHit, Vec3};
+use resin_io::{Project, ProjectModel, ProjectSupport};
 use resin_render::Camera;
 use serde_json::Value;
 
@@ -199,6 +200,9 @@ impl Scene {
         self.models.iter().filter(|m| ids.contains(&m.id)).fold(Aabb3::EMPTY, |b, m| b.union(&m.bounds))
     }
     pub(crate) fn add(&mut self, name: String, mesh: Mesh) -> u64 {
+        self.add_shared(name, Arc::new(mesh))
+    }
+    fn add_shared(&mut self, name: String, mesh: Arc<Mesh>) -> u64 {
         self.next_id += 1;
         self.revision += 1;
         let bounds = mesh.bounds();
@@ -207,7 +211,7 @@ impl Scene {
         self.models.push(Model {
             id: self.next_id,
             name,
-            mesh: Arc::new(mesh),
+            mesh,
             index,
             pivot,
             placement: Placement::at(pivot),
@@ -328,6 +332,58 @@ impl Scene {
             self.revision += 1;
         }
     }
+    /// What a project file keeps: each model's mesh, name and placement, and each support's tip
+    /// and normal on its model and placed corners. Not the lift (a model setting), ids or the
+    /// selection.
+    pub fn project(&self) -> Project {
+        let models = self.models.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement }).collect();
+        let supports = self
+            .supports
+            .iter()
+            .filter_map(|s| {
+                let model = self.models.iter().position(|m| m.id == s.model)?;
+                Some(ProjectSupport { model, tip: s.local_tip, normal: s.local_normal, corners: s.corners.clone() })
+            })
+            .collect();
+        Project { models, supports }
+    }
+    /// Become the project `p`: everything in the scene goes, its models and
+    /// supports come in with new ids, unlifted, exactly where they were saved. The lift height
+    /// stays. Fails, half done, on a placement or support the scene would refuse: the caller puts
+    /// the scene back, as [`Session::execute`] does.
+    pub(crate) fn adopt(&mut self, p: Project) -> Result<()> {
+        self.models.clear();
+        self.supports.clear();
+        self.prune_selection();
+        self.revision += 1;
+        let mut ids = Vec::with_capacity(p.models.len());
+        for pm in p.models {
+            let id = self.add_shared(pm.name, pm.mesh);
+            let m = self.model(id).ok_or_else(|| EngineError::Internal(format!("model {id} went missing")))?;
+            let (placement, transform, bounds) = m.placed(pm.placement, None)?;
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
+                m.placement = placement;
+                m.transform = transform;
+                m.bounds = bounds;
+            }
+            ids.push(id);
+        }
+        for ps in p.supports {
+            let bad = |why: &str| EngineError::Failed(format!("a support in the file {why}"));
+            let model = *ids.get(ps.model).ok_or_else(|| bad("names no model"))?;
+            let m = self.model(model).ok_or_else(|| bad("names no model"))?;
+            let local_normal = ps.normal.normalized().ok_or_else(|| bad("has no normal"))?;
+            let tip = m.transform.point(ps.tip);
+            let normal = m.transform.normal(local_normal).ok_or_else(|| bad("has no normal"))?;
+            let inside = |p: &Vec3| p.is_finite() && p.x.abs() <= MAX_EXTENT && p.y.abs() <= MAX_EXTENT && p.z.abs() <= MAX_EXTENT;
+            if !inside(&tip) || !ps.corners.as_ref().is_none_or(|c| !c.is_empty() && c.iter().all(inside)) {
+                return Err(bad(&format!("is outside the {MAX_EXTENT} mm workspace")));
+            }
+            self.next_support_id += 1;
+            self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: ps.corners, local_tip: ps.tip, local_normal });
+        }
+        Ok(())
+    }
     /// Become `older` (an undo or redo step). Ids and the revision only ever grow: a model id is
     /// never reused for another mesh (the GPU keys meshes on it), and a cache keyed on the
     /// revision never mistakes the restored scene for one it has seen.
@@ -400,6 +456,8 @@ pub struct Session {
     /// edit never changes a setting. Changed only through validated commands or the setter.
     pub(crate) support_settings: SupportSettings,
     pub(crate) history: History,
+    /// The scene's file and the scene revision last saved to or opened from it.
+    pub(crate) file: Option<(String, u64)>,
 }
 
 impl Session {
@@ -464,6 +522,16 @@ impl Session {
         }
     }
 
+    /// Forget every undo and redo step: what came before is out of reach. The serial keeps
+    /// counting, so a [`Session::history_mark`] taken earlier never names a later step.
+    pub(crate) fn clear_history(&mut self) {
+        self.history.undo.clear();
+        self.history.redo.clear();
+        if self.history.open.is_some() {
+            self.history.open = Some(false);
+        }
+    }
+
     /// Make every command until [`Session::end_step`] one undo step: a drag, or a delete of
     /// several models. Its label is the first command's. Opening a step already open does
     /// nothing.
@@ -520,6 +588,25 @@ impl Session {
 
     pub fn redo_depth(&self) -> usize {
         self.history.redo.len()
+    }
+
+    /// The file the scene was opened from or last saved to.
+    pub fn file(&self) -> Option<&str> {
+        self.file.as_ref().map(|(path, _)| path.as_str())
+    }
+
+    /// Whether closing now would lose work: the scene changed since it was saved or opened, or,
+    /// never saved, it has models.
+    pub fn modified(&self) -> bool {
+        match &self.file {
+            Some((_, revision)) => *revision != self.scene.revision(),
+            None => !self.scene.models().is_empty(),
+        }
+    }
+
+    /// The scene is now what the file at `path` holds.
+    pub(crate) fn mark_saved(&mut self, path: String) {
+        self.file = Some((path, self.scene.revision()));
     }
 
     /// Set the lift height (the stored one, at start), moving lifted models. Outside the undo

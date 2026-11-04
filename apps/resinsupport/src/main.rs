@@ -7,9 +7,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-Usage: resinsupport [OPTIONS] [FILE.stl]...
+Usage: resinsupport [OPTIONS] [FILE.stl | PROJECT.rsup]...
 
-Prepares STL models for resin printers. Each FILE is imported when the window opens.
+Prepares STL models for resin printers. A PROJECT (the last one given) is opened when the
+window opens, then each FILE is imported.
 
 Options:
   -h, --help     Print this help and exit
@@ -55,8 +56,8 @@ fn usable(files: Vec<PathBuf>) -> Vec<PathBuf> {
         .filter(|f| {
             let problem = if !f.is_file() {
                 Some("no such file")
-            } else if !f.extension().is_some_and(|e| e.eq_ignore_ascii_case("stl")) {
-                Some("not an .stl file")
+            } else if !f.extension().is_some_and(|e| e.eq_ignore_ascii_case("stl") || e.eq_ignore_ascii_case("rsup")) {
+                Some("not an .stl or .rsup file")
             } else {
                 None
             };
@@ -134,10 +135,11 @@ mod tests {
     fn missing_and_foreign_files_are_left_out() {
         let dir = std::env::temp_dir().join(format!("resinsupport-cli-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (stl, txt) = (dir.join("part.StL"), dir.join("notes.txt"));
+        let (stl, txt, project) = (dir.join("part.StL"), dir.join("notes.txt"), dir.join("plate.rsup"));
         std::fs::write(&stl, b"solid x\nendsolid x\n").unwrap();
         std::fs::write(&txt, b"").unwrap();
-        assert_eq!(usable(vec![stl.clone(), txt, dir.join("gone.stl"), dir.clone()]), vec![stl]);
+        std::fs::write(&project, b"").unwrap();
+        assert_eq!(usable(vec![stl.clone(), txt, dir.join("gone.stl"), dir.clone(), project.clone()]), vec![stl, project]);
         std::fs::remove_dir_all(dir).ok();
     }
 }

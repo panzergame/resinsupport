@@ -84,6 +84,11 @@ pub struct ResinApp {
     /// Restore defaults was clicked: its confirmation is open.
     pub(crate) confirm_reset: bool,
     prefs_writer: prefs_writer::PrefsWriter,
+    /// The window title last sent, so it is sent only when it changes.
+    title: String,
+    /// A project waiting for its confirmation (the scene has unsaved changes, and opening can't
+    /// be undone), and the STLs to import into it once open.
+    pub(crate) pending_open: Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>,
 }
 
 impl ResinApp {
@@ -127,12 +132,14 @@ impl ResinApp {
             settings_tab: 0,
             confirm_reset: false,
             prefs_writer: writer,
+            title: String::new(),
+            pending_open: None,
         };
         app.keep_settings();
         app
     }
 
-    /// Import these files once the window is up.
+    /// Import these files (open a project) once the window is up.
     pub fn open_later(&mut self, paths: impl IntoIterator<Item = std::path::PathBuf>) {
         self.pending.extend(paths);
     }
@@ -264,8 +271,118 @@ impl ResinApp {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_dialog(&mut self) {
+        let dialog = rfd::FileDialog::new().add_filter(i18n::tr("menu.project_filter"), &[PROJECT, "RSUP"]).set_title(i18n::tr("menu.open_title"));
+        if let Some(path) = dialog.pick_file() {
+            self.open_project(path, Vec::new());
+        }
+    }
+
+    /// Replace the scene with the project at `path`, then import `then` into it. Opening starts a
+    /// fresh undo history, so unsaved changes wait for [`ResinApp::confirm_open`] first.
+    pub(crate) fn open_project(&mut self, path: std::path::PathBuf, then: Vec<std::path::PathBuf>) {
+        if self.session.modified() {
+            self.pending_open = Some((path, then));
+            return;
+        }
+        self.pending_open = None;
+        self.open_now(&path);
+        self.import_all(then);
+    }
+
+    /// Ask before an open drops unsaved changes.
+    fn confirm_open(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some((path, _)) = &self.pending_open else { return };
+        let message = i18n::format("open.discard_confirm", &[("name", &file_name(path))]);
+        let confirm = ui_kit::Confirm {
+            id: egui::Id::new("open_discard"),
+            icon: "import",
+            title: i18n::tr("open.discard_title"),
+            message: &message,
+            ok: "open.discard_ok",
+        };
+        match confirm.show(ctx, t) {
+            ui_kit::Action::Ok => {
+                if let Some((path, then)) = self.pending_open.take() {
+                    self.open_now(&path);
+                    self.import_all(then);
+                }
+            }
+            ui_kit::Action::Cancel => self.pending_open = None,
+            ui_kit::Action::Reset | ui_kit::Action::None => {}
+        }
+    }
+
+    fn open_now(&mut self, path: &std::path::Path) {
+        let Some(path_str) = path.to_str() else {
+            self.status = Some((i18n::format("status.bad_utf8", &[("path", &path.display())]), true));
+            return;
+        };
+        // What the tool remembers describes models the open removes.
+        self.tool = None;
+        let from = self.session.camera;
+        if self.run("file.open", json!({ "path": path_str })).is_some() {
+            if !self.session.scene.models().is_empty() {
+                self.run("view.fit", json!({ "aspect": self.aspect() }));
+            }
+            self.animate_from(from);
+            self.status = Some((i18n::format("status.opened", &[("name", &file_name(path))]), false));
+        }
+    }
+
+    /// Save to the scene's file, or ask where (`ask`, or the scene has none: Save As).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn save_project(&mut self, ask: bool) {
+        let path = match self.session.file() {
+            Some(p) if !ask => std::path::PathBuf::from(p),
+            current => {
+                let name = current.and_then(|p| std::path::Path::new(p).file_name()).map_or_else(
+                    || format!("{}.{PROJECT}", self.session.scene.models().first().map_or(i18n::tr("menu.untitled"), |m| m.name.as_str())),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                let mut dialog = rfd::FileDialog::new()
+                    .add_filter(i18n::tr("menu.project_filter"), &[PROJECT, "RSUP"])
+                    .set_title(i18n::tr("menu.save_title"))
+                    .set_file_name(name);
+                if let Some(dir) = current.and_then(|p| std::path::Path::new(p).parent()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                let Some(path) = dialog.save_file() else { return };
+                with_project_extension(path)
+            }
+        };
+        let Some(path_str) = path.to_str() else {
+            self.status = Some((i18n::format("status.bad_utf8", &[("path", &path.display())]), true));
+            return;
+        };
+        if self.run("file.save", json!({ "path": path_str })).is_some() {
+            self.status = Some((i18n::format("status.saved", &[("name", &file_name(&path))]), false));
+        }
+    }
+
+    /// The window title: the project's file name, marked while it has unsaved changes.
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let name = self.session.file().map(|p| file_name(std::path::Path::new(p)));
+        let mark = if self.session.modified() { "*" } else { "" };
+        let title = match name {
+            Some(n) => format!("{n}{mark} — ResinSupport"),
+            None => format!("{}{mark} — ResinSupport", i18n::tr("menu.untitled")),
+        };
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+
     /// Import these files; into an empty scene, the view is then fitted to all of them at once.
+    /// A project among them (the last one) is opened first, replacing the scene, and they join it.
     fn import_all(&mut self, paths: Vec<std::path::PathBuf>) {
+        let (mut projects, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| is_project(p));
+        if let Some(project) = projects.pop() {
+            self.open_project(project, paths);
+            return;
+        }
         if paths.is_empty() {
             return;
         }
@@ -381,8 +498,19 @@ impl ResinApp {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if ctx.input_mut(|i| i.consume_shortcut(&IMPORT)) {
-            self.import_dialog();
+        {
+            if ctx.input_mut(|i| i.consume_shortcut(&IMPORT)) {
+                self.import_dialog();
+            }
+            if ctx.input_mut(|i| i.consume_shortcut(&OPEN)) {
+                self.open_dialog();
+            }
+            // Ctrl+Shift+S first: Ctrl+S would match it too, egui ignoring an extra Shift.
+            if ctx.input_mut(|i| i.consume_shortcut(&SAVE_AS)) {
+                self.save_project(true);
+            } else if ctx.input_mut(|i| i.consume_shortcut(&SAVE)) {
+                self.save_project(false);
+            }
         }
         // Ctrl+Shift+Z first: Ctrl+Z would match it too, egui ignoring an extra Shift.
         if ctx.input_mut(|i| i.consume_shortcut(&REDO_SHIFT_Z) || i.consume_shortcut(&REDO)) {
@@ -459,6 +587,35 @@ const REDO_SHIFT_Z: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::M
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const IMPORT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I);
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const OPEN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const SAVE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const SAVE_AS: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }, egui::Key::S);
+
+/// A project file's extension.
+const PROJECT: &str = resin_engine::io::project::EXTENSION;
+
+fn is_project(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case(PROJECT))
+}
+
+/// `path`, with the project extension added unless it has it: file dialogs leave it to the name typed.
+fn with_project_extension(path: std::path::PathBuf) -> std::path::PathBuf {
+    if is_project(&path) {
+        return path;
+    }
+    let mut s = path.into_os_string();
+    s.push(".");
+    s.push(PROJECT);
+    s.into()
+}
+
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
 
 impl eframe::App for ResinApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -476,6 +633,7 @@ impl eframe::App for ResinApp {
             self.import_all(pending);
         }
         self.keys(&ctx);
+        self.update_title(&ctx);
         toolbar::app_bar(self, ui, &tokens);
         toolbar::ribbon(self, ui, &tokens);
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &tokens));
@@ -485,6 +643,7 @@ impl eframe::App for ResinApp {
         object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
         preferences::window(self, &ctx);
+        self.confirm_open(&ctx, &tokens);
         // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is
         // held or the field is typed in; closing it here, not where it began, means a gesture cut
         // short (Esc mid-drag) can't leave every later command merged into it.
@@ -513,5 +672,59 @@ impl eframe::App for ResinApp {
             storage.set_string(prefs::STORAGE_KEY, json.clone());
             self.prefs_writer.written = Some(json);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One frame of the confirmation, with `key` pressed if given.
+    fn frame(ctx: &egui::Context, app: &mut ResinApp, key: Option<egui::Key>) {
+        let events = key.map(|key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+            events: events.into_iter().collect(),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| app.confirm_open(ui.ctx(), &Tokens::for_dark(false)));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn opening_over_unsaved_changes_waits_for_its_confirmation() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("tri.stl");
+        std::fs::write(&stl, "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid t\n")
+            .unwrap();
+        let project = dir.join("plate.rsup");
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        app.run("file.import_stl", json!({ "path": stl, "fit": false })).unwrap();
+        app.run("file.save", json!({ "path": project })).unwrap();
+        app.open_project(project.clone(), Vec::new());
+        assert!(app.pending_open.is_none(), "nothing unsaved: opened at once");
+        assert_eq!(app.session.undo_depth(), 0);
+
+        app.run("model.move", json!({ "by": [5, 0, 0], "ids": [app.session.scene.models()[0].id] })).unwrap();
+        let moved = app.session.scene.models()[0].placement;
+        app.open_project(project.clone(), vec![stl.clone()]);
+        assert!(app.pending_open.is_some());
+        assert_eq!(app.session.scene.models()[0].placement, moved, "nothing changes before the answer");
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app, None);
+        frame(&ctx, &mut app, None);
+        assert!(app.pending_open.is_some(), "still asking");
+        frame(&ctx, &mut app, Some(egui::Key::Escape));
+        assert!(app.pending_open.is_none());
+        assert_eq!((app.session.scene.models()[0].placement, app.session.scene.models().len()), (moved, 1), "Cancel keeps the scene");
+
+        app.open_project(project, vec![stl]);
+        frame(&ctx, &mut app, None);
+        frame(&ctx, &mut app, Some(egui::Key::Enter));
+        assert!(app.pending_open.is_none());
+        assert_eq!(app.session.scene.models().len(), 2, "opened, then the STL dropped with it imported");
+        assert_ne!(app.session.scene.models()[0].placement, moved);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

@@ -1,8 +1,16 @@
-//! L3: reading model files. Every file is hostile input: errors are values, never panics.
+//! L3: reading model files; reading and writing project files. Every file is hostile input: errors are values, never panics.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod project;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod safe_write;
 pub mod stl;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use project::read_project_file;
+pub use project::{Project, ProjectModel, ProjectSupport, read_project, write_project};
+#[cfg(not(target_arch = "wasm32"))]
+pub use safe_write::write_atomic;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stl::read_stl_file;
 pub use stl::{StlImport, read_stl};

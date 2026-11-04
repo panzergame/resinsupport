@@ -511,6 +511,8 @@ fn moving_a_model_moves_its_supports_routes() {
 struct Fixture {
     session: Session,
     path: std::path::PathBuf,
+    /// A project file holding the fixture's scene.
+    project: std::path::PathBuf,
     a: u64,
     b: u64,
     tip: u64,
@@ -525,16 +527,21 @@ fn fixture(dir: &std::path::Path) -> Fixture {
     let tip = s.execute("support.add", &json!({ "model": a, "point": [5, 5, 0] })).unwrap()["id"].as_u64().unwrap();
     s.execute("model.select", &json!({ "ids": [a] })).unwrap();
     s.execute("support.select", &json!({ "ids": [tip] })).unwrap();
-    Fixture { session: s, path, a, b, tip }
+    let project = dir.join("fixture.rsup");
+    std::fs::write(&project, resin_io::write_project(&s.scene.project()).unwrap()).unwrap();
+    Fixture { session: s, path, project, a, b, tip }
 }
 
 /// Valid parameters for every command, run on the fixture. `None`: undo and redo, the history
-/// itself, which `undo_and_redo_walk_the_history` covers. A new command needs a row here.
+/// itself, which `undo_and_redo_walk_the_history` covers, and opening a project, which starts a
+/// fresh one (`opening_starts_a_fresh_history`). A new command needs a row here.
 fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
     let (a, b, tip) = (f.a, f.b, f.tip);
     Some(match id {
         "edit.redo" | "edit.undo" => None,
         "file.import_stl" => Some(json!({ "path": f.path, "fit": false })),
+        "file.open" => None,
+        "file.save" => Some(json!({ "path": f.project.with_file_name("saved.rsup") })),
         "model.delete" => Some(json!({ "id": a })),
         "model.lift" => Some(json!({ "lifted": true })),
         "model.list" | "support.list" | "scene.clear" => Some(json!({})),
@@ -862,5 +869,94 @@ fn lifted_models_keep_to_the_lift_height() {
         assert!(matches!(s.execute("scene.lift_height", &bad), Err(EngineError::BadParams(_))), "{bad}");
     }
     assert_eq!(s.scene.lift_height(), 2.5);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Supports as `support.list` describes them, routes included, without ids or the selection.
+fn supports_seen(s: &mut Session) -> Vec<Value> {
+    let mut list = s.execute("support.list", &json!({})).unwrap()["supports"].as_array().unwrap().clone();
+    for t in &mut list {
+        let t = t.as_object_mut().unwrap();
+        for key in ["id", "model", "selected", "selected_joints", "selected_segments"] {
+            t.remove(key);
+        }
+    }
+    list
+}
+
+#[test]
+fn a_saved_project_opens_as_it_was_saved_unlifted() {
+    let dir = temp_dir("project-round-trip");
+    let Fixture { session: mut s, a, b, tip, .. } = fixture(&dir);
+    s.execute("support.add", &json!({ "model": b, "point": [35, 5, 0] })).unwrap();
+    s.execute("model.place", &json!({ "models": [{ "id": b, "rotation": [0, 0, 30], "scale": [2, 1, 0.5] }] })).unwrap();
+    s.execute("model.lift", &json!({ "ids": [a], "lifted": true })).unwrap();
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": tip, "joint": 0, "position": [6, 4, 3] }] })).unwrap();
+    let path = dir.join("round.rsup");
+    assert!(s.modified());
+    let saved = s.execute("file.save", &json!({ "path": path })).unwrap();
+    assert!(saved["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(s.file(), path.to_str());
+    assert!(!s.modified());
+
+    let mut o = Session::new();
+    let r = o.execute("file.open", &json!({ "path": path })).unwrap();
+    assert_eq!((r["models"].as_u64(), r["supports"].as_u64()), (Some(2), Some(2)));
+    assert_eq!(o.scene.project(), s.scene.project());
+    let placements = |s: &Session| s.scene.models().iter().map(|m| (m.name.clone(), m.placement, m.bounds)).collect::<Vec<_>>();
+    assert_eq!(placements(&o), placements(&s));
+    assert!(o.scene.models().iter().all(|m| !m.lifted), "the lift is a model setting: not in the file");
+    assert_eq!(supports_seen(&mut o), supports_seen(&mut s));
+    assert!(!o.modified());
+    assert_eq!(o.file(), path.to_str());
+    assert!(!dir.join("round.rsup.bak").exists(), "nothing to back up on a first save");
+    s.execute("file.save", &json!({})).unwrap();
+    assert!(dir.join("round.rsup.bak").exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn opening_starts_a_fresh_history() {
+    let dir = temp_dir("project-history");
+    let Fixture { session: mut s, project, .. } = fixture(&dir);
+    s.execute("model.move", &json!({ "by": [1, 0, 0] })).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.undo_depth() > 0 && s.redo_depth() > 0);
+    let mark = s.history_mark();
+    s.execute("file.open", &json!({ "path": project })).unwrap();
+    assert_eq!((s.undo_depth(), s.redo_depth()), (0, 0), "undo never brings back the scene the project replaced");
+    assert!(s.execute("edit.undo", &json!({})).is_err());
+    assert_eq!(s.file(), project.to_str());
+    assert!(!s.modified());
+    s.execute("model.move", &json!({ "by": [1, 0, 0], "ids": [s.scene.models()[0].id] })).unwrap();
+    assert!(s.modified());
+    assert_eq!(s.undo_command(), Some("model.move"));
+    assert!(s.history_mark() > mark, "marks taken before the open never name a later step");
+
+    // A failed open keeps the history it found.
+    let depth = s.undo_depth();
+    let bad = dir.join("bad.rsup");
+    std::fs::write(&bad, b"PK\x03\x04 broken").unwrap();
+    assert!(s.execute("file.open", &json!({ "path": bad })).is_err());
+    assert_eq!((s.undo_depth(), s.undo_command()), (depth, Some("model.move")));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn saving_refuses_other_file_kinds_and_opening_refuses_broken_files() {
+    let dir = temp_dir("project-refused");
+    let Fixture { session: mut s, path: stl, .. } = fixture(&dir);
+    let stl_bytes = std::fs::read(&stl).unwrap();
+    assert!(matches!(s.execute("file.save", &json!({ "path": stl })), Err(EngineError::BadParams(_))));
+    assert_eq!(std::fs::read(&stl).unwrap(), stl_bytes, "the STL is untouched");
+    let (before, depth) = (fingerprint(&s), s.undo_depth());
+    for bytes in [&b""[..], b"PK\x03\x04 broken", &stl_bytes] {
+        let bad = dir.join("bad.rsup");
+        std::fs::write(&bad, bytes).unwrap();
+        assert!(s.execute("file.open", &json!({ "path": bad })).is_err());
+        assert_eq!(fingerprint(&s), before);
+    }
+    assert!(s.execute("file.open", &json!({ "path": dir.join("missing.rsup") })).is_err());
+    assert_eq!(s.undo_depth(), depth);
     std::fs::remove_dir_all(dir).ok();
 }

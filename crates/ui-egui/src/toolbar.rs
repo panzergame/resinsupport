@@ -261,8 +261,20 @@ fn history_button(app: &ResinApp, ctx: &egui::Context, forward: bool) -> (&'stat
 
 fn file_menu(app: &mut ResinApp, ui: &mut Ui) {
     #[cfg(not(target_arch = "wasm32"))]
-    if ui.add(egui::Button::new(i18n::tr("menu.import")).shortcut_text(ui.ctx().format_shortcut(&crate::IMPORT))).clicked() {
-        app.import_dialog();
+    {
+        if ui.add(egui::Button::new(i18n::tr("menu.open")).shortcut_text(ui.ctx().format_shortcut(&crate::OPEN))).clicked() {
+            app.open_dialog();
+        }
+        if ui.add(egui::Button::new(i18n::tr("menu.save")).shortcut_text(ui.ctx().format_shortcut(&crate::SAVE))).clicked() {
+            app.save_project(false);
+        }
+        if ui.add(egui::Button::new(i18n::tr("menu.save_as")).shortcut_text(ui.ctx().format_shortcut(&crate::SAVE_AS))).clicked() {
+            app.save_project(true);
+        }
+        ui.separator();
+        if ui.add(egui::Button::new(i18n::tr("menu.import")).shortcut_text(ui.ctx().format_shortcut(&crate::IMPORT))).clicked() {
+            app.import_dialog();
+        }
     }
     if ui.add_enabled(!app.session.scene.models().is_empty(), egui::Button::new(i18n::tr("menu.clear"))).clicked() {
         app.run("scene.clear", json!({}));
