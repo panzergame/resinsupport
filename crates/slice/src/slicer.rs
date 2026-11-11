@@ -275,6 +275,13 @@ mod tests {
         }
         assert_eq!(job.stats.open_rows, 0);
         assert_eq!(job.stats.clipped, 0);
+        let mut bitmap = Vec::new();
+        let middle = &job.layers[100];
+        middle.decode_into(job.profile.resolution_x, job.profile.resolution_y, &mut bitmap);
+        assert_eq!(bitmap.len() as u64, total);
+        let lit = bitmap.iter().map(|&g| f64::from(g) / 255.0).sum::<f64>();
+        assert_eq!(lit.round() as u64, middle.lit);
+        assert_eq!(middle.regions(job.profile.resolution_x), 1);
         // 1 ml, as rasterized.
         assert!((job.stats.volume_ml - 1.0).abs() < 0.02, "{}", job.stats.volume_ml);
         assert!(job.stats.print_time_s > 0.0);

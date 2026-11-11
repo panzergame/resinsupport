@@ -37,6 +37,7 @@ const ROLES: &[(&str, &str, [u8; 3], [u8; 3])] = &[
 
 /// Every icon by name.
 const MASTERS: &[(&str, &str)] = &[
+    ("box", include_str!("../icons/box.svg")),
     ("close", include_str!("../icons/close.svg")),
     ("cone", include_str!("../icons/cone.svg")),
     ("delete", include_str!("../icons/delete.svg")),
@@ -49,6 +50,7 @@ const MASTERS: &[(&str, &str)] = &[
     ("redo", include_str!("../icons/redo.svg")),
     ("revolve", include_str!("../icons/revolve.svg")),
     ("scale", include_str!("../icons/scale.svg")),
+    ("section", include_str!("../icons/section.svg")),
     ("settings", include_str!("../icons/settings.svg")),
     ("stop", include_str!("../icons/stop.svg")),
     ("undo", include_str!("../icons/undo.svg")),

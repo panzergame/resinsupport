@@ -152,6 +152,18 @@ impl PrintSettings {
         self.layer_motion(layer).exposure as f32
     }
 
+    /// Whether layer `layer` is exposed as a bottom layer, steps between, or is a normal one.
+    pub fn exposure_kind(&self, layer: u32) -> ExposureKind {
+        let (bottom, transition) = (self.layers.bottom_count, self.layers.transition_count);
+        if layer < bottom {
+            ExposureKind::Bottom
+        } else if layer < bottom.saturating_add(transition) {
+            ExposureKind::Transition
+        } else {
+            ExposureKind::Normal
+        }
+    }
+
     /// How far layer `layer` is from a bottom layer (0) to a normal one (1): the transition
     /// layers step between them as [`PrintSettings::exposure_for`] says.
     fn normal_weight(&self, layer: u32) -> f64 {
@@ -239,6 +251,14 @@ impl PrintSettings {
         }
         true
     }
+}
+
+/// How a layer is exposed: see [`PrintSettings::exposure_kind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExposureKind {
+    Bottom,
+    Transition,
+    Normal,
 }
 
 /// One layer's exposure and motion: seconds, millimetres, mm/min.
@@ -477,7 +497,11 @@ mod tests {
         let (bottom, transition) = (s.layers.bottom_count, s.layers.transition_count);
         for i in 0..bottom {
             assert_eq!(s.exposure_for(i), 30.0);
+            assert_eq!(s.exposure_kind(i), ExposureKind::Bottom);
         }
+        assert_eq!(s.exposure_kind(bottom), ExposureKind::Transition);
+        assert_eq!(s.exposure_kind(bottom + transition - 1), ExposureKind::Transition);
+        assert_eq!(s.exposure_kind(bottom + transition), ExposureKind::Normal);
         let mut last = 30.0;
         for i in bottom..bottom + transition {
             let e = s.exposure_for(i);

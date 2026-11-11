@@ -415,6 +415,72 @@ pub fn handle(app: &mut ResinApp, ui: &mut egui::Ui, rect: Rect, resp: &egui::Re
     }
 }
 
+/// What the pointer did to a flat view this frame: a pan in points, a zoom factor (above 1
+/// zooms in) and the point it zooms toward.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Motion2d {
+    pub pan: Vec2,
+    pub zoom: f64,
+    pub at: Option<Pos2>,
+}
+
+/// Input for a flat view over `rect` (the 2D layer view), read as [`handle`] reads it for the
+/// camera: the wheel, trackpad and pinch zoom toward the pointer, two-finger scroll pans, and a
+/// drag does what the mouse mapping binds its button to. A flat view does not turn, so an orbit
+/// binding pans it.
+pub fn handle_2d(app: &mut ResinApp, ui: &egui::Ui, rect: Rect, resp: &egui::Response) -> Motion2d {
+    let (hover, mods) = ui.input(|i| (i.pointer.hover_pos(), i.modifiers));
+    let inside = ui.is_enabled() && resp.contains_pointer() && ui.rect_contains_pointer(rect) && hover.is_some();
+    let mut m = Motion2d { pan: Vec2::ZERO, zoom: 1.0, at: hover };
+    let options = ui.ctx().options(|o| o.input_options);
+    let page_height = ui.ctx().content_rect().height();
+    let gesture = &mut app.nav.trackpad_gesture;
+    let raw = ui.input(|i| immediate_wheel(i, &options, page_height, gesture));
+    if !ui.input(|i| i.is_scrolling()) {
+        app.nav.trackpad_gesture = false;
+    }
+    let sign = app.prefs.zoom_sign();
+    if inside {
+        let trackpad_pan = app.prefs.trackpad_pans();
+        let pan = if trackpad_pan { raw.pan + raw.shift_pan } else { Vec2::ZERO } + raw.mouse_pan;
+        let scroll = raw.zoom + if trackpad_pan { 0.0 } else { raw.point_zoom };
+        if scroll.is_finite() && scroll != 0.0 {
+            m.zoom *= (f64::from(scroll) * 0.0015 * f64::from(app.prefs.wheel_zoom_speed) * sign).exp();
+        }
+        let pinch = ui.input(|i| pinch_factor(i, &options, page_height));
+        if pinch != 1.0 {
+            m.zoom *= f64::from(pinch).powf(sign);
+        }
+        if pan.is_finite() {
+            m.pan += pan;
+        }
+    }
+    let delta = resp.drag_delta();
+    if delta != Vec2::ZERO && delta.is_finite() {
+        let space = !ui.ctx().text_edit_focused() && ui.input(|i| i.key_down(egui::Key::Space));
+        let mode = if resp.dragged_by(egui::PointerButton::Middle) {
+            app.prefs.nav_mode(NavButton::Middle, mods)
+        } else if resp.dragged_by(egui::PointerButton::Secondary) {
+            app.prefs.nav_mode(NavButton::Right, mods)
+        } else if resp.dragged_by(egui::PointerButton::Primary) {
+            let ctrl = (mods.ctrl || mods.command) && !mods.shift && !mods.alt;
+            if space { Some(NavMode::Pan) } else { app.prefs.nav_mode(NavButton::Left, mods).or(ctrl.then_some(NavMode::Orbit)) }
+        } else {
+            None
+        };
+        match mode {
+            Some(NavMode::Pan | NavMode::Orbit) => m.pan += delta,
+            Some(NavMode::Zoom) => {
+                let reverse = if nav_preset(&app.prefs.nav).reverse_drag_zoom { -1.0 } else { 1.0 };
+                m.zoom *= (-f64::from(delta.y) * 0.01 * reverse).exp();
+                m.at = ui.input(|i| i.pointer.press_origin()).or(hover);
+            }
+            None => {}
+        }
+    }
+    m
+}
+
 /// View keys: the arrows turn the view 15° (with Shift a quarter turn) and Ctrl+arrows pan it a
 /// tenth of the view. Not while a widget has the keyboard. Returns whether the key was used.
 pub fn view_key(app: &mut ResinApp, ctx: &egui::Context, key: egui::Key, mods: egui::Modifiers) -> bool {

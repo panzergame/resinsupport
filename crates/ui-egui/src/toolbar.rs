@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
-use crate::{EditMode, ResinApp, i18n, icons, transform};
+use crate::{EditMode, ResinApp, i18n, icons, layer_preview, transform};
 
 pub const APP_BAR_HEIGHT: f32 = 34.0;
 const TAB_ROW_HEIGHT: f32 = 30.0;
@@ -48,6 +48,8 @@ enum Cmd {
     Perspective,
     SliceNow,
     CancelSlice,
+    Preview3d,
+    PreviewLayer,
 }
 
 /// A button's state this frame.
@@ -76,6 +78,8 @@ impl Cmd {
             Cmd::Perspective => "ribbon.perspective",
             Cmd::SliceNow => "ribbon.slice_now",
             Cmd::CancelSlice => "ribbon.cancel_slice",
+            Cmd::Preview3d => "ribbon.preview_3d",
+            Cmd::PreviewLayer => "ribbon.preview_layer",
         }
     }
 
@@ -92,6 +96,8 @@ impl Cmd {
             Cmd::Perspective => "perspective",
             Cmd::SliceNow => "play",
             Cmd::CancelSlice => "stop",
+            Cmd::Preview3d => "box",
+            Cmd::PreviewLayer => "section",
         }
     }
 
@@ -118,6 +124,11 @@ impl Cmd {
             Cmd::Perspective => state(Some("P"), None, app.session.camera.fov > 0.0),
             Cmd::SliceNow => state(None, None, false),
             Cmd::CancelSlice => state(None, (!app.slicer.is_running()).then_some("reason.not_slicing"), false),
+            Cmd::Preview3d => state(None, None, !layer_preview::active(app) || !app.preview.flat),
+            Cmd::PreviewLayer => {
+                let active = layer_preview::active(app);
+                state(None, (!active).then_some("reason.no_job"), active && app.preview.flat)
+            }
         }
     }
 
@@ -144,6 +155,8 @@ impl Cmd {
             Cmd::Perspective => app.toggle_projection(),
             Cmd::SliceNow => app.slice_now(),
             Cmd::CancelSlice => app.cancel_slice(),
+            Cmd::Preview3d => app.preview.flat = false,
+            Cmd::PreviewLayer => app.preview.flat = true,
         }
     }
 }
@@ -165,7 +178,11 @@ fn groups(mode: EditMode) -> &'static [Group] {
             VIEW,
         ],
         EditMode::Support => &[Group { name: "group.supports", cmds: &[Cmd::PlaceTips, Cmd::DeleteTips], views: false }, VIEW],
-        EditMode::Slice => &[Group { name: "group.slice", cmds: &[Cmd::SliceNow, Cmd::CancelSlice], views: false }, VIEW],
+        EditMode::Slice => &[
+            Group { name: "group.slice", cmds: &[Cmd::SliceNow, Cmd::CancelSlice], views: false },
+            Group { name: "group.preview", cmds: &[Cmd::Preview3d, Cmd::PreviewLayer], views: false },
+            VIEW,
+        ],
     }
 }
 

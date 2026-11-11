@@ -68,6 +68,17 @@ impl Card<'_> {
     /// Show the card; Enter is OK, Esc (outside a field being typed in) and the close button are
     /// Cancel.
     pub fn show(self, ctx: &egui::Context, t: &Tokens, body: impl FnOnce(&mut Ui)) -> Action {
+        self.show_window(ctx, t, None, body)
+    }
+
+    /// [`Card::show`], pinned by its `corner` to the same corner of `bounds` (else the screen)
+    /// moved by `offset`:
+    /// a panel that stays put, such as one at the viewport's bottom left, whatever its height.
+    pub fn show_anchored(self, ctx: &egui::Context, t: &Tokens, corner: Align2, offset: egui::Vec2, body: impl FnOnce(&mut Ui)) -> Action {
+        self.show_window(ctx, t, Some((corner, offset)), body)
+    }
+
+    fn show_window(self, ctx: &egui::Context, t: &Tokens, anchor: Option<(Align2, egui::Vec2)>, body: impl FnOnce(&mut Ui)) -> Action {
         let typing = ctx.text_edit_focused();
         let frame = card_frame(t);
         let permanent = matches!(self.buttons, Buttons::None | Buttons::CloseOnly);
@@ -75,6 +86,9 @@ impl Card<'_> {
         let mut window = egui::Window::new(self.title);
         if let Some(b) = self.bounds {
             window = window.constrain_to(b);
+        }
+        if let Some((corner, offset)) = anchor {
+            window = window.anchor(corner, offset);
         }
         window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).default_pos(self.at).show(ctx, |ui| {
             ui.set_width(self.width);

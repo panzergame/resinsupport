@@ -6,6 +6,9 @@ pub mod gizmo;
 pub mod gpu;
 pub mod i18n;
 pub mod icons;
+pub mod layer_image;
+pub mod layer_preview;
+pub mod layer_view;
 pub mod navigation;
 pub mod object_settings;
 pub mod objects;
@@ -106,6 +109,10 @@ pub struct ResinApp {
     pub(crate) slicer: slice_runner::SliceRunner,
     /// The print settings' Restore defaults was clicked: its confirmation is open.
     pub(crate) confirm_print_reset: bool,
+    /// The layers shown in Slice edition, and how.
+    pub(crate) preview: layer_preview::LayerPreview,
+    /// The device's largest texture side: a layer is cut into tiles no bigger.
+    pub(crate) max_texture: u32,
     prefs_writer: prefs_writer::PrefsWriter,
     /// The window title last sent, so it is sent only when it changes.
     title: String,
@@ -122,7 +129,9 @@ impl ResinApp {
         gpu::Renderer::install(rs);
         theme::apply(&cc.egui_ctx);
         let (prefs, problems) = cc.storage.map(prefs::load).unwrap_or_default();
-        Ok(ResinApp::build(prefs, &problems))
+        let mut app = ResinApp::build(prefs, &problems);
+        app.max_texture = rs.device.limits().max_texture_dimension_2d;
+        Ok(app)
     }
 
     /// The app on these preferences; `problems` names the stored ones that fell back to defaults.
@@ -160,6 +169,8 @@ impl ResinApp {
             print_tab: 0,
             slicer: Default::default(),
             confirm_print_reset: false,
+            preview: Default::default(),
+            max_texture: DEFAULT_MAX_TEXTURE,
             prefs_writer: writer,
             title: String::new(),
             pending_open: None,
@@ -567,6 +578,13 @@ impl ResinApp {
             if self.mode == EditMode::Slice {
                 ui.separator();
                 self.slice_status(ui, tokens);
+                if let Some(p) = self.preview.probe.filter(|_| layer_preview::active(self) && self.preview.flat) {
+                    ui.separator();
+                    ui.label(i18n::format(
+                        "status.layer_pixel",
+                        &[("x", &p.x), ("y", &p.y), ("mx", &format!("{:.3}", p.plate.0)), ("my", &format!("{:.3}", p.plate.1)), ("grey", &p.grey)],
+                    ));
+                }
             } else {
                 let unreachable = self.routes.unreachable();
                 if unreachable > 0 {
@@ -622,11 +640,12 @@ impl ResinApp {
                 .collect()
         });
         for (key, mods) in pressed {
-            if navigation::view_key(self, ctx, key, mods) {
+            if navigation::view_key(self, ctx, key, mods) || layer_preview::key(self, key, mods) {
                 continue;
             }
             let plain = mods.is_none();
             match key {
+                egui::Key::F if plain && layer_preview::active(self) && self.preview.flat => self.preview.fit = true,
                 egui::Key::F if plain => self.animate_command("view.fit", json!({ "aspect": self.aspect() })),
                 egui::Key::P if plain => self.toggle_projection(),
                 egui::Key::Tab if plain => {
@@ -720,6 +739,9 @@ fn duration(seconds: f64) -> String {
     }
 }
 
+/// wgpu's default largest texture side, until the device says.
+const DEFAULT_MAX_TEXTURE: u32 = 8192;
+
 pub(crate) const UNDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
 pub(crate) const REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
 const REDO_SHIFT_Z: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }, egui::Key::Z);
@@ -773,6 +795,7 @@ impl eframe::App for ResinApp {
         }
         self.keys(&ctx);
         self.drive_slicer(&ctx);
+        self.preview.sync(self.session.job());
         self.update_title(&ctx);
         toolbar::app_bar(self, ui, &tokens);
         toolbar::ribbon(self, ui, &tokens);
@@ -783,6 +806,7 @@ impl eframe::App for ResinApp {
         object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
         print_settings::panel(self, &ctx);
+        layer_preview::card(self, &ctx);
         preferences::window(self, &ctx);
         self.confirm_open(&ctx, &tokens);
         // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is

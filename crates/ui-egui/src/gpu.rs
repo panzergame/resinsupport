@@ -1,6 +1,7 @@
 //! The viewport's wgpu drawing: a background gradient, the models, the supports, the grid and axes,
 //! then the joint handles over everything, drawn through an egui paint callback into egui's own
-//! render pass.
+//! render pass. In Slice edition the solids are cut at the shown layer and the cut is capped with
+//! the layer's image; the 2D layer view draws that image alone, from the same textures.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use resin_engine::geom::{Affine3, Mesh, Vec3, unit_sphere};
 use resin_engine::render::Line;
 use wgpu::util::DeviceExt;
 
+use crate::layer_image::{ImageKey, LayerImage, TileRect};
 use crate::support_routes::{Look, SupportMesh};
 
 /// What the window's render pass carries; the app's native options must ask for the same, and
@@ -30,6 +32,21 @@ struct FrameUniform {
     grid: [f32; 4],
     bg_top: [f32; 4],
     bg_bottom: [f32; 4],
+    /// x, y: keep what lies between these heights; z: 1 when that applies; w: 1 dims the layer.
+    clip: [f32; 4],
+    /// The cap's fill (linear RGB), and its outline or the layer view's pixel grid.
+    cap: [f32; 4],
+    edge: [f32; 4],
+}
+
+/// A corner of a layer quad: where it is (scene mm for the cap, image mm for the 2D view), its
+/// texture coordinates and its image pixel.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LayerVertex {
+    pos: [f32; 3],
+    uv: [f32; 2],
+    px: [f32; 2],
 }
 
 #[repr(C)]
@@ -101,6 +118,23 @@ impl ModelInstance {
     }
 }
 
+/// The heights between which the solids are drawn, mm.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clip {
+    pub below: f32,
+    pub above: f32,
+}
+
+/// The shown layer's image laid on the cut at height `z`: its lit pixels in `color` with an
+/// `edge` outline, faded when `dim`.
+pub struct Cap {
+    pub image: Arc<LayerImage>,
+    pub z: f32,
+    pub color: [f32; 4],
+    pub edge: [f32; 4],
+    pub dim: bool,
+}
+
 /// One frame of the viewport, handed from the UI to the GPU.
 pub struct ViewFrame {
     pub view_proj: [[f32; 4]; 4],
@@ -119,6 +153,20 @@ pub struct ViewFrame {
     /// The supports' solids, already in the scene, and the colour of each [`Look`].
     pub supports: Option<Arc<SupportMesh>>,
     pub support_colors: [[f32; 4]; 3],
+    /// In Slice edition with a job: what is kept of the solids, and the cap on the cut.
+    pub clip: Option<Clip>,
+    pub cap: Option<Cap>,
+}
+
+/// One frame of the 2D layer view: the image, `view_proj` from image millimetres (from its
+/// top-left corner, Y down) to the view, the background, the pixel grid's colour.
+pub struct LayerFrame {
+    pub image: Arc<LayerImage>,
+    pub view_proj: [[f32; 4]; 4],
+    pub bg_top: [f32; 4],
+    pub bg_bottom: [f32; 4],
+    pub grid: [f32; 4],
+    pub dim: bool,
 }
 
 pub struct ViewportCallback(pub ViewFrame);
@@ -145,8 +193,46 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
     }
 }
 
+pub struct LayerViewCallback(pub LayerFrame);
+
+impl egui_wgpu::CallbackTrait for LayerViewCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen: &egui_wgpu::ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        if let Some(r) = resources.get_mut::<Renderer>() {
+            r.prepare_layer_view(device, queue, &self.0);
+        }
+        Vec::new()
+    }
+
+    fn paint(&self, _info: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, resources: &egui_wgpu::CallbackResources) {
+        if let Some(r) = resources.get::<Renderer>() {
+            r.paint_layer_view(pass);
+        }
+    }
+}
+
 struct GpuMesh {
     chunks: Vec<(wgpu::Buffer, u32)>,
+}
+
+/// One tile of the shown layer on the GPU, with a bind group for each way it is sampled.
+struct GpuTile {
+    rect: TileRect,
+    texture: wgpu::Texture,
+    cap_group: wgpu::BindGroup,
+    flat_group: wgpu::BindGroup,
+}
+
+/// The layer whose tiles are uploaded.
+struct GpuLayer {
+    key: ImageKey,
+    tiles: Vec<GpuTile>,
 }
 
 pub struct Renderer {
@@ -176,6 +262,20 @@ pub struct Renderer {
     /// The supports' solids, and the ones uploaded there: uploaded again only when they change.
     support_buffer: Option<(wgpu::Buffer, u64)>,
     supports_uploaded: Option<Arc<SupportMesh>>,
+    layer_layout: wgpu::BindGroupLayout,
+    /// The cap blends between texels; the 2D view shows each pixel as a square up close.
+    cap_sampler: wgpu::Sampler,
+    flat_sampler: wgpu::Sampler,
+    cap: wgpu::RenderPipeline,
+    flat: wgpu::RenderPipeline,
+    layer: Option<GpuLayer>,
+    /// This frame's cap quads (one per tile; none without a cap), and the 2D view's.
+    cap_quads: Option<(wgpu::Buffer, u64)>,
+    cap_count: u32,
+    flat_quads: Option<(wgpu::Buffer, u64)>,
+    /// The 2D view's own frame uniform, so it never shares one with the 3D view.
+    flat_uniform: wgpu::Buffer,
+    flat_bind_group: wgpu::BindGroup,
 }
 
 impl Renderer {
@@ -215,10 +315,59 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
+        let flat_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("layer_view_frame"),
+            size: std::mem::size_of::<FrameUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let flat_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("layer_view_frame"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: flat_uniform.as_entire_binding() }],
+        });
+        let layer_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("layer_tile"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let layer_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("layer"),
+            bind_group_layouts: &[Some(&layout), Some(&layer_layout)],
+            immediate_size: 0,
+        });
+        let sampler = |label: &str, mag: wgpu::FilterMode| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(label),
+                mag_filter: mag,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            })
+        };
+        let cap_sampler = sampler("layer_cap", wgpu::FilterMode::Linear);
+        let flat_sampler = sampler("layer_flat", wgpu::FilterMode::Nearest);
         let depth_format = egui_wgpu::depth_format_from_bits(DEPTH_BITS, 0).unwrap_or(wgpu::TextureFormat::Depth24Plus);
         let multisample = wgpu::MultisampleState { count: u32::from(MSAA_SAMPLES), mask: !0, alpha_to_coverage_enabled: false };
 
         let pipeline = |label: &str,
+                        layout: &wgpu::PipelineLayout,
                         vs: &str,
                         fs: &str,
                         buffers: &[Option<wgpu::VertexBufferLayout>],
@@ -228,7 +377,7 @@ impl Renderer {
                         blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), compilation_options: Default::default(), buffers },
                 primitive: wgpu::PrimitiveState { topology, cull_mode: None, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -250,8 +399,17 @@ impl Renderer {
             })
         };
 
-        let background =
-            pipeline("viewport_background", "bg_vs", "bg_fs", &[], wgpu::PrimitiveTopology::TriangleList, false, wgpu::CompareFunction::Always, None);
+        let background = pipeline(
+            "viewport_background",
+            &pipeline_layout,
+            "bg_vs",
+            "bg_fs",
+            &[],
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            wgpu::CompareFunction::Always,
+            None,
+        );
         let mesh_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<MeshVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -267,6 +425,7 @@ impl Renderer {
         ];
         let mesh = pipeline(
             "viewport_mesh",
+            &pipeline_layout,
             "mesh_vs",
             "mesh_fs",
             &model_layouts,
@@ -282,6 +441,7 @@ impl Renderer {
         };
         let lines = pipeline(
             "viewport_lines",
+            &pipeline_layout,
             "line_vs",
             "line_fs",
             &[Some(line_layout)],
@@ -300,6 +460,7 @@ impl Renderer {
         ];
         let sphere = pipeline(
             "viewport_sphere",
+            &pipeline_layout,
             "sphere_vs",
             "sphere_fs",
             &sphere_layouts,
@@ -311,6 +472,7 @@ impl Renderer {
         // Hidden first: once the visible pass writes its depth, the far test would pass on it too.
         let handle_hidden = pipeline(
             "viewport_handle_hidden",
+            &pipeline_layout,
             "sphere_vs",
             "handle_fs",
             &sphere_layouts,
@@ -321,12 +483,40 @@ impl Renderer {
         );
         let handle_visible = pipeline(
             "viewport_handle_visible",
+            &pipeline_layout,
             "sphere_vs",
             "handle_fs",
             &sphere_layouts,
             wgpu::PrimitiveTopology::TriangleList,
             true,
             wgpu::CompareFunction::LessEqual,
+            None,
+        );
+        let layer_layouts = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<LayerVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2],
+        })];
+        let cap = pipeline(
+            "layer_cap",
+            &layer_pipeline_layout,
+            "layer_vs",
+            "cap_fs",
+            &layer_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            wgpu::CompareFunction::Less,
+            None,
+        );
+        let flat = pipeline(
+            "layer_flat",
+            &layer_pipeline_layout,
+            "layer_vs",
+            "flat_fs",
+            &layer_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            wgpu::CompareFunction::Always,
             None,
         );
         // Smooth shading: on a unit sphere the normal is the position.
@@ -360,6 +550,103 @@ impl Renderer {
             model_instances: None,
             support_buffer: None,
             supports_uploaded: None,
+            layer_layout,
+            cap_sampler,
+            flat_sampler,
+            cap,
+            flat,
+            layer: None,
+            cap_quads: None,
+            cap_count: 0,
+            flat_quads: None,
+            flat_uniform,
+            flat_bind_group,
+        }
+    }
+
+    /// Upload `image`'s tiles and mipmaps unless they are there; textures of the same sizes are
+    /// written again rather than made anew, as the slider steps through a job.
+    fn upload_layer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &LayerImage) {
+        if self.layer.as_ref().is_some_and(|l| l.key == image.key) {
+            return;
+        }
+        let same_shape = self.layer.as_ref().is_some_and(|l| {
+            l.tiles.len() == image.tiles.len()
+                && l.tiles.iter().zip(&image.tiles).all(|(g, t)| g.rect == t.rect && g.texture.mip_level_count() as usize == t.mips.len() + 1)
+        });
+        if !same_shape {
+            let tiles = image.tiles.iter().map(|t| self.new_tile(device, t.rect, t.mips.len() as u32 + 1)).collect();
+            self.layer = Some(GpuLayer { key: image.key, tiles });
+        }
+        let Some(layer) = &mut self.layer else { return };
+        layer.key = image.key;
+        let stride = image.plate.width;
+        for (gpu, tile) in layer.tiles.iter().zip(&image.tiles) {
+            let r = tile.rect;
+            let start = r.y as usize * stride as usize + r.x as usize;
+            let Some(first) = image.pixels.get(start..) else { continue };
+            write_level(queue, &gpu.texture, 0, first, stride, r.width, r.height);
+            for (level, (w, h, data)) in tile.mips.iter().enumerate() {
+                write_level(queue, &gpu.texture, level as u32 + 1, data, *w, *w, *h);
+            }
+        }
+    }
+
+    fn new_tile(&self, device: &wgpu::Device, rect: TileRect, levels: u32) -> GpuTile {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("layer_tile"),
+            size: wgpu::Extent3d { width: rect.width.max(1), height: rect.height.max(1), depth_or_array_layers: 1 },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let group = |sampler: &wgpu::Sampler| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("layer_tile"),
+                layout: &self.layer_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                ],
+            })
+        };
+        GpuTile { rect, cap_group: group(&self.cap_sampler), flat_group: group(&self.flat_sampler), texture }
+    }
+
+    fn prepare_layer_view(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, f: &LayerFrame) {
+        let u = FrameUniform {
+            view_proj: f.view_proj,
+            light: [0.0, 0.0, 1.0, if self.srgb_target { 1.0 } else { 0.0 }],
+            back: [0.0, 0.0, 1.0, 0.0],
+            grid: [0.0; 4],
+            bg_top: f.bg_top,
+            bg_bottom: f.bg_bottom,
+            clip: [0.0, 0.0, 0.0, if f.dim { 1.0 } else { 0.0 }],
+            cap: [0.0; 4],
+            edge: f.grid,
+        };
+        queue.write_buffer(&self.flat_uniform, 0, bytemuck::bytes_of(&u));
+        self.upload_layer(device, queue, &f.image);
+        let (kx, ky) = f.image.plate.pitch();
+        let verts = layer_quads(&f.image, |px, py| [(px * kx) as f32, (py * ky) as f32, 0.0]);
+        write_growing(device, queue, &mut self.flat_quads, "layer_flat_quads", bytemuck::cast_slice(&verts));
+    }
+
+    fn paint_layer_view(&self, pass: &mut wgpu::RenderPass<'static>) {
+        pass.set_bind_group(0, &self.flat_bind_group, &[]);
+        pass.set_pipeline(&self.background);
+        pass.draw(0..3, 0..1);
+        let (Some(layer), Some((quads, _))) = (&self.layer, &self.flat_quads) else { return };
+        pass.set_pipeline(&self.flat);
+        pass.set_vertex_buffer(0, quads.slice(..));
+        for (i, tile) in layer.tiles.iter().enumerate() {
+            let first = i as u32 * 6;
+            pass.set_bind_group(1, &tile.flat_group, &[]);
+            pass.draw(first..first + 6, 0..1);
         }
     }
 
@@ -372,8 +659,25 @@ impl Renderer {
             grid: [f.grid_center.x as f32, f.grid_center.y as f32, f.grid_radius as f32, 0.0],
             bg_top: f.bg_top,
             bg_bottom: f.bg_bottom,
+            clip: match f.clip {
+                Some(c) => [c.below, c.above, 1.0, f32::from(u8::from(f.cap.as_ref().is_some_and(|c| c.dim)))],
+                None => [0.0; 4],
+            },
+            cap: f.cap.as_ref().map_or([0.0; 4], |c| c.color),
+            edge: f.cap.as_ref().map_or([0.0; 4], |c| c.edge),
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
+        self.cap_count = 0;
+        if let Some(cap) = &f.cap {
+            self.upload_layer(device, queue, &cap.image);
+            let plate = cap.image.plate;
+            let verts = layer_quads(&cap.image, |px, py| {
+                let (x, y) = plate.to_plate(px, py);
+                [x as f32, y as f32, cap.z]
+            });
+            write_growing(device, queue, &mut self.cap_quads, "layer_cap_quads", bytemuck::cast_slice(&verts));
+            self.cap_count = cap.image.tiles.len() as u32;
+        }
 
         self.meshes.retain(|id, _| f.models.iter().any(|m| m.id == *id));
         for m in &f.models {
@@ -436,6 +740,17 @@ impl Renderer {
                 }
             }
         }
+        if let (Some(layer), Some((quads, _))) = (&self.layer, &self.cap_quads)
+            && self.cap_count > 0
+        {
+            pass.set_pipeline(&self.cap);
+            pass.set_vertex_buffer(0, quads.slice(..));
+            for (i, tile) in layer.tiles.iter().enumerate().take(self.cap_count as usize) {
+                let first = i as u32 * 6;
+                pass.set_bind_group(1, &tile.cap_group, &[]);
+                pass.draw(first..first + 6, 0..1);
+            }
+        }
         if let Some((buffer, _)) = &self.sphere_buffer
             && self.sphere_count > 0
         {
@@ -462,6 +777,36 @@ impl Renderer {
             }
         }
     }
+}
+
+/// Two triangles per tile of `image`, each corner placed by `at` from its image pixel position.
+fn layer_quads(image: &LayerImage, at: impl Fn(f64, f64) -> [f32; 3]) -> Vec<LayerVertex> {
+    image
+        .tiles
+        .iter()
+        .flat_map(|t| {
+            let r = t.rect;
+            let (x0, y0) = (f64::from(r.x), f64::from(r.y));
+            let (x1, y1) = (x0 + f64::from(r.width), y0 + f64::from(r.height));
+            let corner = |x: f64, y: f64, u: f32, v: f32| LayerVertex { pos: at(x, y), uv: [u, v], px: [x as f32, y as f32] };
+            let (a, b, c, d) = (corner(x0, y0, 0.0, 0.0), corner(x1, y0, 1.0, 0.0), corner(x1, y1, 1.0, 1.0), corner(x0, y1, 0.0, 1.0));
+            [a, b, c, a, c, d]
+        })
+        .collect()
+}
+
+/// Write one mip `level` of `texture`, `width × height` texels read from `data` in rows of
+/// `stride` bytes.
+fn write_level(queue: &wgpu::Queue, texture: &wgpu::Texture, level: u32, data: &[u8], stride: u32, width: u32, height: u32) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        data,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride), rows_per_image: Some(height) },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
 }
 
 /// The drawable spheres as instances, their alpha replaced by `alpha` if given.

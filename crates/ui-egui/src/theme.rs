@@ -56,6 +56,9 @@ pub struct Tokens {
     pub model_selected: Color32,
     /// Support tips: where one would go under the pointer, placed, and selected.
     pub support_preview: Color32,
+    /// The outline of the cut at the shown layer, and the pixel grid of the layer view.
+    pub cap_edge: Color32,
+    pub layer_grid: Color32,
     pub support: Color32,
     pub support_selected: Color32,
     /// A support with no path to the plate.
@@ -115,6 +118,8 @@ impl Tokens {
                 model: Color32::from_rgb(0x7f, 0xa8, 0xd8),
                 model_selected: Color32::from_rgb(0xc0, 0x8c, 0xf0),
                 support_preview: Color32::from_rgb(0x5c, 0xe0, 0x8a),
+                cap_edge: Color32::from_rgb(0x24, 0x3a, 0x5a),
+                layer_grid: Color32::from_rgba_unmultiplied(0x6c, 0x7c, 0x94, 0xa0),
                 support: Color32::from_rgb(0xe8, 0xe4, 0xd8),
                 support_selected: Color32::from_rgb(0xff, 0x9a, 0x2e),
                 support_unreachable: Color32::from_rgb(0xf0, 0x55, 0x55),
@@ -164,6 +169,8 @@ impl Tokens {
                 model: Color32::from_rgb(0x4f, 0x7f, 0xb8),
                 model_selected: Color32::from_rgb(0x9a, 0x50, 0xd8),
                 support_preview: Color32::from_rgb(0x1f, 0xa8, 0x50),
+                cap_edge: Color32::from_rgb(0x1a, 0x30, 0x52),
+                layer_grid: Color32::from_rgba_unmultiplied(0x6c, 0x7c, 0x94, 0xa0),
                 support: Color32::from_rgb(0xf4, 0xf1, 0xe8),
                 support_selected: Color32::from_rgb(0xf0, 0x7a, 0x00),
                 support_unreachable: Color32::from_rgb(0xd0, 0x2a, 0x2a),

@@ -1,5 +1,6 @@
 //! The 3D view: models, origin grid and axes, the plate's outline, the axis gizmo, and camera
-//! input.
+//! input. In Slice edition with a job, the layer slider over it, the solids cut at the shown
+//! layer, or the 2D layer view in its place.
 
 use std::sync::Arc;
 
@@ -7,17 +8,26 @@ use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::geom::Vec3;
 use resin_engine::render::{Line, Overlay};
 
-use crate::gpu::{ModelDraw, Sphere, ViewFrame, ViewportCallback};
+use crate::gpu::{Cap, Clip, ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
-use crate::{EditMode, ResinApp, gizmo, i18n, navigation, objects, supports, transform};
+use crate::{EditMode, ResinApp, gizmo, i18n, layer_preview, layer_view, navigation, objects, supports, transform};
 
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
     app.viewport_rect = Some(rect);
     app.step_view_animation(ui.ctx());
+    if !layer_preview::active(app) {
+        app.preview.release();
+    }
+    layer_preview::slider(app, ui.ctx(), rect, tokens);
+    if layer_preview::active(app) && app.preview.flat {
+        layer_view::show(app, ui, rect, &resp, tokens);
+        return;
+    }
+    app.preview.probe = None;
     // The models are drawn into this slot once the gizmo has moved them, and the gizmo over them.
     let painter = ui.painter_at(rect);
     let scene_slot = painter.add(egui::Shape::Noop);
@@ -53,6 +63,32 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         EditMode::Slice => app.supports.clear(),
     }
 
+    let (frame, step) = frame(app, ui.ctx(), rect, tokens);
+    let (right, up, back) = app.session.camera.basis();
+    let cam = app.session.camera;
+    painter.set(scene_slot, egui_wgpu::Callback::new_paint_callback(rect, ViewportCallback(frame)));
+
+    axis_gizmo(&painter, rect, right, up, back, tokens);
+    painter.text(
+        rect.right_bottom() + vec2(-10.0, -8.0),
+        Align2::RIGHT_BOTTOM,
+        i18n::format(
+            "viewport.caption",
+            &[("step", &fmt_step(step)), ("projection", &i18n::tr(if cam.fov > 0.0 { "viewport.perspective" } else { "viewport.orthographic" }))],
+        ),
+        FontId::proportional(12.0),
+        tokens.text_dim,
+    );
+    if app.session.scene.models().is_empty() {
+        painter.text(rect.center(), Align2::CENTER_CENTER, i18n::tr("viewport.empty"), FontId::proportional(16.0), tokens.text_dim);
+    }
+    if ui.input(|i| !i.raw.hovered_files.is_empty()) {
+        painter.rect_stroke(rect.shrink(3.0), 4.0, Stroke::new(3.0, tokens.axis_z), egui::StrokeKind::Inside);
+    }
+}
+
+/// This frame of the 3D view over `rect`, and the grid's step.
+pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens: &Tokens) -> (ViewFrame, f64) {
     let cam = app.session.camera;
     let aspect = f64::from(rect.width().max(1.0)) / f64::from(rect.height().max(1.0));
     let mut overlay = Overlay::build(&cam, aspect, &tokens.overlay());
@@ -62,7 +98,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let r = overlay.radius;
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
-        ui.ctx().request_repaint();
+        ctx.request_repaint();
     }
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
@@ -82,6 +118,13 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let (right, up, back) = cam.basis();
     // A key light from the viewer's upper left, so faces read apart; a fill from the eye.
     let light = (right * -0.45 + up * 0.65 + back * 0.6).normalized().unwrap_or(back);
+    let clip = clip_plane(app);
+    let dim = layer_preview::dimmed(app);
+    let cap = clip.and_then(|c| {
+        let job = app.session.job()?;
+        let image = app.preview.image(job, app.max_texture)?;
+        Some(Cap { image, z: c.above, color: linear(tokens.model), edge: linear(tokens.cap_edge), dim })
+    });
     let frame = ViewFrame {
         view_proj: cam.view_proj_bounds(aspect, &bounds).to_f32(),
         light,
@@ -96,29 +139,25 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         models: model_draws(app, tokens),
         supports: Some(support_mesh),
         support_colors: colors,
+        clip,
+        cap,
     };
-    painter.set(scene_slot, egui_wgpu::Callback::new_paint_callback(rect, ViewportCallback(frame)));
+    (frame, overlay.step)
+}
 
-    axis_gizmo(&painter, rect, right, up, back, tokens);
-    painter.text(
-        rect.right_bottom() + vec2(-10.0, -8.0),
-        Align2::RIGHT_BOTTOM,
-        i18n::format(
-            "viewport.caption",
-            &[
-                ("step", &fmt_step(overlay.step)),
-                ("projection", &i18n::tr(if cam.fov > 0.0 { "viewport.perspective" } else { "viewport.orthographic" })),
-            ],
-        ),
-        FontId::proportional(12.0),
-        tokens.text_dim,
-    );
-    if app.session.scene.models().is_empty() {
-        painter.text(rect.center(), Align2::CENTER_CENTER, i18n::tr("viewport.empty"), FontId::proportional(16.0), tokens.text_dim);
+/// What is kept of the solids: in Slice edition with a job, up to the shown layer's top, and from
+/// the lowest shown layer's bottom once that is raised.
+pub(crate) fn clip_plane(app: &ResinApp) -> Option<Clip> {
+    if !layer_preview::active(app) {
+        return None;
     }
-    if ui.input(|i| !i.raw.hovered_files.is_empty()) {
-        painter.rect_stroke(rect.shrink(3.0), 4.0, Stroke::new(3.0, tokens.axis_z), egui::StrokeKind::Inside);
-    }
+    let layers = &app.session.job()?.sliced.layers;
+    let above = layers.get(app.preview.top)?.z;
+    let below = match app.preview.bottom.checked_sub(1) {
+        Some(i) => layers.get(i)?.z,
+        None => f32::MIN,
+    };
+    Some(Clip { below, above })
 }
 
 /// The gizmo of the edit mode: the transform tool's, or the arrows on selected support joints.
@@ -188,5 +227,68 @@ fn axis_gizmo(painter: &egui::Painter, rect: Rect, right: Vec3, up: Vec3, back: 
         painter.line_segment([centre, tip], Stroke::new(2.5, colour));
         painter.circle_filled(tip, 8.0, colour);
         painter.text(tip, Align2::CENTER_CENTER, label, FontId::proportional(11.0), egui::Color32::WHITE);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prefs::Prefs;
+    use serde_json::json;
+
+    /// A cube of side `a` on the plate, as ASCII STL.
+    pub(crate) fn cube_stl(a: f32) -> String {
+        let quads = [
+            [(0., 0., 0.), (0., 1., 0.), (1., 1., 0.), (1., 0., 0.)],
+            [(0., 0., 1.), (1., 0., 1.), (1., 1., 1.), (0., 1., 1.)],
+            [(0., 0., 0.), (1., 0., 0.), (1., 0., 1.), (0., 0., 1.)],
+            [(0., 1., 0.), (0., 1., 1.), (1., 1., 1.), (1., 1., 0.)],
+            [(0., 0., 0.), (0., 0., 1.), (0., 1., 1.), (0., 1., 0.)],
+            [(1., 0., 0.), (1., 1., 0.), (1., 1., 1.), (1., 0., 1.)],
+        ];
+        let v = |p: (f32, f32, f32)| format!("vertex {} {} {}", p.0 * a, p.1 * a, p.2 * a);
+        let mut text = String::from("solid cube\n");
+        for [a, b, c, d] in quads {
+            for [p, q, r] in [[a, b, c], [a, c, d]] {
+                text += &format!("facet normal 0 0 0\nouter loop\n{}\n{}\n{}\nendloop\nendfacet\n", v(p), v(q), v(r));
+            }
+        }
+        text + "endsolid cube\n"
+    }
+
+    #[test]
+    fn the_cut_follows_the_shown_layer_in_slice_edition_only() {
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let tokens = Tokens::for_dark(true);
+        let dir = std::env::temp_dir().join(format!("resin-ui-cut-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("cube.stl");
+        std::fs::write(&stl, cube_stl(10.0)).unwrap();
+        app.run("file.import_stl", json!({ "path": stl, "fit": false })).unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        app.run("print.slice", json!({})).unwrap();
+        assert!(app.session.job().is_some(), "sliced");
+        app.preview.sync(app.session.job());
+
+        let (f, _) = frame(&mut app, &ctx, rect, &tokens);
+        assert!(f.clip.is_none() && f.cap.is_none(), "Object edition cuts nothing");
+
+        app.mode = EditMode::Slice;
+        app.preview.set_top(50);
+        let (f, _) = frame(&mut app, &ctx, rect, &tokens);
+        let z = app.session.job().unwrap().sliced.layers[50].z;
+        assert_eq!(f.clip.map(|c| (c.above, c.below)), Some((z, f32::MIN)));
+        let cap = f.cap.expect("capped");
+        assert_eq!(cap.z, z);
+        assert_eq!(cap.image.key.1, 50);
+
+        app.preview.set_bottom(10);
+        let below = app.session.job().unwrap().sliced.layers[9].z;
+        assert_eq!(clip_plane(&app).map(|c| c.below), Some(below), "the lowest shown layer's bottom");
+
+        app.mode = EditMode::Support;
+        assert!(frame(&mut app, &ctx, rect, &tokens).0.clip.is_none());
     }
 }
