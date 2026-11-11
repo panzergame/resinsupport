@@ -98,6 +98,12 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let plate = plate_outline(printer.display_x, printer.display_y, linear(tokens.grid_major));
     overlay.lines.extend(plate);
     let r = overlay.radius;
+    // The axis an amount is typed along, across the grid.
+    let typed_axis = transform::typed_axis(app).map(|(c, dir, axis)| {
+        let color = linear(tokens.axes().get(axis).copied().unwrap_or(tokens.axis_x));
+        Line { a: c - dir * r, b: c + dir * r, color }
+    });
+    overlay.lines.extend(typed_axis);
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
         ctx.request_repaint();
@@ -114,8 +120,9 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     }
     bounds.add(overlay.center + Vec3::new(-r, -r, 0.0));
     bounds.add(overlay.center + Vec3::new(r, r, overlay.step * 10.0));
-    for l in &plate {
+    for l in plate.iter().chain(&typed_axis) {
         bounds.add(l.a);
+        bounds.add(l.b);
     }
     let (right, up, back) = cam.basis();
     // A key light from the viewer's upper left, so faces read apart; a fill from the eye.

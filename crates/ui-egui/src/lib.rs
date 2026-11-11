@@ -293,6 +293,11 @@ impl ResinApp {
     /// Undo (`forward` false) or redo the last step. The tool is put away: what it remembers
     /// (placements to cancel back to, a drag's start) may describe models the step removes.
     pub fn step_history(&mut self, forward: bool) {
+        // Undo while typing an amount takes back the amount alone.
+        if transform::typing(self) {
+            transform::abort_typed(self);
+            return;
+        }
         self.tool = None;
         let (id, msg) = if forward { ("edit.redo", "status.redone") } else { ("edit.undo", "status.undone") };
         if let Some(v) = self.run(id, json!({})) {
@@ -646,6 +651,18 @@ impl ResinApp {
             let ids: Vec<u64> = self.session.scene.models().iter().map(|m| m.id).collect();
             self.run("model.select", json!({ "ids": ids }));
         }
+        let typed: Vec<String> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+        for t in &typed {
+            transform::text(self, t);
+        }
         let pressed: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
             i.events
                 .iter()
@@ -656,6 +673,11 @@ impl ResinApp {
                 .collect()
         });
         for (key, mods) in pressed {
+            if transform::key(self, key, mods) {
+                // Taken from the tool's card too: its Enter and Esc would end the tool its own way.
+                ctx.input_mut(|i| i.consume_key(mods, key));
+                continue;
+            }
             if navigation::view_key(self, ctx, key, mods) || layer_preview::key(self, key, mods) {
                 continue;
             }
@@ -874,7 +896,7 @@ impl eframe::App for ResinApp {
         // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is
         // held or the field is typed in; closing it here, not where it began, means a gesture cut
         // short (Esc mid-drag) can't leave every later command merged into it.
-        if self.session.step_open() && !ctx.input(|i| i.pointer.any_down()) && !ctx.text_edit_focused() {
+        if self.session.step_open() && !ctx.input(|i| i.pointer.any_down()) && !ctx.text_edit_focused() && !transform::typing(self) {
             self.session.end_step();
         }
         // After the frame's UI, so a setting changed in it is written now. `Instant` is not there

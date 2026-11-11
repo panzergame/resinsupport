@@ -14,6 +14,7 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - The grid becomes the build plate
 - [x] Object edition and Support edition (Tab); model selection by click (through each model's BVH) or the Models panel
 - [x] Move / Rotate / Scale tools (T, R, S): a gizmo ported from SolidCraft and a live panel, measured from the model as imported; supports follow their model
+- [x] Typed transforms: with Move, Rotate or Scale open, X/Y/Z and an amount (`T X 50`, `R 90`, `S X 2`), shown live; Enter applies and closes the tool, Esc puts back
 - [x] SolidCraft's chrome: application bar, ribbon (workspace card, a tab per edit mode, icon buttons), tool dialog cards, theme
 - [x] UI text in catalogs (English), a Preferences window from SolidCraft's settings table, agent skills
 - [x] Undo and redo (Ctrl+Z, Ctrl+Y): every scene change is a step, a drag or a typed field one step, Cancel leaves the undo history alone

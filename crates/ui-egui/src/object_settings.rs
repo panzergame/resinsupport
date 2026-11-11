@@ -178,6 +178,111 @@ mod tests {
         assert!(!app.session.scene.models()[0].lifted);
     }
 
+    /// One frame of the app's keys, the keys pressed and `text` typed.
+    fn type_in(ctx: &egui::Context, app: &mut ResinApp, keys: &[egui::Key], text: &str) {
+        // Released too: egui reads a second press of a key still down as a repeat.
+        let mut events: Vec<egui::Event> = [true, false]
+            .into_iter()
+            .flat_map(|pressed| {
+                keys.iter().map(move |&key| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE })
+            })
+            .collect();
+        if !text.is_empty() {
+            events.push(egui::Event::Text(text.into()));
+        }
+        let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| app.keys(ui.ctx()));
+        out.textures_delta.clear();
+    }
+
+    fn placement(app: &ResinApp) -> resin_engine::geom::Placement {
+        app.session.scene.models()[0].placement
+    }
+
+    #[test]
+    fn a_typed_move_is_one_step_and_enter_puts_the_tool_away() {
+        use egui::Key;
+        let (mut app, id) = app_with_a_cube(Prefs::default());
+        app.run("model.select", json!({ "ids": [id] }));
+        let (p0, depth) = (placement(&app), app.session.undo_depth());
+        let ctx = egui::Context::default();
+        type_in(&ctx, &mut app, &[Key::T], "t");
+        type_in(&ctx, &mut app, &[], "5");
+        assert_eq!(placement(&app), p0, "no axis yet: nothing moves");
+        type_in(&ctx, &mut app, &[Key::X], "x");
+        assert!((placement(&app).position.x - p0.position.x - 5.0).abs() < 1e-9, "live");
+        type_in(&ctx, &mut app, &[], "0");
+        type_in(&ctx, &mut app, &[Key::Enter], "");
+        assert!(app.tool.is_none());
+        assert!(!app.session.step_open());
+        let p = placement(&app);
+        assert!((p.position.x - p0.position.x - 50.0).abs() < 1e-9 && p.position.y == p0.position.y, "{p:?}");
+        assert!(app.session.scene.models()[0].lifted, "a move across the plate keeps the lift");
+        assert_eq!(app.session.undo_depth(), depth + 1);
+        app.step_history(false);
+        assert_eq!(placement(&app), p0);
+    }
+
+    #[test]
+    fn escape_puts_a_typed_amount_back_and_keeps_the_tool() {
+        use egui::Key;
+        let (mut app, id) = app_with_a_cube(Prefs::default());
+        app.run("model.select", json!({ "ids": [id] }));
+        let (p0, depth) = (placement(&app), app.session.undo_depth());
+        let ctx = egui::Context::default();
+        type_in(&ctx, &mut app, &[Key::T], "t");
+        type_in(&ctx, &mut app, &[Key::Z], "z");
+        type_in(&ctx, &mut app, &[], "12");
+        assert_ne!(placement(&app), p0);
+        type_in(&ctx, &mut app, &[Key::Escape], "");
+        assert_eq!(placement(&app), p0);
+        assert!(app.session.scene.models()[0].lifted);
+        assert!(app.tool.is_some() && !transform::typing(&app));
+        assert_eq!(app.session.undo_depth(), depth);
+    }
+
+    #[test]
+    fn typed_turns_and_scales() {
+        use egui::Key;
+        let (mut app, id) = app_with_a_cube(Prefs::default());
+        app.run("model.select", json!({ "ids": [id] }));
+        let ctx = egui::Context::default();
+        type_in(&ctx, &mut app, &[Key::R], "r");
+        type_in(&ctx, &mut app, &[], "90");
+        type_in(&ctx, &mut app, &[Key::Enter], "");
+        let r = placement(&app).rotation;
+        assert!(r.x.abs() < 1e-6 && r.y.abs() < 1e-6 && (r.z - 90.0).abs() < 1e-6, "about Z without an axis: {r:?}");
+        // The Uniform box is ticked by default: a typed axis scales that axis alone all the same.
+        type_in(&ctx, &mut app, &[Key::S], "s");
+        type_in(&ctx, &mut app, &[Key::X], "x");
+        type_in(&ctx, &mut app, &[], "2");
+        type_in(&ctx, &mut app, &[Key::Enter], "");
+        let k = placement(&app).scale;
+        assert_eq!((k.x, k.y, k.z), (2.0, 1.0, 1.0));
+        type_in(&ctx, &mut app, &[Key::S], "s");
+        type_in(&ctx, &mut app, &[], "0,5");
+        type_in(&ctx, &mut app, &[Key::Enter], "");
+        let k = placement(&app).scale;
+        assert_eq!((k.x, k.y, k.z), (1.0, 0.5, 0.5), "a decimal comma reads as a point");
+    }
+
+    #[test]
+    fn hostile_typing_never_panics_or_moves_wildly() {
+        use egui::Key;
+        let (mut app, id) = app_with_a_cube(Prefs::default());
+        app.run("model.select", json!({ "ids": [id] }));
+        let ctx = egui::Context::default();
+        for (op, text) in [(Key::T, "--1..2.-é9999999999999999999"), (Key::R, "1e999"), (Key::S, "-0"), (Key::S, "...")] {
+            let p0 = placement(&app);
+            type_in(&ctx, &mut app, &[op], "");
+            type_in(&ctx, &mut app, &[Key::Y], "y");
+            type_in(&ctx, &mut app, &[Key::Backspace, Key::Backspace], text);
+            let p = placement(&app);
+            assert!(p.position.x.is_finite() && p.rotation.z.is_finite() && p.scale.y > 0.0, "{text}: {p:?}");
+            type_in(&ctx, &mut app, &[Key::Escape], "");
+            assert_eq!(placement(&app), p0, "{text}");
+        }
+    }
+
     #[test]
     fn the_card_shows_in_object_edition_without_a_tool() {
         let (mut app, id) = app_with_a_cube(Prefs::default());
