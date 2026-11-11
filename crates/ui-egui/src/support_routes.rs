@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere};
-use resin_engine::{BodyShape, ContactShape, Route, Scene, SupportPart, SupportPreset, route};
+use resin_engine::{Primitive, Route, Scene, SupportPart, SupportPreset, route, support_primitives};
 
 /// How far round a joint a press picks it, as a multiple of the body's radius: the joint is drawn
 /// no wider than the body, and a press must not need to land on its sliver beside the columns.
@@ -102,7 +102,7 @@ pub enum Piece {
     Joint(u32),
 }
 
-type MeshKey = (u64, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>);
+type MeshKey = (u64, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>);
 
 #[derive(Default)]
 pub struct RouteCache {
@@ -165,9 +165,12 @@ impl RouteCache {
         self.changed
     }
 
-    /// The solids of every routed support, rebuilt only when a route or the selection changed.
-    pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset) -> Arc<SupportMesh> {
-        let key = (self.changed, scene.selected.clone(), scene.selected_parts.clone());
+    /// The solids of every routed support, the selected ones in their look when `selection`,
+    /// rebuilt only when a route or the selection changed.
+    pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: bool) -> Arc<SupportMesh> {
+        let none = (BTreeSet::new(), BTreeSet::new());
+        let (selected, parts) = if selection { (&scene.selected, &scene.selected_parts) } else { (&none.0, &none.1) };
+        let key = (self.changed, selection, selected.clone(), parts.clone());
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
@@ -177,14 +180,14 @@ impl RouteCache {
         let mut handles = Vec::new();
         for s in scene.supports() {
             let Some((r, _)) = self.routes.get(&s.id) else { continue };
-            let whole = if scene.selected.contains(&s.id) {
+            let whole = if selected.contains(&s.id) {
                 Look::Selected
             } else if r.reachable() && !r.fault {
                 Look::Plain
             } else {
                 Look::Unreachable
             };
-            let look = |part: SupportPart| if scene.selected_parts.contains(&(s.id, part)) { Look::Selected } else { whole };
+            let look = |part: SupportPart| if parts.contains(&(s.id, part)) { Look::Selected } else { whole };
             solids(r, preset, whole, look, &mut groups);
             let radius = (preset.body.diameter / 2.0) as f32;
             for (i, c) in joints(r) {
@@ -253,39 +256,18 @@ fn joints(r: &Route) -> impl Iterator<Item = (u32, Vec3)> + '_ {
     r.body.split_last().map(|(_, corners)| corners).unwrap_or_default().iter().zip(0u32..).map(|(&c, i)| (i, c))
 }
 
-/// One support's solids, sized by `p`, each into the group of its look: a tapered tip from
-/// inside the surface to its head and the base's cone on the plate in `whole`, the body's columns
-/// and the joint at each bend in `look` of their part.
+/// One support's solids ([`support_primitives`]), each into the group of its look: the tip, its
+/// round contact and the base in `whole`, the body's columns and the joint at each bend in
+/// `look` of their part.
 fn solids(r: &Route, p: &SupportPreset, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [SupportMesh; 3]) {
-    let sides = p.body.segments;
-    let mut at = |l: Look, f: &mut dyn FnMut(&mut SupportMesh)| {
-        if let Some(g) = groups.get_mut(l.index()) {
-            f(g);
-        }
-    };
-    let tip_start = r.contact - r.axis * p.tip.penetration;
-    at(whole, &mut |g| {
-        frustum(tip_start, r.head, p.tip.contact_diameter / 2.0, p.tip.upper_diameter / 2.0, sides, true, (true, true), &mut g.vertices);
-        if p.tip.contact_shape == ContactShape::Sphere {
-            g.joints.push((r.contact, (p.tip.contact_diameter / 2.0) as f32, whole));
+    support_primitives(r, p, |part, prim| {
+        let l = part.map_or(whole, &look);
+        let Some(g) = groups.get_mut(l.index()) else { return };
+        match prim {
+            Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } => frustum(a, b, ra, rb, sides, smooth, caps, &mut g.vertices),
+            Primitive::Sphere { center, radius } => g.joints.push((center, radius as f32, l)),
         }
     });
-    let radius = p.body.diameter / 2.0;
-    let smooth = p.body.shape == BodyShape::Cylinder;
-    for (w, i) in r.body.windows(2).zip(0u32..) {
-        if let [a, b] = w {
-            at(look(SupportPart::Segment(i)), &mut |g| frustum(*a, *b, radius, radius, sides, smooth, (false, false), &mut g.vertices));
-        }
-    }
-    for (i, c) in joints(r) {
-        let l = look(SupportPart::Joint(i));
-        at(l, &mut |g| g.joints.push((c, radius as f32, l)));
-    }
-    if let Some(foot) = r.body.last() {
-        at(whole, &mut |g| {
-            frustum(*foot, *foot + Vec3::Z * p.base.height, p.base.diameter / 2.0, radius, sides, smooth, (true, false), &mut g.vertices);
-        });
-    }
 }
 
 #[cfg(test)]
@@ -320,16 +302,16 @@ mod tests {
         while cache.update(&s.scene, &preset) {}
         assert_eq!(cache.routes.len(), 5);
         assert_eq!(cache.unreachable(), 0);
-        let mesh = cache.mesh(&s.scene, &preset);
+        let mesh = cache.mesh(&s.scene, &preset, true);
         assert!(!mesh.vertices.is_empty() && mesh.ranges[1].is_empty() && mesh.ranges[2].is_empty());
-        assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset)), "nothing changed: the same solids");
+        assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, true)), "nothing changed: the same solids");
         // Selecting one moves its solids into the selected range.
         s.execute("support.select", &json!({ "ids": [1] })).unwrap();
-        assert!(!cache.mesh(&s.scene, &preset).ranges[1].is_empty());
+        assert!(!cache.mesh(&s.scene, &preset, true).ranges[1].is_empty());
         // A selected segment and joint: the segment's column moves into the selected range, the
         // joint's handle is selected, and the rest of the support stays plain.
         s.execute("support.select", &json!({ "parts": [{ "support": 3, "segment": 0 }, { "support": 3, "joint": 0 }] })).unwrap();
-        let mesh = cache.mesh(&s.scene, &preset);
+        let mesh = cache.mesh(&s.scene, &preset, true);
         assert!(!mesh.ranges[0].is_empty() && !mesh.ranges[1].is_empty());
         assert_eq!(mesh.handles.len(), 5, "one joint per straight support, where the tip meets the body");
         assert_eq!(mesh.handles.iter().filter(|h| h.selected).count(), 1);

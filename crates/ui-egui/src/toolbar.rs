@@ -4,7 +4,7 @@
 // contextual tabs or document tabs.
 
 //! The application bar (always dark: brand, Home, File, settings, version) and the ribbon under
-//! it: the workspace card, a tab per edit mode (Object, Support), and the tab's groups of
+//! it: the workspace card, a tab per edit mode (Object, Support, Slice), and the tab's groups of
 //! buttons, each an icon over its label with the group's name underneath.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -46,7 +46,8 @@ enum Cmd {
     Fit,
     Home,
     Perspective,
-    PrintSettings,
+    SliceNow,
+    CancelSlice,
 }
 
 /// A button's state this frame.
@@ -73,7 +74,8 @@ impl Cmd {
             Cmd::Fit => "ribbon.fit",
             Cmd::Home => "ribbon.home",
             Cmd::Perspective => "ribbon.perspective",
-            Cmd::PrintSettings => "ribbon.print_settings",
+            Cmd::SliceNow => "ribbon.slice_now",
+            Cmd::CancelSlice => "ribbon.cancel_slice",
         }
     }
 
@@ -88,7 +90,8 @@ impl Cmd {
             Cmd::Fit => "fit",
             Cmd::Home => "home",
             Cmd::Perspective => "perspective",
-            Cmd::PrintSettings => "settings",
+            Cmd::SliceNow => "play",
+            Cmd::CancelSlice => "stop",
         }
     }
 
@@ -113,7 +116,8 @@ impl Cmd {
             Cmd::Fit => state(Some("F"), None, false),
             Cmd::Home => state(None, None, false),
             Cmd::Perspective => state(Some("P"), None, app.session.camera.fov > 0.0),
-            Cmd::PrintSettings => state(None, None, app.print_open),
+            Cmd::SliceNow => state(None, None, false),
+            Cmd::CancelSlice => state(None, (!app.slicer.is_running()).then_some("reason.not_slicing"), false),
         }
     }
 
@@ -138,7 +142,8 @@ impl Cmd {
             Cmd::Fit => app.animate_command("view.fit", json!({ "aspect": app.aspect() })),
             Cmd::Home => app.animate_home(app.aspect()),
             Cmd::Perspective => app.toggle_projection(),
-            Cmd::PrintSettings => app.print_open = !app.print_open,
+            Cmd::SliceNow => app.slice_now(),
+            Cmd::CancelSlice => app.cancel_slice(),
         }
     }
 }
@@ -157,11 +162,10 @@ fn groups(mode: EditMode) -> &'static [Group] {
             Group { name: "group.import", cmds: &[Cmd::Import], views: false },
             Group { name: "group.arrange", cmds: &[Cmd::Move, Cmd::Rotate, Cmd::Scale], views: false },
             Group { name: "group.edit", cmds: &[Cmd::DeleteModels, Cmd::Clear], views: false },
-            // Until the Slice edit mode holds the print settings card.
-            Group { name: "group.print", cmds: &[Cmd::PrintSettings], views: false },
             VIEW,
         ],
         EditMode::Support => &[Group { name: "group.supports", cmds: &[Cmd::PlaceTips, Cmd::DeleteTips], views: false }, VIEW],
+        EditMode::Slice => &[Group { name: "group.slice", cmds: &[Cmd::SliceNow, Cmd::CancelSlice], views: false }, VIEW],
     }
 }
 
@@ -392,11 +396,8 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
 fn tabs(app: &mut ResinApp, ui: &mut Ui, row: Rect, t: &Tokens) {
     let font = FontId::proportional(FONT_BUTTON);
     let mut x = row.left() + RIBBON_TAB_INSET;
-    for mode in [EditMode::Object, EditMode::Support] {
-        let label = i18n::tr(match mode {
-            EditMode::Object => "tab.object",
-            EditMode::Support => "tab.support",
-        });
+    for mode in EditMode::ALL {
+        let label = i18n::tr(mode.tab());
         let width = ui.painter().layout_no_wrap(label.into(), font.clone(), t.text).size().x + 24.0;
         let tr = Rect::from_min_size(pos2(x, row.top() + RIBBON_TAB_INSET), vec2(width, TAB_ROW_HEIGHT - 2.0 * RIBBON_TAB_INSET));
         let resp = ui.interact(tr, ui.id().with(("tab", label)), Sense::click());
@@ -505,7 +506,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let painter = ui.painter();
-            for mode in [EditMode::Object, EditMode::Support] {
+            for mode in EditMode::ALL {
                 for g in groups(mode) {
                     for label in ["Import STL", "Clear Scene", "Perspective", "Move", "An unusually long ribbon label"] {
                         let w = button_width(painter, label);
@@ -524,8 +525,8 @@ mod tests {
 
     #[test]
     fn every_ribbon_word_is_in_the_catalog() {
-        for mode in [EditMode::Object, EditMode::Support] {
-            assert!(i18n::has(mode.label()));
+        for mode in EditMode::ALL {
+            assert!(i18n::has(mode.label()) && i18n::has(mode.tab()));
             for g in groups(mode) {
                 assert!(i18n::has(g.name), "{}", g.name);
                 for c in g.cmds {
@@ -540,7 +541,7 @@ mod tests {
 
     #[test]
     fn every_button_has_an_icon() {
-        for mode in [EditMode::Object, EditMode::Support] {
+        for mode in EditMode::ALL {
             for g in groups(mode) {
                 for c in g.cmds {
                     assert!(icons::exists(c.icon()), "{c:?}: {}", c.icon());

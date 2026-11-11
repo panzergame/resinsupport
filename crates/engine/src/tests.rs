@@ -560,7 +560,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "print.configure" => {
             Some(json!({ "printer": { "name": "Other", "mirror_x": true }, "layers": { "height": 0.03 }, "slicing": { "anti_aliasing": 4 } }))
         }
-        "print.reset" | "print.settings" => Some(json!({})),
+        "print.reset" | "print.settings" | "print.slice" => Some(json!({})),
         "support.add" => Some(json!({ "model": b, "point": [35, 5, 0] })),
         "support.delete" => Some(json!({ "ids": [tip] })),
         "support.configure" => {
@@ -1089,5 +1089,60 @@ fn saving_refuses_other_file_kinds_and_opening_refuses_broken_files() {
     }
     assert!(s.execute("file.open", &json!({ "path": dir.join("missing.rsup") })).is_err());
     assert_eq!(s.undo_depth(), depth);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn supports_reach_the_plate_in_the_slice() {
+    let dir = temp_dir("slice");
+    let path = write_cube_stl(&dir);
+    let mut s = Session::new();
+    let m = s.execute("file.import_stl", &json!({ "path": path })).unwrap()["id"].as_u64().unwrap();
+    // On the plate, alone: its 10 mm.
+    let alone = s.execute("print.slice", &json!({})).unwrap();
+    assert_eq!(alone["layers"], 200);
+    assert_eq!(alone["unreachable_supports"], 0);
+    // Lifted 5 mm and held up by a support from the plate: 15 mm.
+    s.execute("model.lift", &json!({ "lifted": true, "ids": [m] })).unwrap();
+    let bottom = s.scene.model(m).unwrap().bounds.min;
+    s.execute("support.add", &json!({ "model": m, "point": [bottom.x + 5.0, bottom.y + 5.0, bottom.z], "normal": [0, 0, -1] })).unwrap();
+    let held = s.execute("print.slice", &json!({})).unwrap();
+    assert!(held["layers"].as_u64().unwrap() > alone["layers"].as_u64().unwrap());
+    assert_eq!(held["layers"], 300);
+    assert!(held["volume_ml"].as_f64().unwrap() > alone["volume_ml"].as_f64().unwrap(), "the support is printed");
+    assert_eq!((held["clipped"].as_u64(), held["open_rows"].as_u64()), (Some(0), Some(0)));
+    // The first layers: empty without the support, lit with it.
+    let first_lit = s.job().unwrap().sliced.layers[0].lit;
+    assert!(first_lit > 0, "the support's base is on the plate");
+    assert!(s.job_is_current());
+    // Moved off the plate's edge, the cube is clipped.
+    s.execute("model.move", &json!({ "ids": [m], "by": [200, 0, 0] })).unwrap();
+    assert!(!s.job_is_current(), "a scene change makes the job stale");
+    let off = s.execute("print.slice", &json!({})).unwrap();
+    assert!(off["clipped"].as_u64().unwrap() >= 1);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_stale_job_is_refused() {
+    let dir = temp_dir("stale");
+    let path = write_cube_stl(&dir);
+    let mut s = Session::new();
+    let m = s.execute("file.import_stl", &json!({ "path": path })).unwrap()["id"].clone();
+    let (input, unreachable) = s.slice_input();
+    let job = resin_slice::slice(&input, &Default::default(), &Default::default()).unwrap();
+    // Each of the three a job depends on, changed while it was sliced.
+    let mut moved = s.clone();
+    moved.execute("model.move", &json!({ "by": [1, 0, 0], "ids": [m] })).unwrap();
+    assert!(!moved.adopt_job(job.clone(), unreachable));
+    let mut reprinted = s.clone();
+    reprinted.execute("print.configure", &json!({ "exposure": { "normal": 4 } })).unwrap();
+    assert!(!reprinted.adopt_job(job.clone(), unreachable));
+    let mut resupported = s.clone();
+    resupported.execute("support.configure", &json!({ "body": { "diameter": 1.2 } })).unwrap();
+    assert!(!resupported.adopt_job(job.clone(), unreachable));
+    assert!(moved.job().is_none() && !moved.job_is_current());
+    assert!(s.adopt_job(job, unreachable));
+    assert!(s.job_is_current());
     std::fs::remove_dir_all(dir).ok();
 }

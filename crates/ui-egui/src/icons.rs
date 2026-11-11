@@ -45,10 +45,12 @@ const MASTERS: &[(&str, &str)] = &[
     ("import", include_str!("../icons/import.svg")),
     ("move", include_str!("../icons/move.svg")),
     ("perspective", include_str!("../icons/perspective.svg")),
+    ("play", include_str!("../icons/play.svg")),
     ("redo", include_str!("../icons/redo.svg")),
     ("revolve", include_str!("../icons/revolve.svg")),
     ("scale", include_str!("../icons/scale.svg")),
     ("settings", include_str!("../icons/settings.svg")),
+    ("stop", include_str!("../icons/stop.svg")),
     ("undo", include_str!("../icons/undo.svg")),
     ("ws_design", include_str!("../icons/ws_design.svg")),
 ];

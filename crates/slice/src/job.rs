@@ -22,7 +22,7 @@ pub struct Layer {
     pub exposure: f32,
     /// Seconds the light stays off before this layer's exposure.
     pub light_off: f32,
-    /// Lit pixels, weighted by grey.
+    /// Lit pixels, weighted by grey: a pixel at grey 128 counts about half.
     pub lit: u64,
 }
 
@@ -31,6 +31,20 @@ pub struct Layer {
 pub struct JobStats {
     pub volume_ml: f64,
     pub print_time_s: f64,
+    /// Solids that cross the plate's edge, go under it or rise past the build height: what is
+    /// outside is not printed.
+    pub clipped: u32,
+    /// Scanlines whose crossings do not add up to zero: an open or inside-out mesh.
+    pub open_rows: u64,
+}
+
+/// What a job was sliced from: the scene revision and hashes of the print and support settings.
+/// A job whose stamp no longer matches them is stale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Stamp {
+    pub scene: u64,
+    pub print: u64,
+    pub supports: u64,
 }
 
 /// A whole job, with the profile and settings it was sliced for.
@@ -40,4 +54,13 @@ pub struct SlicedJob {
     pub profile: PrinterProfile,
     pub settings: PrintSettings,
     pub stats: JobStats,
+    #[serde(default)]
+    pub stamp: Stamp,
+}
+
+impl SlicedJob {
+    /// The print's height, mm: the last layer's top.
+    pub fn height(&self) -> f64 {
+        self.layers.last().map_or(0.0, |l| f64::from(l.z))
+    }
 }

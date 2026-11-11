@@ -7,7 +7,9 @@ mod cmd;
 mod print_config;
 mod route;
 mod session;
+mod slice_job;
 mod support_settings;
+mod support_solids;
 
 pub use cmd::{CommandSpec, commands};
 pub use print_config::PrintConfig;
@@ -17,7 +19,9 @@ pub use resin_render as render;
 pub use resin_slice as slice;
 pub use route::{Route, route};
 pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
+pub use slice_job::{Job, SliceSource};
 pub use support_settings::{Base, Body, BodyShape, ContactShape, GROUPS, PresetId, Raft, SEGMENTS, SupportPreset, SupportSettings, Tip, range};
+pub use support_solids::{Primitive, SupportTessellator, support_primitives};
 
 pub type Result<T, E = EngineError> = std::result::Result<T, E>;
 

@@ -76,6 +76,9 @@ pub fn commands() -> &'static [CommandSpec] {
         ),
         CommandSpec::new("print.reset", "Restore Print Settings", print_config::reset),
         CommandSpec::new("print.settings", "List Print Settings", print_config::settings),
+        CommandSpec::new("print.slice", "Slice", print_config::slice).params(
+            "none; slices the scene with its reachable supports and the print settings, on the calling thread, and keeps the job. Returns layers, height mm, volume_ml, print_time_s, clipped (solids crossing the plate's edge or build height), unreachable_supports (left out), open_rows (rows of open or inside-out meshes)",
+        ),
         CommandSpec::new("scene.clear", "Clear Scene", model::clear),
         CommandSpec::new("scene.lift_height", "Lift Height", model::lift_height)
             .params("height: mm, 0 to 500: where every lifted model's lowest point sits"),

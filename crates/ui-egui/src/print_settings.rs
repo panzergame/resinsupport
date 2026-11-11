@@ -1,8 +1,8 @@
 //! The print settings card: the printer profile and how the resin is exposed and the plate moves,
 //! on four tabs (Printer, Bottom Layers, Regular Layers, Slicing), and Restore defaults. Every edit runs
 //! `print.configure` at once; the configuration is not an undo step, and `ResinApp::run` keeps it
-//! in the preferences. Opened from the ribbon until the Slice edit mode holds it; the header's
-//! close button or the ribbon button closes it, Esc doesn't.
+//! in the preferences. Shown for as long as the Slice edit mode lasts, and only then: nothing
+//! else opens or closes it.
 
 use egui::{DragValue, pos2, vec2};
 use resin_engine::PrintConfig;
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
 use crate::ui_kit::{self, Action, Buttons, Card, Confirm};
-use crate::{ResinApp, i18n};
+use crate::{EditMode, ResinApp, i18n};
 
 /// The card's tabs: the catalog ids of their names, in order.
 pub const TABS: [&str; 4] = ["printing.tab.printer", "printing.tab.bottom", "printing.tab.regular", "printing.tab.slicing"];
@@ -34,12 +34,12 @@ pub(crate) fn configure(app: &mut ResinApp, params: Value) {
 
 /// The card while it is open, and Restore defaults' confirmation.
 pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
-    if !app.print_open {
+    if app.mode != EditMode::Slice {
         app.confirm_print_reset = false;
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(pos2(700.0, 140.0), |r| r.right_top() + vec2(-SPACE_12 - FORM_TABBED_CARD_WIDTH, SPACE_12));
+    let at = app.viewport_rect.map_or(pos2(220.0, 140.0), |r| r.left_top() + vec2(SPACE_12, SPACE_12));
     let before = app.session.print_config().clone();
     let mut c = before.clone();
     let mut tab = app.print_tab.min(TABS.len() - 1);
@@ -51,9 +51,9 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         at,
         bounds: app.viewport_rect,
         width: FORM_TABBED_CARD_WIDTH,
-        buttons: Buttons::CloseOnly,
+        buttons: Buttons::None,
     };
-    let action = card.show(ctx, &t, |ui| {
+    card.show(ctx, &t, |ui| {
         let tabs = TABS.map(i18n::tr);
         ui_kit::segmented(ui, &t, &mut tab, &tabs);
         match tab {
@@ -68,9 +68,6 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         ui_kit::hint(ui, &t, i18n::tr("printing.hint"));
     });
     app.print_tab = tab;
-    if action == Action::Cancel {
-        app.print_open = false;
-    }
     if let Some(edit) = changes(&before, &c) {
         configure(app, edit);
     }
@@ -245,12 +242,13 @@ mod tests {
     }
 
     #[test]
-    fn the_card_shows_while_open_on_every_tab_without_changing_a_setting() {
+    fn the_card_shows_in_slice_mode_on_every_tab_without_changing_a_setting() {
         let mut app = ResinApp::build(Prefs::default(), &[]);
         let ctx = egui::Context::default();
         frame(&ctx, &mut app, vec![]);
         assert!(!shown(&ctx));
-        app.print_open = true;
+        // Set directly: entering the mode through `set_mode` would start a slice.
+        app.mode = EditMode::Slice;
         let (config, depth) = (app.session.print_config().clone(), app.session.undo_depth());
         for tab in 0..TABS.len() {
             app.print_tab = tab;
@@ -258,37 +256,16 @@ mod tests {
             frame(&ctx, &mut app, vec![]);
             assert!(shown(&ctx), "tab {tab}");
         }
-        // Esc leaves a permanent card alone.
+        // Esc leaves it alone: it lasts as long as the mode.
         frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
-        assert!(app.print_open);
+        assert!(shown(&ctx));
         assert_eq!((app.session.print_config(), app.session.undo_depth()), (&config, depth));
-        app.print_open = false;
-        frame(&ctx, &mut app, vec![]);
-        frame(&ctx, &mut app, vec![]);
-        assert!(!shown(&ctx));
-    }
-
-    #[test]
-    fn the_close_button_closes_the_card() {
-        let mut app = ResinApp::build(Prefs::default(), &[]);
-        app.print_open = true;
-        let ctx = egui::Context::default();
-        // A window's first frame only sizes it.
-        frame(&ctx, &mut app, vec![]);
-        frame(&ctx, &mut app, vec![]);
-        let card = ctx.memory(|m| m.area_rect(egui::Id::new(CARD_ID))).unwrap();
-        let at = pos2(card.right() - SPACE_8 - FORM_CLOSE_SIZE / 2.0, card.top() + FORM_HEADER_HEIGHT / 2.0);
-        let button =
-            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-        let config = app.session.print_config().clone();
-        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
-        frame(&ctx, &mut app, vec![button(true)]);
-        frame(&ctx, &mut app, vec![button(false)]);
-        assert!(!app.print_open);
-        frame(&ctx, &mut app, vec![]);
-        frame(&ctx, &mut app, vec![]);
-        assert!(!shown(&ctx));
-        assert_eq!(*app.session.print_config(), config, "closing changes no setting");
+        for mode in [EditMode::Object, EditMode::Support] {
+            app.mode = mode;
+            frame(&ctx, &mut app, vec![]);
+            frame(&ctx, &mut app, vec![]);
+            assert!(!shown(&ctx), "{mode:?}");
+        }
     }
 
     #[test]
@@ -314,7 +291,7 @@ mod tests {
     #[test]
     fn restore_defaults_waits_for_its_confirmation_and_keeps_the_printer() {
         let mut app = ResinApp::build(Prefs::default(), &[]);
-        app.print_open = true;
+        app.mode = EditMode::Slice;
         app.run("print.configure", json!({ "printer": { "name": "Mine" }, "exposure": { "bottom": 25 } }));
         let edited = app.session.print_config().clone();
         let ctx = egui::Context::default();

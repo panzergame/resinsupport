@@ -34,7 +34,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 
 ## 5. Slicing
 - [x] Print settings: crate `resin-slice` (printer profile, print settings, the sliced job's types), `print.configure`, `print.reset`, `print.settings`, a print settings card, kept in the preferences, never undo steps
-- Layer images from the mesh, layer preview
+- [x] Slice edition and the slicer: a rasterizer ported from mslicer (nonzero fill, anti-aliasing, clipping), supports printed as drawn, `print.slice`, a background job with progress and cancel, the plate's outline
+- Layer preview
 - Printer profile, later: portrait orientation (PrusaSlicer `display_orientation`), gamma or exposure remap (PrusaSlicer `gamma_correction`, mslicer `ExposureRemap`), XY absolute and XYZ scale correction (PrusaSlicer `absolute_correction`, `relative_correction`)
 - Print settings, later: two-stage lift and retract, waits before cure, after cure and after lift (CTB v4 and up); elephant-foot compensation and minimum width (PrusaSlicer `elefant_foot_compensation`, mslicer `elephant_foot_fixer.rs`); hollowing, Z bleed correction (PrusaSlicer `hollowing_*`, `zcorrection_layers`)
 

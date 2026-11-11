@@ -1,10 +1,11 @@
-//! The 3D view: models, origin grid and axes, the axis gizmo, and camera input.
+//! The 3D view: models, origin grid and axes, the plate's outline, the axis gizmo, and camera
+//! input.
 
 use std::sync::Arc;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::geom::Vec3;
-use resin_engine::render::Overlay;
+use resin_engine::render::{Line, Overlay};
 
 use crate::gpu::{ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
@@ -36,6 +37,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
             match app.mode {
                 EditMode::Object => transform::drag(app, g),
                 EditMode::Support => supports::drag(app, g),
+                EditMode::Slice => {}
             }
         }
     } else {
@@ -47,17 +49,22 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
             objects::handle(app, ui, &proj, &resp);
         }
         EditMode::Support => supports::handle(app, ui, &proj, &resp),
+        // Nothing is picked: the view only navigates.
+        EditMode::Slice => app.supports.clear(),
     }
 
     let cam = app.session.camera;
     let aspect = f64::from(rect.width().max(1.0)) / f64::from(rect.height().max(1.0));
-    let overlay = Overlay::build(&cam, aspect, &tokens.overlay());
+    let mut overlay = Overlay::build(&cam, aspect, &tokens.overlay());
+    let printer = &app.session.print_config().printer;
+    let plate = plate_outline(printer.display_x, printer.display_y, linear(tokens.grid_major));
+    overlay.lines.extend(plate);
     let r = overlay.radius;
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
         ui.ctx().request_repaint();
     }
-    let support_mesh = app.routes.mesh(&app.session.scene, &preset);
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, &support_mesh, &colors, tokens);
     let handles = joint_handles(app, &support_mesh, tokens);
@@ -69,6 +76,9 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     }
     bounds.add(overlay.center + Vec3::new(-r, -r, 0.0));
     bounds.add(overlay.center + Vec3::new(r, r, overlay.step * 10.0));
+    for l in &plate {
+        bounds.add(l.a);
+    }
     let (right, up, back) = cam.basis();
     // A key light from the viewer's upper left, so faces read apart; a fill from the eye.
     let light = (right * -0.45 + up * 0.65 + back * 0.6).normalized().unwrap_or(back);
@@ -116,7 +126,16 @@ fn triad(app: &ResinApp) -> Option<gizmo::Triad> {
     match app.mode {
         EditMode::Object => transform::triad(app),
         EditMode::Support => supports::triad(app),
+        EditMode::Slice => None,
     }
+}
+
+/// The printer's display, `x` by `y` mm centred on the origin, on the ground: what fits on the
+/// plate is inside it.
+fn plate_outline(x: f64, y: f64, color: [f32; 4]) -> [Line; 4] {
+    let (hx, hy) = (x / 2.0, y / 2.0);
+    let c = [Vec3::new(-hx, -hy, 0.0), Vec3::new(hx, -hy, 0.0), Vec3::new(hx, hy, 0.0), Vec3::new(-hx, hy, 0.0)];
+    [0, 1, 2, 3].map(|i| Line { a: c[i], b: c[(i + 1) % 4], color })
 }
 
 /// Every model, the selected ones in their own colour while in Object mode.

@@ -13,6 +13,7 @@ pub mod preferences;
 pub mod prefs;
 pub mod prefs_writer;
 pub mod print_settings;
+pub mod slice_runner;
 pub mod support_routes;
 pub mod support_settings;
 pub mod supports;
@@ -39,20 +40,35 @@ pub enum EditMode {
     Object,
     /// Support edition: place and select support tips.
     Support,
+    /// Slicing: the scene is sliced in the background with the print settings shown.
+    Slice,
 }
 
 impl EditMode {
+    /// Every mode, in the order of their tabs and of Tab.
+    pub const ALL: [EditMode; 3] = [EditMode::Object, EditMode::Support, EditMode::Slice];
+
     /// Catalog id of its name.
     pub fn label(self) -> &'static str {
         match self {
             EditMode::Object => "mode.object",
             EditMode::Support => "mode.support",
+            EditMode::Slice => "mode.slice",
         }
     }
-    fn other(self) -> EditMode {
+    /// Catalog id of its tab's name.
+    pub fn tab(self) -> &'static str {
+        match self {
+            EditMode::Object => "tab.object",
+            EditMode::Support => "tab.support",
+            EditMode::Slice => "tab.slice",
+        }
+    }
+    fn next(self) -> EditMode {
         match self {
             EditMode::Object => EditMode::Support,
-            EditMode::Support => EditMode::Object,
+            EditMode::Support => EditMode::Slice,
+            EditMode::Slice => EditMode::Object,
         }
     }
 }
@@ -84,9 +100,10 @@ pub struct ResinApp {
     pub(crate) settings_tab: usize,
     /// Restore defaults was clicked: its confirmation is open.
     pub(crate) confirm_reset: bool,
-    /// The print settings card is open, on this tab.
-    pub(crate) print_open: bool,
+    /// The print settings card's tab.
     pub(crate) print_tab: usize,
+    /// The background slice.
+    pub(crate) slicer: slice_runner::SliceRunner,
     /// The print settings' Restore defaults was clicked: its confirmation is open.
     pub(crate) confirm_print_reset: bool,
     prefs_writer: prefs_writer::PrefsWriter,
@@ -140,8 +157,8 @@ impl ResinApp {
             pending: Vec::new(),
             settings_tab: 0,
             confirm_reset: false,
-            print_open: false,
             print_tab: 0,
+            slicer: Default::default(),
             confirm_print_reset: false,
             prefs_writer: writer,
             title: String::new(),
@@ -191,10 +208,65 @@ impl ResinApp {
         if mode == self.mode {
             return;
         }
-        if mode == EditMode::Support {
+        if mode != EditMode::Object {
             self.cancel_pending();
         }
         self.mode = mode;
+        if mode == EditMode::Slice && !self.slice_is_fresh() {
+            self.slice_now();
+        }
+    }
+
+    /// Whether the kept job or the running one matches the scene and settings, or the user
+    /// cancelled at them: nothing to start.
+    fn slice_is_fresh(&self) -> bool {
+        let stamp = self.session.slice_stamp();
+        self.session.job_is_current() || self.slicer.running_stamp() == Some(stamp) || self.slicer.held == Some(stamp)
+    }
+
+    /// Slice the scene as it is now, cancelling a job already running.
+    pub(crate) fn slice_now(&mut self) {
+        self.slicer.start(self.session.slice_source());
+    }
+
+    /// Cancel the running slice; nothing starts on its own until the scene or a setting changes.
+    pub(crate) fn cancel_slice(&mut self) {
+        self.slicer.hold(self.session.slice_stamp());
+    }
+
+    /// Each frame: keep a finished job if it still matches, and in Slice edition slice again a
+    /// moment after the scene or a setting changed.
+    fn drive_slicer(&mut self, ctx: &egui::Context) {
+        if let Some(outcome) = self.slicer.poll() {
+            match outcome {
+                Ok((job, unreachable)) => {
+                    if !self.session.adopt_job(job, unreachable) && self.mode == EditMode::Slice {
+                        self.slice_now();
+                    }
+                }
+                Err(e) => self.status = Some((i18n::format("status.slice_failed", &[("error", &e)]), true)),
+            }
+        }
+        if self.mode == EditMode::Slice {
+            if self.slice_is_fresh() {
+                self.slicer.pending = None;
+            } else {
+                // Every further change pushes the start back: a dragged field slices once, at
+                // the end.
+                let stamp = self.session.slice_stamp();
+                match self.slicer.pending {
+                    Some((s, t)) if s == stamp && self.time >= t => self.slice_now(),
+                    Some((s, t)) if s == stamp => ctx.request_repaint_after(std::time::Duration::from_secs_f64((t - self.time).max(0.0))),
+                    _ => {
+                        self.slicer.pending = Some((stamp, self.time + slice_runner::DEBOUNCE));
+                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(slice_runner::DEBOUNCE));
+                    }
+                }
+            }
+        }
+        if self.slicer.is_running() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 
     /// Cancel whatever is pending, as its own Cancel would: the open Move, Rotate or Scale tool.
@@ -483,6 +555,7 @@ impl ResinApp {
             let selected = match self.mode {
                 EditMode::Object => scene.selected_models.len(),
                 EditMode::Support => scene.selected.len() + scene.selected_parts.len(),
+                EditMode::Slice => 0,
             };
             ui.label(i18n::format(
                 "status.summary",
@@ -491,9 +564,14 @@ impl ResinApp {
             if selected > 0 {
                 ui.label(i18n::format("status.selected", &[("n", &selected)]));
             }
-            let unreachable = self.routes.unreachable();
-            if unreachable > 0 {
-                ui.colored_label(tokens.support_unreachable, i18n::count("status.unreachable", unreachable, &[]));
+            if self.mode == EditMode::Slice {
+                ui.separator();
+                self.slice_status(ui, tokens);
+            } else {
+                let unreachable = self.routes.unreachable();
+                if unreachable > 0 {
+                    ui.colored_label(tokens.support_unreachable, i18n::count("status.unreachable", unreachable, &[]));
+                }
             }
             if let Some((msg, error)) = &self.status {
                 ui.separator();
@@ -558,7 +636,7 @@ impl ResinApp {
                             m.surrender_focus(id);
                         }
                     });
-                    self.set_mode(self.mode.other());
+                    self.set_mode(self.mode.next());
                 }
                 egui::Key::Escape if plain => self.tool = None,
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
@@ -591,8 +669,54 @@ impl ResinApp {
                     self.status = Some((i18n::count("status.deleted_supports", n, &[]), false));
                 }
             }
-            EditMode::Support => {}
+            EditMode::Support | EditMode::Slice => {}
         }
+    }
+
+    /// The slice's progress, or the kept job's measures and what it left out.
+    fn slice_status(&self, ui: &mut egui::Ui, tokens: &Tokens) {
+        if let Some((done, total)) = self.slicer.progress() {
+            let msg = if total == 0 {
+                i18n::tr("status.slice_preparing").to_string()
+            } else {
+                i18n::format("status.slicing", &[("done", &done), ("total", &total)])
+            };
+            ui.label(msg);
+            return;
+        }
+        let Some(job) = self.session.job() else { return };
+        if !self.session.job_is_current() {
+            ui.label(i18n::tr("status.slice_stale"));
+            return;
+        }
+        let (sliced, st) = (&job.sliced, &job.sliced.stats);
+        ui.label(i18n::format(
+            "status.sliced",
+            &[
+                ("layers", &sliced.layers.len()),
+                ("height", &format!("{:.2}", sliced.height())),
+                ("volume", &format!("{:.2}", st.volume_ml)),
+                ("time", &duration(st.print_time_s)),
+            ],
+        ));
+        let warn = |ui: &mut egui::Ui, id: &'static str, n: u64| {
+            if n > 0 {
+                ui.colored_label(tokens.warning, i18n::count(id, n as usize, &[]));
+            }
+        };
+        warn(ui, "status.slice_clipped", u64::from(st.clipped));
+        warn(ui, "status.slice_left_out", job.unreachable_supports as u64);
+        warn(ui, "status.slice_open_rows", st.open_rows);
+    }
+}
+
+/// A print time: hours and minutes, or minutes alone under an hour.
+fn duration(seconds: f64) -> String {
+    let minutes = (seconds.max(0.0) / 60.0).round() as u64;
+    if minutes < 60 {
+        i18n::format("status.minutes", &[("m", &minutes)])
+    } else {
+        i18n::format("status.hours", &[("h", &(minutes / 60)), ("m", &format!("{:02}", minutes % 60))])
     }
 }
 
@@ -648,6 +772,7 @@ impl eframe::App for ResinApp {
             self.import_all(pending);
         }
         self.keys(&ctx);
+        self.drive_slicer(&ctx);
         self.update_title(&ctx);
         toolbar::app_bar(self, ui, &tokens);
         toolbar::ribbon(self, ui, &tokens);
@@ -741,6 +866,68 @@ mod tests {
         assert!(app.pending_open.is_none());
         assert_eq!(app.session.scene.models().len(), 2, "opened, then the STL dropped with it imported");
         assert_ne!(app.session.scene.models()[0].placement, moved);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Drive the slicer until its job is in, as frames would.
+    fn finish_slice(app: &mut ResinApp, ctx: &egui::Context) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while app.slicer.is_running() && std::time::Instant::now() < deadline {
+            app.drive_slicer(ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        app.drive_slicer(ctx);
+    }
+
+    #[test]
+    fn entering_slice_mode_slices_once_until_something_changes() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-slice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("tri.stl");
+        std::fs::write(&stl, "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 1\nendloop\nendfacet\nendsolid t\n")
+            .unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        app.run("file.import_stl", json!({ "path": stl, "fit": false })).unwrap();
+        let ctx = egui::Context::default();
+        app.set_mode(EditMode::Slice);
+        assert_eq!(app.slicer.started, 1, "entering starts a job");
+        assert!(app.slicer.is_running() || app.slicer.poll().is_some());
+        finish_slice(&mut app, &ctx);
+        assert!(app.session.job_is_current());
+
+        // Nothing changed: leaving and coming back starts nothing.
+        app.set_mode(EditMode::Object);
+        app.set_mode(EditMode::Slice);
+        app.drive_slicer(&ctx);
+        assert_eq!(app.slicer.started, 1);
+
+        // Settings changed: a new job, once the changes stop.
+        app.run("print.configure", json!({ "exposure": { "normal": 4 } }));
+        app.drive_slicer(&ctx);
+        assert_eq!(app.slicer.started, 1, "not at once");
+        app.time += 0.3;
+        app.run("print.configure", json!({ "exposure": { "normal": 5 } }));
+        app.drive_slicer(&ctx);
+        app.time += 0.3;
+        app.drive_slicer(&ctx);
+        assert_eq!(app.slicer.started, 1, "the second change pushed the start back");
+        app.time += slice_runner::DEBOUNCE - 0.3 + 0.01;
+        app.drive_slicer(&ctx);
+        assert_eq!(app.slicer.started, 2);
+
+        // Cancelled: nothing starts on its own until something changes again.
+        app.cancel_slice();
+        assert!(!app.slicer.is_running());
+        app.time += 10.0;
+        app.drive_slicer(&ctx);
+        app.time += 10.0;
+        app.drive_slicer(&ctx);
+        assert_eq!(app.slicer.started, 2);
+        app.slice_now();
+        assert_eq!(app.slicer.started, 3);
+        finish_slice(&mut app, &ctx);
+        assert!(app.session.job_is_current());
+        assert_eq!(EditMode::Slice.next(), EditMode::Object);
         std::fs::remove_dir_all(dir).ok();
     }
 }

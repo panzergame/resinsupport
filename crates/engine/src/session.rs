@@ -461,6 +461,8 @@ pub struct Session {
     pub(crate) history: History,
     /// The scene's file and the scene revision last saved to or opened from it.
     pub(crate) file: Option<(String, u64)>,
+    /// The last slice kept: derived, never an undo step.
+    pub(crate) job: Option<crate::Job>,
 }
 
 impl Session {

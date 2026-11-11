@@ -149,17 +149,43 @@ impl PrintSettings {
     /// (transition layer `k` of `n` takes `k + 1` steps of `(bottom − normal) / (n + 1)`), so the
     /// first transition layer is already less than a bottom one.
     pub fn exposure_for(&self, layer: u32) -> f32 {
+        self.layer_motion(layer).exposure as f32
+    }
+
+    /// How far layer `layer` is from a bottom layer (0) to a normal one (1): the transition
+    /// layers step between them as [`PrintSettings::exposure_for`] says.
+    fn normal_weight(&self, layer: u32) -> f64 {
         let (bottom, transition) = (self.layers.bottom_count, self.layers.transition_count);
-        let e = &self.exposure;
-        let s = if layer < bottom {
-            e.bottom
+        if layer < bottom {
+            0.0
         } else if layer < bottom.saturating_add(transition) {
-            let t = f64::from(layer - bottom + 1) / (f64::from(transition) + 1.0);
-            e.bottom + (e.normal - e.bottom) * t
+            f64::from(layer - bottom + 1) / (f64::from(transition) + 1.0)
         } else {
-            e.normal
+            1.0
+        }
+    }
+
+    /// Everything layer `layer` does, the transition layers stepping each bottom value towards
+    /// its normal one as the exposure does.
+    pub fn layer_motion(&self, layer: u32) -> LayerMotion {
+        let t = self.normal_weight(layer);
+        let step = |bottom: f64, normal: f64| {
+            if t == 0.0 {
+                bottom
+            } else if t == 1.0 {
+                normal
+            } else {
+                bottom + (normal - bottom) * t
+            }
         };
-        s as f32
+        let (e, m) = (&self.exposure, &self.motion);
+        LayerMotion {
+            exposure: step(e.bottom, e.normal),
+            light_off: step(e.bottom_light_off, e.light_off),
+            lift_height: step(m.bottom_lift_height, m.lift_height),
+            lift_speed: step(m.bottom_lift_speed, m.lift_speed),
+            retract_speed: m.retract_speed,
+        }
     }
 
     fn number(&self, group: &str, key: &str) -> Option<f64> {
@@ -212,6 +238,25 @@ impl PrintSettings {
             _ => return false,
         }
         true
+    }
+}
+
+/// One layer's exposure and motion: seconds, millimetres, mm/min.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerMotion {
+    pub exposure: f64,
+    pub light_off: f64,
+    pub lift_height: f64,
+    pub lift_speed: f64,
+    pub retract_speed: f64,
+}
+
+impl LayerMotion {
+    /// Seconds the layer takes: exposed, dark, lifted and lowered back (mslicer's
+    /// `ExposureConfig::print_time`), the speeds being per minute.
+    pub fn seconds(&self) -> f64 {
+        let travel = |speed: f64| if speed > 0.0 { self.lift_height / speed * 60.0 } else { 0.0 };
+        self.exposure + self.light_off + travel(self.lift_speed) + travel(self.retract_speed)
     }
 }
 
