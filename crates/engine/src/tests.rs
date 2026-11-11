@@ -650,6 +650,8 @@ fn fixture(dir: &std::path::Path) -> Fixture {
     let tip = s.execute("support.add", &json!({ "model": a, "point": [5, 5, 0] })).unwrap()["id"].as_u64().unwrap();
     s.execute("model.select", &json!({ "ids": [a] })).unwrap();
     s.execute("support.select", &json!({ "ids": [tip] })).unwrap();
+    // Something for `edit.paste` to paste.
+    s.execute("edit.copy", &json!({ "ids": [a] })).unwrap();
     let project = dir.join("fixture.rsup");
     std::fs::write(&project, resin_io::write_project(&s.scene.project()).unwrap()).unwrap();
     Fixture { session: s, path, project, a, b, tip }
@@ -661,6 +663,8 @@ fn fixture(dir: &std::path::Path) -> Fixture {
 fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
     let (a, b, tip) = (f.a, f.b, f.tip);
     Some(match id {
+        "edit.copy" => Some(json!({ "ids": [b] })),
+        "edit.paste" => Some(json!({})),
         "edit.redo" | "edit.undo" => None,
         "file.import_stl" => Some(json!({ "path": f.path, "fit": false, "arrange": true })),
         "file.open" => None,
@@ -728,6 +732,57 @@ fn every_scene_change_is_undoable() {
         s.execute("edit.redo", &json!({})).unwrap();
         assert_eq!(fingerprint(s), after, "{}: redo did not make it again", spec.id);
     }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A copied model pastes with its supports and lift, beside the others on the plate and selected,
+/// as one step; still after the original is deleted, and as often as asked.
+#[test]
+fn copied_models_paste_with_their_supports_beside_the_others() {
+    let dir = temp_dir("paste");
+    let path = write_cube_stl(&dir);
+    let mut s = Session::new();
+    assert!(s.execute("edit.paste", &json!({})).is_err(), "nothing copied yet");
+    assert!(s.execute("edit.copy", &json!({})).is_err(), "nothing selected");
+    let a = s.execute("file.import_stl", &json!({ "path": path, "arrange": true })).unwrap()["id"].as_u64().unwrap();
+    s.execute("model.lift", &json!({ "lifted": true, "ids": [a] })).unwrap();
+    let tip_at = s.scene.model(a).unwrap().bounds.min;
+    s.execute("support.add", &json!({ "model": a, "point": [tip_at.x + 5.0, tip_at.y + 5.0, tip_at.z] })).unwrap();
+    s.execute("model.select", &json!({ "ids": [a] })).unwrap();
+    let depth = s.undo_depth();
+    assert_eq!(s.execute("edit.copy", &json!({})).unwrap()["copied"], json!(1));
+    assert_eq!(s.undo_depth(), depth, "copying is no step");
+    assert!(s.can_paste());
+
+    let r = s.execute("edit.paste", &json!({})).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+    let ids: Vec<u64> = r["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let [copy] = ids[..] else { panic!("{r}") };
+    assert_eq!(r["beside"], json!([]));
+    assert_eq!(s.scene.selected_models.iter().copied().collect::<Vec<_>>(), vec![copy]);
+    let (m, orig) = (s.scene.model(copy).unwrap(), s.scene.model(a).unwrap());
+    assert!(m.lifted && std::sync::Arc::ptr_eq(&m.mesh, &orig.mesh) && m.name == orig.name);
+    assert!((m.bounds.min.z - s.scene.lift_height()).abs() < 1e-9, "at the lift height: {:?}", m.bounds);
+    let (fa, fc, plate) = (footprint_of(&s, a), footprint_of(&s, copy), plate_of(&s));
+    assert!(on(&fc, &plate), "{fc:?}");
+    assert!(fc.min[0] >= fa.max[0] || fa.min[0] >= fc.max[0] || fc.min[1] >= fa.max[1] || fa.min[1] >= fc.max[1], "apart: {fa:?} {fc:?}");
+    let tips: Vec<&crate::Support> = s.scene.supports().iter().filter(|t| t.model == copy).collect();
+    let [t] = tips[..] else { panic!("one support on the copy: {:?}", s.scene.supports()) };
+    let shift = m.placement.position - orig.placement.position;
+    let want = s.scene.supports().iter().find(|t| t.model == a).unwrap().tip + shift;
+    assert!((t.tip - want).len() < 1e-6, "the tip moved with the copy: {:?} {want:?}", t.tip);
+
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.scene.model(copy).is_none() && s.scene.supports().len() == 1);
+
+    // The clipboard holds the model itself: deleted, it still pastes, and again.
+    s.execute("model.delete", &json!({ "id": a })).unwrap();
+    let first = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+    let second = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(s.scene.models().len(), 2);
+    assert_eq!(s.scene.supports().len(), 2);
+    let (f1, f2) = (footprint_of(&s, first), footprint_of(&s, second));
+    assert!(f1.min[0] >= f2.max[0] || f2.min[0] >= f1.max[0] || f1.min[1] >= f2.max[1] || f2.min[1] >= f1.max[1], "apart: {f1:?} {f2:?}");
     std::fs::remove_dir_all(dir).ok();
 }
 

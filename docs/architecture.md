@@ -17,6 +17,8 @@ Support tips live in `engine::Scene` until supports get settings and generation,
 
 | Id | Does |
 |---|---|
+| `edit.copy` | keep models `ids` (by default the selected ones) and their supports for `edit.paste`, replacing what was copied before; the copies live on `Session`, not in the scene, so copying is no step and a copied model deleted since still pastes |
+| `edit.paste` | add copies of what was copied, with their supports and lift, arranged on the plate around the others as `model.arrange` does, and select them |
 | `edit.redo` | make the last undone step again |
 | `edit.undo` | put the scene back as it was before the last step |
 | `file.open` | replace the scene with the `.rsup` project at `path`: its models unlifted, where they were saved, and their supports; fit the view; start a fresh undo history |

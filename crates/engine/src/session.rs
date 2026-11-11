@@ -383,12 +383,17 @@ impl Scene {
     /// and normal on its model and placed corners. Not the lift (a model setting), ids or the
     /// selection.
     pub fn project(&self) -> Project {
-        let models = self.models.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement }).collect();
+        self.project_of(|_| true)
+    }
+    /// [`Scene::project`] for the models `keep` takes, and their supports.
+    pub(crate) fn project_of(&self, keep: impl Fn(u64) -> bool) -> Project {
+        let kept: Vec<&Model> = self.models.iter().filter(|m| keep(m.id)).collect();
+        let models = kept.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement }).collect();
         let supports = self
             .supports
             .iter()
             .filter_map(|s| {
-                let model = self.models.iter().position(|m| m.id == s.model)?;
+                let model = kept.iter().position(|m| m.id == s.model)?;
                 Some(ProjectSupport { model, tip: s.local_tip, normal: s.local_normal, corners: s.corners.clone() })
             })
             .collect();
@@ -403,6 +408,12 @@ impl Scene {
         self.supports.clear();
         self.prune_selection();
         self.revision += 1;
+        self.append(p).map(|_| ())
+    }
+    /// Add the project `p`'s models and supports beside what is there, with new ids, unlifted,
+    /// exactly where they were saved; returns the new models' ids in `p`'s order. Fails half done,
+    /// as [`Scene::adopt`].
+    pub(crate) fn append(&mut self, p: Project) -> Result<Vec<u64>> {
         let mut ids = Vec::with_capacity(p.models.len());
         for pm in p.models {
             let id = self.add_shared(pm.name, pm.mesh);
@@ -429,7 +440,7 @@ impl Scene {
             self.next_support_id += 1;
             self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: ps.corners, local_tip: ps.tip, local_normal });
         }
-        Ok(())
+        Ok(ids)
     }
     /// Become `older` (an undo or redo step). Ids and the revision only ever grow: a model id is
     /// never reused for another mesh (the GPU keys meshes on it), and a cache keyed on the
@@ -510,6 +521,17 @@ pub struct Session {
     pub(crate) file: Option<(String, u64)>,
     /// The last slice kept: derived, never an undo step.
     pub(crate) job: Option<crate::Job>,
+    /// What `edit.copy` copied, for `edit.paste`: the models themselves rather than ids, so a
+    /// copied model deleted since still pastes. Outside `scene`: copying is no undo step, and
+    /// undoing never changes what Paste pastes.
+    pub(crate) clipboard: Option<Clipboard>,
+}
+
+/// Copied models and their supports, and which of the models are lifted.
+#[derive(Clone, Debug)]
+pub(crate) struct Clipboard {
+    pub(crate) project: Project,
+    pub(crate) lifted: Vec<bool>,
 }
 
 impl Session {
@@ -593,6 +615,11 @@ impl Session {
         if self.history.open.is_none() {
             self.history.open = Some(false);
         }
+    }
+
+    /// Whether `edit.paste` has something to paste.
+    pub fn can_paste(&self) -> bool {
+        self.clipboard.is_some()
     }
 
     pub fn end_step(&mut self) {

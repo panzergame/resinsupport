@@ -50,7 +50,7 @@ pub(crate) fn import_stl(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The build plate's width and depth, mm.
-fn plate(s: &Session) -> (f64, f64) {
+pub(super) fn plate(s: &Session) -> (f64, f64) {
     let printer = &s.print_config().printer;
     (printer.display_x, printer.display_y)
 }
@@ -121,7 +121,7 @@ fn check_known(s: &Session, ids: &[u64]) -> Result<()> {
 }
 
 /// The `ids` parameter, or the selected models; never empty.
-fn targets(s: &Session, p: &Value) -> Result<Vec<u64>> {
+pub(super) fn targets(s: &Session, p: &Value) -> Result<Vec<u64>> {
     let ids = match ids_param(p, "model")? {
         Some(ids) => ids,
         None => s.scene.selected_models.iter().copied().collect(),

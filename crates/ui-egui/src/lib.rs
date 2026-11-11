@@ -636,6 +636,7 @@ impl ResinApp {
         if ctx.input_mut(|i| i.consume_shortcut(&UNDO)) {
             self.step_history(false);
         }
+        self.clipboard_keys(ctx);
         let pressed: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
             i.events
                 .iter()
@@ -676,6 +677,48 @@ impl ResinApp {
 }
 
 impl ResinApp {
+    /// Ctrl+C and Ctrl+V on models. The window system sends them as Copy and Paste events, not as
+    /// keys, and sends Paste only when the system clipboard holds text: Copy leaves the models'
+    /// names there for that reason. Paste ignores the text and pastes the session's own clipboard.
+    fn clipboard_keys(&mut self, ctx: &egui::Context) {
+        let (copy, paste) = ctx.input(|i| {
+            // Linux sends the primary selection as a Paste on a middle click, which navigates here.
+            let middle = i.pointer.button_down(egui::PointerButton::Middle)
+                || i.pointer.button_pressed(egui::PointerButton::Middle)
+                || i.pointer.button_released(egui::PointerButton::Middle);
+            let command = |m: &egui::Modifiers| m.command && !m.shift && !m.alt;
+            i.events.iter().fold((false, false), |(c, p), e| match e {
+                egui::Event::Copy => (true, p),
+                egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if command(modifiers) => (true, p),
+                egui::Event::Paste(_) if !middle => (c, true),
+                egui::Event::Key { key: egui::Key::V, pressed: true, modifiers, .. } if command(modifiers) => (c, true),
+                _ => (c, p),
+            })
+        });
+        if self.mode != EditMode::Object {
+            return;
+        }
+        if copy && !self.session.scene.selected_models.is_empty() {
+            let names: Vec<String> =
+                self.session.scene.models().iter().filter(|m| self.session.scene.selected_models.contains(&m.id)).map(|m| m.name.clone()).collect();
+            if let Some(v) = self.run("edit.copy", json!({})) {
+                let n = usize::try_from(v["copied"].as_u64().unwrap_or_default()).unwrap_or_default();
+                self.status = Some((i18n::count("status.copied_models", n, &[]), false));
+                ctx.copy_text(names.join("\n"));
+            }
+        }
+        if paste && self.session.can_paste() {
+            // The open tool remembers the selection's placements; the paste replaces the selection.
+            self.tool = None;
+            if let Some(v) = self.run("edit.paste", json!({})) {
+                let n = v["ids"].as_array().map_or(0, Vec::len);
+                let beside = v["beside"].as_array().map_or(0, Vec::len);
+                let id = if beside > 0 { "status.pasted_models_beside" } else { "status.pasted_models" };
+                self.status = Some((i18n::count(id, n, &[("beside", &beside)]), false));
+            }
+        }
+    }
+
     /// Delete what is selected in the current mode.
     fn delete_selection(&mut self) {
         match self.mode {
@@ -896,6 +939,38 @@ mod tests {
         assert!(app.pending_open.is_none());
         assert_eq!(app.session.scene.models().len(), 2, "opened, then the STL dropped with it imported");
         assert_ne!(app.session.scene.models()[0].placement, moved);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Ctrl+C and Ctrl+V reach the app as the window system's Copy and Paste events, or as keys
+    /// where it sends those; Copy leaves text on the clipboard so that a Paste follows.
+    #[test]
+    fn copy_and_paste_events_duplicate_the_selected_models() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-paste-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("tri.stl");
+        std::fs::write(&stl, "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid t\n")
+            .unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let id = app.run("file.import_stl", json!({ "path": stl, "fit": false })).unwrap()["id"].as_u64().unwrap();
+        app.run("model.select", json!({ "ids": [id] })).unwrap();
+        let ctx = egui::Context::default();
+        let send = |app: &mut ResinApp, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| app.clipboard_keys(ui.ctx()));
+            out.textures_delta.clear();
+            out.platform_output
+        };
+        let copied = send(&mut app, vec![egui::Event::Copy]);
+        assert!(copied.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == "t")), "{:?}", copied.commands);
+        send(&mut app, vec![egui::Event::Paste("t".into())]);
+        assert_eq!(app.session.scene.models().len(), 2);
+        assert!(!app.session.scene.selected_models.contains(&id), "the copy is selected");
+        let ctrl_v = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        send(&mut app, vec![ctrl_v]);
+        assert_eq!(app.session.scene.models().len(), 3);
+        app.mode = EditMode::Support;
+        send(&mut app, vec![egui::Event::Paste("t".into())]);
+        assert_eq!(app.session.scene.models().len(), 3, "models paste in Arrange only");
         std::fs::remove_dir_all(dir).ok();
     }
 
