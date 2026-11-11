@@ -32,7 +32,11 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> Result<Value> {
         Some(n) => n.normalized().ok_or_else(|| EngineError::BadParams("`normal` must not be zero".into()))?,
         None => -Vec3::Z,
     };
-    let id = s.scene.add_support(model, point, normal)?;
+    let parent = match p.get("parent") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_u64().ok_or_else(|| EngineError::BadParams("`parent` must be a support id".into()))?),
+    };
+    let id = s.scene.add_support(model, point, normal, parent)?;
     Ok(json!({ "id": id }))
 }
 
@@ -44,22 +48,31 @@ pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         }
         None => s.scene.selected.iter().copied().collect(),
     };
-    s.scene.remove_supports(&ids);
-    Ok(json!({ "removed": ids }))
+    let before: Vec<u64> = s.scene.supports().iter().map(|t| t.id).collect();
+    let preset = *s.support_settings.current();
+    s.scene.remove_supports(&ids, &preset);
+    let removed: Vec<u64> = before.into_iter().filter(|id| !s.scene.supports().iter().any(|t| t.id == *id)).collect();
+    Ok(json!({ "removed": removed }))
 }
 
 /// Each support with its route under the preset in use: `path` runs from the contact through the
-/// tip's upper end to the foot on the plate, or stops at the tip when `reachable` is false. The
-/// selected joints and segments are those the route still has.
+/// tip's upper end to the foot on the plate (a branch's stops at the head it shares), or stops at
+/// the tip when the route has no body. `reachable`: the route reaches the plate, a branch's through its
+/// parents, as the slicer prints it. The selected joints and segments are those the route still has.
 pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let preset = *s.support_settings.current();
-    let models = s.scene.models();
+    // A parent comes before its branches.
+    let mut grounded = std::collections::BTreeSet::new();
     let supports: Vec<Value> = s
         .scene
         .supports()
         .iter()
         .map(|t| {
-            let r = route(models, t, &preset);
+            let r = route(&s.scene, t, &preset);
+            let reachable = r.reachable() && t.parent.is_none_or(|p| grounded.contains(&p));
+            if reachable {
+                grounded.insert(t.id);
+            }
             let path: Vec<Vec3> = [r.contact, r.head].into_iter().chain(r.body.iter().skip(1).copied()).collect();
             let picked = |pick: fn(SupportPart) -> Option<u32>| -> Vec<u32> {
                 s.scene
@@ -71,11 +84,12 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
             json!({
                 "id": t.id,
                 "model": t.model,
+                "parent": t.parent,
                 "tip": t.tip,
                 "normal": t.normal,
                 "selected": s.scene.selected.contains(&t.id),
                 "path": path,
-                "reachable": r.reachable(),
+                "reachable": reachable,
                 "edited": t.corners.is_some(),
                 "fault": r.fault,
                 "selected_joints": picked(|p| if let SupportPart::Joint(i) = p { Some(i) } else { None }),
@@ -109,7 +123,7 @@ pub(crate) fn place_joints(s: &mut Session, p: &Value) -> Result<Value> {
                     // The route as worked out; with no way down, the head alone, which the user
                     // can then move to where there is one.
                     None => {
-                        let r = route(s.scene.models(), t, &preset);
+                        let r = route(&s.scene, t, &preset);
                         match r.body.split_last() {
                             Some((_, c)) => c.to_vec(),
                             None => vec![r.head],

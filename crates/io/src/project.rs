@@ -11,7 +11,7 @@
 //! A mesh blob is `RSMESH01`, a little-endian `u64` triangle count, then nine little-endian `f32`
 //! per triangle: the model's own triangle soup, exactly. Supports name their model by its index
 //! in `models` and keep their tip and normal in the model's own coordinates; placed corners are in
-//! the scene. A file of a newer format than this build knows is refused, never guessed at.
+//! the scene. A branch names the support it joins by its index in `supports`, always an earlier one. A file of a newer format than this build knows is refused, never guessed at.
 //!
 //! Files are hostile: entries, sizes and counts are bounded before anything is allocated, names
 //! that could reach outside the package are refused, ZIP CRCs and blob hashes are checked, and
@@ -68,6 +68,9 @@ pub struct ProjectSupport {
     pub normal: Vec3,
     /// The corners the user placed, in the scene; `None` while the route is worked out.
     pub corners: Option<Vec<Vec3>>,
+    /// For a branch, the index into [`Project::supports`] of the support it joins: always lower
+    /// than its own.
+    pub parent: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +97,8 @@ struct SupportEntry {
     normal: Vec3,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     corners: Option<Vec<Vec3>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<usize>,
 }
 
 fn invalid(message: impl std::fmt::Display) -> IoError {
@@ -216,9 +221,9 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
         models.push(ModelEntry { name: m.name.clone(), placement: m.placement, mesh_blob: blob });
     }
     let mut supports = Vec::with_capacity(project.supports.len());
-    for s in &project.supports {
-        check_support(s, project.models.len())?;
-        supports.push(SupportEntry { model: s.model, tip: s.tip, normal: s.normal, corners: s.corners.clone() });
+    for (i, s) in project.supports.iter().enumerate() {
+        check_support(s, i, project.models.len())?;
+        supports.push(SupportEntry { model: s.model, tip: s.tip, normal: s.normal, corners: s.corners.clone(), parent: s.parent });
     }
     let document = Document { format: format!("{FORMAT_NAME}{FORMAT_VERSION}"), models, supports };
     writer.part("document.json", &serde_json::to_vec(&document).map_err(invalid)?, true)?;
@@ -226,9 +231,14 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
     writer.finish()
 }
 
-fn check_support(s: &ProjectSupport, models: usize) -> Result<(), IoError> {
+/// Support number `index` of the project.
+fn check_support(s: &ProjectSupport, index: usize, models: usize) -> Result<(), IoError> {
     if s.model >= models {
         return Err(invalid(format!("a support names model {}, there are {models}", s.model)));
+    }
+    // Only an earlier one: no branch can then lead round to itself.
+    if s.parent.is_some_and(|p| p >= index) {
+        return Err(invalid(format!("support {index} branches from a support that is not before it")));
     }
     let corners_ok = s.corners.as_ref().is_none_or(|c| c.iter().all(|p| p.is_finite()));
     if !s.tip.is_finite() || !s.normal.is_finite() || !corners_ok {
@@ -355,10 +365,13 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, IoError> {
         };
         models.push(ProjectModel { name: m.name, mesh, placement: m.placement });
     }
-    let supports: Vec<ProjectSupport> =
-        document.supports.into_iter().map(|s| ProjectSupport { model: s.model, tip: s.tip, normal: s.normal, corners: s.corners }).collect();
-    for s in &supports {
-        check_support(s, models.len())?;
+    let supports: Vec<ProjectSupport> = document
+        .supports
+        .into_iter()
+        .map(|s| ProjectSupport { model: s.model, tip: s.tip, normal: s.normal, corners: s.corners, parent: s.parent })
+        .collect();
+    for (i, s) in supports.iter().enumerate() {
+        check_support(s, i, models.len())?;
     }
     Ok(Project { models, supports })
 }
@@ -398,12 +411,13 @@ mod tests {
                 ProjectModel { name: "copy é".into(), mesh, placement: moved },
             ],
             supports: vec![
-                ProjectSupport { model: 0, tip: Vec3::new(5.0, 5.0, 0.0), normal: Vec3::new(0.0, 0.0, -1.0), corners: None },
+                ProjectSupport { model: 0, tip: Vec3::new(5.0, 5.0, 0.0), normal: Vec3::new(0.0, 0.0, -1.0), corners: None, parent: None },
                 ProjectSupport {
                     model: 1,
                     tip: Vec3::new(1.0, 2.0, 0.0),
                     normal: Vec3::new(0.0, 0.0, -1.0),
                     corners: Some(vec![Vec3::new(41.0, -2.0, 4.0), Vec3::new(45.0, -2.0, 2.0)]),
+                    parent: Some(0),
                 },
             ],
         }
@@ -496,6 +510,11 @@ mod tests {
         let mut d = document();
         d["models"][0]["placement"]["scale"][0] = serde_json::Value::Null;
         refused(&with_document(&d));
+        for parent in [serde_json::json!(1), serde_json::json!(5), serde_json::json!(-1), serde_json::json!("0")] {
+            let mut d = document();
+            d["supports"][1]["parent"] = parent;
+            refused(&with_document(&d));
+        }
         let mut d = document();
         d["surprise"] = 1.into();
         refused(&with_document(&d));
@@ -555,6 +574,12 @@ mod tests {
         let mut p = sample();
         p.supports[1].corners = Some(vec![Vec3::new(f64::NAN, 0.0, 0.0)]);
         assert!(write_project(&p).is_err());
+        // A branch must join an earlier support: itself or a later one could lead round in a loop.
+        for parent in [1, 2] {
+            let mut p = sample();
+            p.supports[1].parent = Some(parent);
+            assert!(write_project(&p).is_err());
+        }
         let mut p = sample();
         p.models[0].mesh = Arc::new(Mesh::new(vec![[[f32::INFINITY, 0.0, 0.0], [0.0; 3], [0.0; 3]]]));
         assert!(write_project(&p).is_err());

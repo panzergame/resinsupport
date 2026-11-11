@@ -203,6 +203,7 @@ fn tip_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {
         },
     );
     shape_row(ui, t, "supports.tip.shape", "contact_shape", &mut p.tip.contact_shape, &ContactShape::ALL, contact_name);
+    number_row(ui, t, "supports.tip.max_angle", &mut p.tip.max_angle, "tip", "max_angle", "°");
 }
 
 fn body_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {

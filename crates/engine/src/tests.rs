@@ -425,7 +425,7 @@ fn check_route(s: &Session, r: &crate::Route) {
 
 fn routes(s: &Session) -> Vec<crate::Route> {
     let p = *s.support_settings().current();
-    s.scene.supports().iter().map(|t| crate::route(s.scene.models(), t, &p)).collect()
+    s.scene.supports().iter().map(|t| crate::route(&s.scene, t, &p)).collect()
 }
 
 #[test]
@@ -556,6 +556,126 @@ fn placed_joints_keep_their_path() {
     assert!(r.reachable() && r.body.len() == 2);
 }
 
+/// A parent whose head stands out from a wall, and a branch whose tip is on a plate above and
+/// beside it: nothing between them.
+fn branch_scene() -> (Session, u64, u64, u64, Value, Value) {
+    let mut s = Session::new();
+    let wall = s.scene.add("wall".into(), boxes(&[([0.0, 0.0, 5.0], [4.0, 20.0, 8.0])]));
+    let high = s.scene.add("high".into(), boxes(&[([7.0, 0.0, 12.0], [15.0, 20.0, 13.0])]));
+    let a = s.execute("support.add", &json!({ "model": wall, "point": [4, 10, 6.5], "normal": [1, 0, 0] })).unwrap()["id"].clone();
+    let b = s.execute("support.add", &json!({ "model": high, "point": [8, 10, 12], "normal": [0, 0, -1], "parent": a })).unwrap()["id"].clone();
+    (s, wall, high, a.as_u64().unwrap(), a, b)
+}
+
+#[test]
+fn a_branch_is_a_straight_tip_to_its_parents_head() {
+    let (mut s, wall, high, a_id, a, b) = branch_scene();
+    let p = *s.support_settings().current();
+    let [parent, branch] = &routes(&s)[..] else { panic!() };
+    check_route(&s, parent);
+    assert_eq!(Some(parent.head), crate::support_head(&s.scene, &s.scene.supports()[0], &p), "a head is known without a route");
+    // The branch is its tip alone, straight from its contact to the parent's head: no body, no joint.
+    assert_eq!((branch.contact, branch.head, branch.body.clone()), (Vec3::new(8.0, 10.0, 12.0), parent.head, vec![parent.head]));
+    assert!((branch.axis - (parent.head - branch.contact).normalized().unwrap()).len() < 1e-12);
+    assert!(branch.reachable() && !branch.fault && !branch.foot, "{branch:?}");
+    let mut parts = Vec::new();
+    crate::support_primitives(branch, &p, |part, _| parts.push(part));
+    assert!(parts.iter().all(|o| *o == crate::Owner::Tip), "only the tip: {parts:?}");
+    assert!(matches!(
+        s.execute("support.place_joints", &json!({ "joints": [{ "support": b, "joint": 0, "position": [8, 10, 10] }] })),
+        Err(EngineError::BadParams(_))
+    ));
+    let listed = s.execute("support.list", &json!({})).unwrap();
+    assert_eq!((listed["supports"][0]["parent"].clone(), listed["supports"][1]["parent"].clone()), (Value::Null, a.clone()));
+    // Its solids stop at the parent's head: no base on the plate.
+    let mut lowest = f64::INFINITY;
+    crate::support_primitives(branch, &p, |_, prim| {
+        if let crate::Primitive::Frustum { a, b, .. } = prim {
+            lowest = lowest.min(a.z).min(b.z);
+        }
+    });
+    assert!((lowest - parent.head.z).abs() < 1e-9, "{lowest}");
+    let (input, unreachable) = s.slice_input();
+    assert_eq!(unreachable, 0);
+    assert_eq!(input.solids.iter().filter(|x| x.kind == resin_slice::SolidKind::Support).count(), 2);
+
+    // Moving the parent's head takes the branch's tip with it; through the model, it is flagged.
+    let to = parent.head + Vec3::new(0.0, 1.0, -1.0);
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": a, "joint": 0, "position": to }] })).unwrap();
+    assert_eq!(routes(&s)[1].head, to);
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": a, "joint": 0, "position": [8, 10, 14] }] })).unwrap();
+    assert!(routes(&s)[1].fault);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // A branch of the branch is one more branch of the same support.
+    let c = s.execute("support.add", &json!({ "model": high, "point": [10, 10, 12], "normal": [0, 0, -1], "parent": b })).unwrap()["id"].clone();
+    let (b_id, c_id) = (b.as_u64().unwrap(), c.as_u64().unwrap());
+    assert_eq!(s.scene.supports()[2].parent, Some(a_id));
+    assert_eq!(routes(&s)[2].head, to);
+
+    // Deleting the original tip leaves the body to the first branch, the other branching from it:
+    // one step, undone whole.
+    let body = routes(&s)[0].body.clone();
+    let before = content(&s);
+    let depth = s.undo_depth();
+    let removed = s.execute("support.delete", &json!({ "ids": [a] })).unwrap()["removed"].clone();
+    assert_eq!(removed, json!([a]));
+    let all = s.scene.supports();
+    assert_eq!(all.iter().map(|t| (t.id, t.parent)).collect::<Vec<_>>(), vec![(b_id, None), (c_id, Some(b_id))]);
+    let [heir, other] = &routes(&s)[..] else { panic!() };
+    assert_eq!((&heir.body, heir.contact, heir.head, other.head), (&body, Vec3::new(8.0, 10.0, 12.0), to, to));
+    assert!(heir.reachable() && heir.foot);
+    assert_eq!(s.undo_depth(), depth + 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(content(&s), before);
+    // A branch goes alone.
+    assert_eq!(s.execute("support.delete", &json!({ "ids": [b] })).unwrap()["removed"], json!([b]));
+    assert_eq!(s.scene.supports().iter().map(|t| (t.id, t.parent)).collect::<Vec<_>>(), vec![(a_id, None), (c_id, Some(a_id))]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Every tip of a body: the body goes with them.
+    s.execute("support.delete", &json!({ "ids": [a, b, c] })).unwrap();
+    assert!(s.scene.supports().is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Deleting the model under the original tip leaves the body to the branches on the other.
+    s.execute("model.delete", &json!({ "id": wall })).unwrap();
+    assert_eq!(s.scene.supports().iter().map(|t| (t.id, t.parent)).collect::<Vec<_>>(), vec![(b_id, None), (c_id, Some(b_id))]);
+    assert_eq!(routes(&s)[0].head, to);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // Copied alone, the plate leaves its branches behind: they hang from the wall's support.
+    s.execute("edit.copy", &json!({ "ids": [high] })).unwrap();
+    s.execute("edit.paste", &json!({})).unwrap();
+    assert_eq!(s.scene.supports().len(), 3);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // Copied together, they come with theirs, joined to the copies.
+    s.execute("edit.copy", &json!({ "ids": [wall, high] })).unwrap();
+    s.execute("edit.paste", &json!({})).unwrap();
+    let all = s.scene.supports();
+    let [.., na, nb, nc] = all else { panic!("{all:?}") };
+    assert_eq!((na.parent, nb.parent, nc.parent), (None, Some(na.id), Some(na.id)));
+    assert_eq!(all.len(), 6);
+    let _ = c;
+
+    for bad in [json!(99), json!(-1), json!("1"), json!(1.5), json!([1])] {
+        let r = s.execute("support.add", &json!({ "model": high, "point": [9, 10, 12], "parent": bad }));
+        assert!(matches!(r, Err(EngineError::BadParams(_))), "{r:?}");
+    }
+}
+
+#[test]
+fn a_branch_of_a_support_with_no_way_down_is_not_printed() {
+    let (mut s, wall, ..) = branch_scene();
+    // A floor under the wall's support: it has no way down, and its branch none either.
+    let floor = s.scene.add("floor".into(), boxes(&[([-20.0, -20.0, 0.0], [40.0, 40.0, 1.0])]));
+    assert!(!routes(&s)[0].reachable() && routes(&s)[1].reachable());
+    let (input, unreachable) = s.slice_input();
+    assert_eq!(unreachable, 2);
+    assert_eq!(input.solids.iter().filter(|x| x.kind == resin_slice::SolidKind::Support).count(), 0);
+    let listed = s.execute("support.list", &json!({})).unwrap();
+    assert_eq!((listed["supports"][0]["reachable"].clone(), listed["supports"][1]["reachable"].clone()), (json!(false), json!(false)));
+    let _ = (wall, floor);
+}
+
 #[test]
 fn a_tip_on_a_side_wall_leans_down_and_clears_it() {
     let mut s = Session::new();
@@ -563,10 +683,16 @@ fn a_tip_on_a_side_wall_leans_down_and_clears_it() {
     s.execute("support.add", &json!({ "model": m, "point": [10, 5, 15], "normal": [1, 0, 0] })).unwrap();
     let r = &routes(&s)[0];
     assert!(r.reachable());
-    // Medium: a 2 mm tip leaning 40° from straight down ends 2 sin 40° = 1.286 mm off the wall,
+    // Medium: a 2 mm tip leaning its 80° from straight down ends 2 sin 80° = 1.97 mm off the wall,
     // past the body's 0.5 mm radius and 0.5 mm clearance, so the body goes straight down.
-    assert!((r.head.x - 10.0 - 2.0 * 40f64.to_radians().sin()).abs() < 1e-9);
+    let off = |deg: f64| Vec3::new(10.0 + 2.0 * deg.to_radians().sin(), 5.0, 15.0 - 2.0 * deg.to_radians().cos());
+    assert!(r.head.dist(off(80.0)) < 1e-9, "{:?}", r.head);
     assert_eq!(r.body.len(), 2);
+    check_route(&s, r);
+    // The tip's tilt is its own: set to the body's 40°, the tip leans as the body may.
+    s.execute("support.configure", &json!({ "tip": { "max_angle": 40 } })).unwrap();
+    let r = &routes(&s)[0];
+    assert!(r.head.dist(off(40.0)) < 1e-9 && r.body.len() == 2, "{r:?}");
     check_route(&s, r);
 }
 
@@ -683,7 +809,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
             Some(json!({ "printer": { "name": "Other", "mirror_x": true }, "layers": { "height": 0.03 }, "slicing": { "anti_aliasing": 4 } }))
         }
         "print.reset" | "print.settings" | "print.slice" => Some(json!({})),
-        "support.add" => Some(json!({ "model": b, "point": [35, 5, 0] })),
+        "support.add" => Some(json!({ "model": b, "point": [35, 5, 0], "parent": tip })),
         "support.delete" => Some(json!({ "ids": [tip] })),
         "support.configure" => {
             Some(json!({ "preset": "light", "active": "heavy", "tip": { "contact_diameter": 0.3 }, "raft": { "enabled": false } }))
@@ -1181,7 +1307,8 @@ fn supports_seen(s: &mut Session) -> Vec<Value> {
     let mut list = s.execute("support.list", &json!({})).unwrap()["supports"].as_array().unwrap().clone();
     for t in &mut list {
         let t = t.as_object_mut().unwrap();
-        for key in ["id", "model", "selected", "selected_joints", "selected_segments"] {
+        // Ids change on opening; the parent's index is in `Scene::project`.
+        for key in ["id", "model", "parent", "selected", "selected_joints", "selected_segments"] {
             t.remove(key);
         }
     }
@@ -1193,6 +1320,7 @@ fn a_saved_project_opens_as_it_was_saved_unlifted() {
     let dir = temp_dir("project-round-trip");
     let Fixture { session: mut s, a, b, tip, .. } = fixture(&dir);
     s.execute("support.add", &json!({ "model": b, "point": [35, 5, 0] })).unwrap();
+    s.execute("support.add", &json!({ "model": b, "point": [36, 6, 0], "parent": tip })).unwrap();
     s.execute("model.place", &json!({ "models": [{ "id": b, "rotation": [0, 0, 30], "scale": [2, 1, 0.5] }] })).unwrap();
     s.execute("model.lift", &json!({ "ids": [a], "lifted": true })).unwrap();
     s.execute("support.place_joints", &json!({ "joints": [{ "support": tip, "joint": 0, "position": [6, 4, 3] }] })).unwrap();
@@ -1205,7 +1333,7 @@ fn a_saved_project_opens_as_it_was_saved_unlifted() {
 
     let mut o = Session::new();
     let r = o.execute("file.open", &json!({ "path": path })).unwrap();
-    assert_eq!((r["models"].as_u64(), r["supports"].as_u64()), (Some(2), Some(2)));
+    assert_eq!((r["models"].as_u64(), r["supports"].as_u64()), (Some(2), Some(3)));
     assert_eq!(o.scene.project(), s.scene.project());
     let placements = |s: &Session| s.scene.models().iter().map(|m| (m.name.clone(), m.placement, m.bounds)).collect::<Vec<_>>();
     assert_eq!(placements(&o), placements(&s));

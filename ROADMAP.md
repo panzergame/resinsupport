@@ -31,6 +31,7 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - [x] Supports from tip to plate: straight down or with one knee within the max tilt, clear of every model by `body.clearance`; unreachable tips kept and flagged
 - [x] Support parts selectable: body segments and joints (a handle drawn over everything at the head and each knee)
 - [x] Move arrows on selected joints and segments; an edited support keeps its placed corners (only its tip follows the model), checked and flagged, never routed again
+- [x] Manual branches: a double press on a tip, then a press on a surface, places a straight tip to that support's head, sharing its body; any tip deletable, the body going with the last
 - A button for `support.reset_route`; moving the tip along the surface
 - Overhang and island detection, automatic generation, raft
 

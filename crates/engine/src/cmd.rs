@@ -91,11 +91,11 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("scene.lift_height", "Lift Height", model::lift_height)
             .params("height: mm, 0 to 500: where every lifted model's lowest point sits"),
         CommandSpec::new("support.add", "Add Support", support::add)
-            .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down)"),
+            .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down), parent?: integer (a branch: a straight tip to that support's head, sharing its body)"),
         CommandSpec::new("support.configure", "Support Settings", support_settings::configure).params(
-            "preset?: light | medium | heavy (default the active one), active?: light | medium | heavy, tip?: { contact_shape: cone | sphere, contact_diameter, penetration, length, upper_diameter } mm, body?: { shape: cylinder | prism, diameter mm, max_angle degrees, segments }, base?: { diameter, height } mm, raft?: { enabled, thickness mm, margin mm, chamfer_angle degrees }; each partial, the result validated as a whole",
+            "preset?: light | medium | heavy (default the active one), active?: light | medium | heavy, tip?: { contact_shape: cone | sphere, contact_diameter, penetration, length, upper_diameter mm, max_angle degrees }, body?: { shape: cylinder | prism, diameter mm, max_angle degrees, segments }, base?: { diameter, height } mm, raft?: { enabled, thickness mm, margin mm, chamfer_angle degrees }; each partial, the result validated as a whole",
         ),
-        CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection)"),
+        CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection); a body goes with its last tip, and a deleted support's first remaining branch takes its body"),
         CommandSpec::new("support.list", "List Supports", support::list),
         CommandSpec::new("support.place_joints", "Move Support Joints", support::place_joints).params(
             "joints: [{ support: integer, joint: integer, position: [x, y, z] mm, Z from 0 }] in the scene; a support whose route was worked out keeps that route as placed corners first",

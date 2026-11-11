@@ -26,14 +26,22 @@ pub enum Primitive {
     },
 }
 
-/// Each solid of route `r` sized by `p`, with the part it belongs to: `None` for the tip, its
-/// round contact and the base, which stand for the whole support; the body's columns and the
-/// joint at each bend for their [`SupportPart`].
-pub fn support_primitives(r: &Route, p: &SupportPreset, mut f: impl FnMut(Option<SupportPart>, Primitive)) {
+/// What a solid of a support belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// The tip and its round contact: what selecting the support lights up.
+    Tip,
+    Base,
+    /// A body column or the joint at a bend.
+    Part(SupportPart),
+}
+
+/// Each solid of route `r` sized by `p`, with what it belongs to.
+pub fn support_primitives(r: &Route, p: &SupportPreset, mut f: impl FnMut(Owner, Primitive)) {
     let sides = p.body.segments;
     let tip_start = r.contact - r.axis * p.tip.penetration;
     f(
-        None,
+        Owner::Tip,
         Primitive::Frustum {
             a: tip_start,
             b: r.head,
@@ -45,23 +53,23 @@ pub fn support_primitives(r: &Route, p: &SupportPreset, mut f: impl FnMut(Option
         },
     );
     if p.tip.contact_shape == ContactShape::Sphere {
-        f(None, Primitive::Sphere { center: r.contact, radius: p.tip.contact_diameter / 2.0 });
+        f(Owner::Tip, Primitive::Sphere { center: r.contact, radius: p.tip.contact_diameter / 2.0 });
     }
     let radius = p.body.diameter / 2.0;
     let smooth = p.body.shape == BodyShape::Cylinder;
     for (w, i) in r.body.windows(2).zip(0u32..) {
         if let [a, b] = w {
-            f(Some(SupportPart::Segment(i)), Primitive::Frustum { a: *a, b: *b, ra: radius, rb: radius, sides, smooth, caps: (false, false) });
+            f(Owner::Part(SupportPart::Segment(i)), Primitive::Frustum { a: *a, b: *b, ra: radius, rb: radius, sides, smooth, caps: (false, false) });
         }
     }
     // Every corner but the foot.
     let corners = r.body.split_last().map(|(_, c)| c).unwrap_or_default();
     for (c, i) in corners.iter().zip(0u32..) {
-        f(Some(SupportPart::Joint(i)), Primitive::Sphere { center: *c, radius });
+        f(Owner::Part(SupportPart::Joint(i)), Primitive::Sphere { center: *c, radius });
     }
-    if let Some(foot) = r.body.last() {
+    if let Some(foot) = r.body.last().filter(|_| r.foot) {
         let top = *foot + Vec3::Z * p.base.height;
-        f(None, Primitive::Frustum { a: *foot, b: top, ra: p.base.diameter / 2.0, rb: radius, sides, smooth, caps: (true, false) });
+        f(Owner::Base, Primitive::Frustum { a: *foot, b: top, ra: p.base.diameter / 2.0, rb: radius, sides, smooth, caps: (true, false) });
     }
 }
 
@@ -117,12 +125,14 @@ mod tests {
             body: vec![Vec3::new(0.0, 0.0, 8.0), Vec3::new(2.0, 0.0, 5.0), Vec3::new(2.0, 0.0, 0.0)],
             tests: 0,
             fault: false,
+            foot: true,
         };
         let p = PresetId::Medium.defaults();
         let mut parts = Vec::new();
         support_primitives(&r, &p, |part, _| parts.push(part));
-        assert!(parts.contains(&Some(SupportPart::Segment(1))) && parts.contains(&Some(SupportPart::Joint(1))));
-        assert!(!parts.contains(&Some(SupportPart::Joint(2))), "the foot has no joint");
+        assert!(parts.contains(&Owner::Part(SupportPart::Segment(1))) && parts.contains(&Owner::Part(SupportPart::Joint(1))));
+        assert!(!parts.contains(&Owner::Part(SupportPart::Joint(2))), "the foot has no joint");
+        assert!(parts.contains(&Owner::Tip) && parts.contains(&Owner::Base));
         let mut t = Vec::new();
         SupportTessellator::default().triangles(&r, &p, &mut t);
         let mesh = Mesh::new(t);

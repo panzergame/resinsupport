@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere};
-use resin_engine::{Primitive, Route, Scene, SupportPart, SupportPreset, route, support_primitives};
+use resin_engine::{Owner, Primitive, Route, Scene, SupportPart, SupportPreset, route, support_primitives};
 
 /// How far round a joint a press picks it, as a multiple of the body's radius: the joint is drawn
 /// no wider than the body, and a press must not need to land on its sliver beside the columns.
@@ -131,8 +131,9 @@ impl RouteCache {
                 self.changed += 1;
             }
             // Placed corners first: they cost a few tests, and they are what a joint drag moves.
+            // Branches too: they are never searched.
             let mut ids: Vec<(bool, u64, u64)> =
-                supports.iter().map(|s| (s.corners.is_none(), self.routes.get(&s.id).map_or(0, |(_, g)| *g), s.id)).collect();
+                supports.iter().map(|s| (s.corners.is_none() && s.parent.is_none(), self.routes.get(&s.id).map_or(0, |(_, g)| *g), s.id)).collect();
             ids.sort_unstable();
             self.todo = ids.into_iter().map(|(.., id)| id).collect();
         }
@@ -140,7 +141,7 @@ impl RouteCache {
         while budget.left() {
             let Some(id) = self.todo.pop_front() else { break };
             let Some(s) = scene.supports().iter().find(|s| s.id == id) else { continue };
-            let r = route(scene.models(), s, preset);
+            let r = route(scene, s, preset);
             budget.spend(r.tests);
             if self.routes.get(&id).is_none_or(|(old, _)| *old != r) {
                 self.changed += 1;
@@ -150,9 +151,25 @@ impl RouteCache {
         !self.todo.is_empty()
     }
 
-    /// How many supports have no path to the plate, as last routed.
-    pub fn unreachable(&self) -> usize {
-        self.routes.values().filter(|(r, _)| !r.reachable()).count()
+    /// How many supports have no path to the plate, as last routed: a branch has none when its
+    /// parent has none.
+    pub fn unreachable(&self, scene: &Scene) -> usize {
+        let grounded = self.grounded(scene);
+        scene.supports().iter().filter(|s| self.routes.contains_key(&s.id) && !grounded.contains(&s.id)).count()
+    }
+
+    /// The supports whose route reaches the plate, a branch's through its parents; and those not
+    /// yet routed, which are not known to fail.
+    fn grounded(&self, scene: &Scene) -> BTreeSet<u64> {
+        let mut out = BTreeSet::new();
+        // A parent comes before its branches.
+        for s in scene.supports() {
+            let own = self.routes.get(&s.id).is_none_or(|(r, _)| r.reachable());
+            if own && s.parent.is_none_or(|p| out.contains(&p)) {
+                out.insert(s.id);
+            }
+        }
+        out
     }
 
     /// Support `id`'s route, as last worked out.
@@ -178,17 +195,14 @@ impl RouteCache {
         }
         let mut groups: [SupportMesh; 3] = Default::default();
         let mut handles = Vec::new();
+        let grounded = self.grounded(scene);
         for s in scene.supports() {
             let Some((r, _)) = self.routes.get(&s.id) else { continue };
-            let whole = if selected.contains(&s.id) {
-                Look::Selected
-            } else if r.reachable() && !r.fault {
-                Look::Plain
-            } else {
-                Look::Unreachable
-            };
+            let whole = if grounded.contains(&s.id) && !r.fault { Look::Plain } else { Look::Unreachable };
+            // A selected support lights its tip alone: its body may be shared with other tips.
+            let tip = if selected.contains(&s.id) { Look::Selected } else { whole };
             let look = |part: SupportPart| if parts.contains(&(s.id, part)) { Look::Selected } else { whole };
-            solids(r, preset, whole, look, &mut groups);
+            solids(r, preset, tip, whole, look, &mut groups);
             let radius = (preset.body.diameter / 2.0) as f32;
             for (i, c) in joints(r) {
                 handles.push(Handle { center: c, radius, selected: look(SupportPart::Joint(i)) == Look::Selected });
@@ -215,8 +229,9 @@ impl RouteCache {
         let radius = preset.body.diameter / 2.0 * JOINT_PICK_SCALE;
         self.routed(scene)
             .flat_map(|(id, r)| {
-                let selected = move |i| scene.selected.contains(&id) || scene.selected_parts.contains(&(id, SupportPart::Joint(i)));
-                joints(r).filter(move |(i, _)| selected(*i)).filter_map(move |(i, c)| ray_sphere(origin, dir, c, radius).map(|t| (id, i, t)))
+                joints(r)
+                    .filter(move |(i, _)| scene.selected_parts.contains(&(id, SupportPart::Joint(*i))))
+                    .filter_map(move |(i, c)| ray_sphere(origin, dir, c, radius).map(|t| (id, i, t)))
             })
             .min_by(|a, b| a.2.total_cmp(&b.2))
     }
@@ -229,7 +244,7 @@ impl RouteCache {
         let base = preset.base.diameter / 2.0;
         self.routed(scene)
             .flat_map(|(id, r)| {
-                let foot = r.body.last().map(|&f| (f, f + Vec3::Z * preset.base.height));
+                let foot = r.body.last().filter(|_| r.foot).map(|&f| (f, f + Vec3::Z * preset.base.height));
                 let whole = std::iter::once((r.contact, r.head, tip)).chain(foot.map(|(a, b)| (a, b, base)));
                 let whole = whole.filter_map(move |(a, b, rad)| ray_capsule(origin, dir, a, b, rad).map(|t| (id, Piece::Whole, t)));
                 let segments = r.body.windows(2).zip(0u32..).filter_map(move |(w, i)| match w {
@@ -256,12 +271,16 @@ fn joints(r: &Route) -> impl Iterator<Item = (u32, Vec3)> + '_ {
     r.body.split_last().map(|(_, corners)| corners).unwrap_or_default().iter().zip(0u32..).map(|(&c, i)| (i, c))
 }
 
-/// One support's solids ([`support_primitives`]), each into the group of its look: the tip, its
-/// round contact and the base in `whole`, the body's columns and the joint at each bend in
-/// `look` of their part.
-fn solids(r: &Route, p: &SupportPreset, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [SupportMesh; 3]) {
-    support_primitives(r, p, |part, prim| {
-        let l = part.map_or(whole, &look);
+/// One support's solids ([`support_primitives`]), each into the group of its look: the tip and
+/// its round contact in `tip`, the base in `whole`, the body's columns and the joint at each bend
+/// in `look` of their part.
+fn solids(r: &Route, p: &SupportPreset, tip: Look, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [SupportMesh; 3]) {
+    support_primitives(r, p, |owner, prim| {
+        let l = match owner {
+            Owner::Tip => tip,
+            Owner::Base => whole,
+            Owner::Part(part) => look(part),
+        };
         let Some(g) = groups.get_mut(l.index()) else { return };
         match prim {
             Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } => frustum(a, b, ra, rb, sides, smooth, caps, &mut g.vertices),
@@ -301,13 +320,23 @@ mod tests {
         let mut cache = RouteCache::default();
         while cache.update(&s.scene, &preset) {}
         assert_eq!(cache.routes.len(), 5);
-        assert_eq!(cache.unreachable(), 0);
+        assert_eq!(cache.unreachable(&s.scene), 0);
         let mesh = cache.mesh(&s.scene, &preset, true);
         assert!(!mesh.vertices.is_empty() && mesh.ranges[1].is_empty() && mesh.ranges[2].is_empty());
         assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, true)), "nothing changed: the same solids");
-        // Selecting one moves its solids into the selected range.
+        // Selecting one moves its tip alone into the selected range: its body and base stay plain,
+        // and its joints get no handle.
         s.execute("support.select", &json!({ "ids": [1] })).unwrap();
-        assert!(!cache.mesh(&s.scene, &preset, true).ranges[1].is_empty());
+        let mesh = cache.mesh(&s.scene, &preset, true);
+        let mut tip = Vec::new();
+        support_primitives(cache.route(1).unwrap(), &preset, |owner, prim| {
+            if let (Owner::Tip, Primitive::Frustum { a, b, ra, rb, sides, smooth, caps }) = (owner, prim) {
+                frustum(a, b, ra, rb, sides, smooth, caps, &mut tip);
+            }
+        });
+        assert_eq!(mesh.ranges[1].len(), tip.len());
+        assert!(mesh.handles.iter().all(|h| !h.selected));
+        assert!(mesh.joints.iter().all(|j| j.2 != Look::Selected), "the head's joint stays plain");
         // A selected segment and joint: the segment's column moves into the selected range, the
         // joint's handle is selected, and the rest of the support stays plain.
         s.execute("support.select", &json!({ "parts": [{ "support": 3, "segment": 0 }, { "support": 3, "joint": 0 }] })).unwrap();

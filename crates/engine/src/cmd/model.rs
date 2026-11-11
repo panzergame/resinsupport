@@ -74,7 +74,8 @@ fn id_param(p: &Value) -> Result<u64> {
 
 pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let id = id_param(p)?;
-    if !s.scene.remove_models(|m| m == id) {
+    let preset = *s.support_settings.current();
+    if !s.scene.remove_models(|m| m == id, &preset) {
         return Err(EngineError::BadParams(format!("no model {id}")));
     }
     Ok(json!({ "id": id }))
@@ -102,7 +103,8 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
 
 pub(crate) fn clear(s: &mut Session, _: &Value) -> Result<Value> {
     let removed = s.scene.models().len();
-    s.scene.remove_models(|_| true);
+    let preset = *s.support_settings.current();
+    s.scene.remove_models(|_| true, &preset);
     Ok(json!({ "removed": removed }))
 }
 

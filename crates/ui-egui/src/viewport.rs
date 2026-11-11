@@ -104,6 +104,8 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         Line { a: c - dir * r, b: c + dir * r, color }
     });
     overlay.lines.extend(typed_axis);
+    let branch = supports::branch_preview(app).map(|(a, b)| Line { a, b, color: linear(tokens.support_preview) });
+    overlay.lines.extend(branch);
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
         ctx.request_repaint();
@@ -120,7 +122,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     }
     bounds.add(overlay.center + Vec3::new(-r, -r, 0.0));
     bounds.add(overlay.center + Vec3::new(r, r, overlay.step * 10.0));
-    for l in plate.iter().chain(&typed_axis) {
+    for l in plate.iter().chain(&typed_axis).chain(&branch) {
         bounds.add(l.a);
         bounds.add(l.b);
     }

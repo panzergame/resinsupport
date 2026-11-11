@@ -34,8 +34,8 @@ impl SliceSource {
         self.stamp
     }
 
-    /// The slicer's input: each model placed, each support that reaches the plate as its closed
-    /// solids; and how many supports do not reach it, which are left out.
+    /// The slicer's input: each model placed, each support that reaches the plate (a branch: through
+    /// its parent) as its closed solids; and how many supports do not reach it, which are left out.
     pub fn input(&self) -> (SliceInput, usize) {
         let models = self.scene.models();
         let mut solids: Vec<Solid> = models
@@ -47,12 +47,15 @@ impl SliceSource {
             .collect();
         let mut unreachable = 0;
         let mut tess = SupportTessellator::default();
+        // A branch hangs from its parent, which comes before it: printed without it, it would float.
+        let mut printed = std::collections::BTreeSet::new();
         for s in self.scene.supports() {
-            let r = route(models, s, &self.preset);
-            if !r.reachable() {
+            let r = route(&self.scene, s, &self.preset);
+            if !r.reachable() || s.parent.is_some_and(|p| !printed.contains(&p)) {
                 unreachable += 1;
                 continue;
             }
+            printed.insert(s.id);
             let mut triangles = Vec::new();
             tess.triangles(&r, &self.preset, &mut triangles);
             solids.push(Solid { kind: SolidKind::Support, triangles });

@@ -11,10 +11,14 @@
 //! A route is derived from the tip, the models' placement and the settings; it is never stored
 //! in the scene. Once the user has placed a support's corners ([`Support::corners`]) its route
 //! is those corners as they are, never searched again, only checked.
+//!
+//! A branch ([`Support::parent`]) is a tip alone: straight from its contact to its parent's head,
+//! sharing the parent's body, with no body or joint of its own. A head is known without a route
+//! ([`support_head`]), so a branch never waits on its parent's.
 
 use resin_geom::{Aabb3, Affine3, Vec3};
 
-use crate::{Model, Support, SupportPreset};
+use crate::{Model, Scene, Support, SupportPreset};
 
 /// The polar steps of the cone search: no coarser than this, in degrees.
 const POLAR_STEP: f64 = 5.0;
@@ -41,8 +45,11 @@ pub struct Route {
     /// The tip's upper end, where the body starts.
     pub head: Vec3,
     /// The body's corners: `head`, the knee where it bends if it does, and its foot on the plate
-    /// (Z = 0). Empty when no path reaches the plate.
+    /// (Z = 0). Empty when no path reaches the plate. A branch's is its head alone: it has no
+    /// body of its own.
     pub body: Vec<Vec3>,
+    /// The body ends on the plate, on a base: not a branch's.
+    pub foot: bool,
     /// How many clearance tests the search ran: what it cost.
     pub tests: u32,
     /// The user placed the corners, and they break a rule: a lean past `body.max_angle`, a body
@@ -86,13 +93,34 @@ fn tip_axis(normal: Vec3, max_degrees: f64) -> Option<Vec3> {
     (axis.dot(n) > 0.0).then_some(axis)
 }
 
-/// The path of support `s` among `models`, sized by preset `p`.
-pub fn route(models: &[Model], s: &Support, p: &SupportPreset) -> Route {
+/// Where support `s`'s tip meets its body under preset `p`, as [`route`] puts it: a branch's is
+/// the head of the support at the root of its parents. `None` for a branch whose parent is gone.
+pub fn support_head(scene: &Scene, s: &Support, p: &SupportPreset) -> Option<Vec3> {
+    let mut s = s;
+    // A parent comes before its branches, so the walk ends; the bound guards a broken scene.
+    for _ in 0..=scene.supports().len() {
+        let Some(parent) = s.parent else {
+            return Some(match s.corners.as_ref().and_then(|c| c.first()) {
+                Some(&h) => h,
+                None => tip_axis(s.normal, p.tip.max_angle).map_or(s.tip, |axis| s.tip + axis * p.tip.length),
+            });
+        };
+        s = scene.supports().iter().find(|t| t.id == parent)?;
+    }
+    None
+}
+
+/// The path of support `s` in `scene`, sized by preset `p`.
+pub fn route(scene: &Scene, s: &Support, p: &SupportPreset) -> Route {
+    let models = scene.models();
+    if s.parent.is_some() {
+        return branch(scene, s, p);
+    }
     if let Some(corners) = &s.corners {
         return placed(models, s, corners, p);
     }
-    let mut out = Route { contact: s.tip, axis: s.normal, head: s.tip, body: Vec::new(), tests: 0, fault: false };
-    let Some(axis) = tip_axis(s.normal, p.body.max_angle) else { return out };
+    let mut out = Route { contact: s.tip, axis: s.normal, head: s.tip, body: Vec::new(), tests: 0, fault: false, foot: true };
+    let Some(axis) = tip_axis(s.normal, p.tip.max_angle) else { return out };
     let head = s.tip + axis * p.tip.length;
     out.axis = axis;
     out.head = head;
@@ -164,9 +192,38 @@ pub fn route(models: &[Model], s: &Support, p: &SupportPreset) -> Route {
     out
 }
 
+/// The corners support `s`'s body has, to keep as placed corners: those placed, or its route's
+/// but the foot; its head alone when no path reaches the plate.
+pub(crate) fn placed_corners(scene: &Scene, s: &Support, p: &SupportPreset) -> Vec<Vec3> {
+    if let Some(c) = &s.corners {
+        return c.clone();
+    }
+    let r = route(scene, s, p);
+    match r.body.split_last() {
+        Some((_, c)) if !c.is_empty() => c.to_vec(),
+        _ => vec![r.head],
+    }
+}
+
+/// A branch: its tip straight from its contact to the head it shares, flagged when it does not
+/// leave the surface or goes through a model. Placed corners are ignored: it has no joint to place.
+fn branch(scene: &Scene, s: &Support, p: &SupportPreset) -> Route {
+    let mut out = Route { contact: s.tip, axis: s.normal, head: s.tip, body: Vec::new(), tests: 0, fault: false, foot: false };
+    let Some(head) = support_head(scene, s, p) else { return out };
+    let Some(axis) = (head - s.tip).normalized() else { return out };
+    let mut obs = Obstacles { models: scene.models().iter().filter_map(|m| Some((m, m.transform.inverse()?))).collect(), tests: 0 };
+    let leaves = s.normal.normalized().is_some_and(|n| axis.dot(n) > 0.0);
+    out.fault = !(leaves && obs.clear(s.tip + axis * (s.tip.dist(head) * TIP_FREE), head, TOUCH));
+    out.axis = axis;
+    out.head = head;
+    out.body = vec![head];
+    out.tests = obs.tests;
+    out
+}
+
 /// The route through the corners the user placed, checked against the rules the search keeps.
 fn placed(models: &[Model], s: &Support, corners: &[Vec3], p: &SupportPreset) -> Route {
-    let mut out = Route { contact: s.tip, axis: s.normal, head: s.tip, body: Vec::new(), tests: 0, fault: true };
+    let mut out = Route { contact: s.tip, axis: s.normal, head: s.tip, body: Vec::new(), tests: 0, fault: true, foot: true };
     let (Some(&head), Some(&last)) = (corners.first(), corners.last()) else { return out };
     out.axis = (head - s.tip).normalized().unwrap_or(s.normal);
     out.head = head;

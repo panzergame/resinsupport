@@ -50,7 +50,7 @@ impl PresetId {
             PresetId::Heavy => (0.5, 0.25, 2.6, 1.0, 1.4, 16, 5.6, 1.0, 1.4, 2.5),
         };
         SupportPreset {
-            tip: Tip { contact_shape: ContactShape::Cone, contact_diameter: contact, penetration, length, upper_diameter: upper },
+            tip: Tip { contact_shape: ContactShape::Cone, contact_diameter: contact, penetration, length, upper_diameter: upper, max_angle: 80.0 },
             body: Body { shape: BodyShape::Cylinder, diameter: body, max_angle: 40.0, clearance: 0.5, segments },
             base: Base { diameter: base, height: base_h },
             raft: Raft { enabled: true, thickness: raft, margin, chamfer_angle: 45.0 },
@@ -103,6 +103,9 @@ pub struct Tip {
     pub length: f64,
     /// Where the tip meets the body.
     pub upper_diameter: f64,
+    /// Degrees from vertical (the Z axis): the tip follows the surface normal, turned towards
+    /// straight down until it leans no further.
+    pub max_angle: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -150,6 +153,7 @@ const NUMBERS: &[(&str, &str, f64, f64)] = &[
     ("tip", "penetration", 0.0, 1.0),
     ("tip", "length", 0.2, 10.0),
     ("tip", "upper_diameter", 0.1, 5.0),
+    ("tip", "max_angle", 0.0, 90.0),
     ("body", "diameter", 0.2, 10.0),
     ("body", "max_angle", 0.0, 80.0),
     ("body", "clearance", 0.0, 5.0),
@@ -181,6 +185,7 @@ impl SupportPreset {
             ("tip", "penetration") => &mut self.tip.penetration,
             ("tip", "length") => &mut self.tip.length,
             ("tip", "upper_diameter") => &mut self.tip.upper_diameter,
+            ("tip", "max_angle") => &mut self.tip.max_angle,
             ("body", "diameter") => &mut self.body.diameter,
             ("body", "max_angle") => &mut self.body.max_angle,
             ("body", "clearance") => &mut self.body.clearance,

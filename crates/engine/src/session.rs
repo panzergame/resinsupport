@@ -7,7 +7,7 @@ use resin_io::{Project, ProjectModel, ProjectSupport};
 use resin_render::Camera;
 use serde_json::Value;
 
-use crate::{CommandSpec, EngineError, PrintConfig, Result, SupportSettings, cmd};
+use crate::{CommandSpec, EngineError, PrintConfig, Result, SupportPreset, SupportSettings, cmd};
 
 /// How far from the origin a model may be moved or grown, in millimetres: well past any build
 /// plate, and still exact enough in the f32 the mesh is stored in.
@@ -103,6 +103,9 @@ pub struct Support {
     /// Moving the model carries them with it, under the plate too (flagged); turning or scaling it
     /// leaves them where they were put, and the tip stretches to them.
     pub corners: Option<Vec<Vec3>>,
+    /// For a branch, the support whose head its tip runs straight to, sharing that support's body:
+    /// never itself a branch, and always one before it in [`Scene::supports`].
+    pub parent: Option<u64>,
     /// The same in the model's own coordinates: what the tip keeps as the model is placed.
     local_tip: Vec3,
     local_normal: Vec3,
@@ -329,15 +332,21 @@ impl Scene {
         self.revision += 1;
         Ok(())
     }
-    /// A tip at scene point `tip` with scene normal `normal` on `model`, which must exist.
-    pub(crate) fn add_support(&mut self, model: u64, tip: Vec3, normal: Vec3) -> Result<u64> {
+    /// A tip at scene point `tip` with scene normal `normal` on `model`, which must exist; when
+    /// `parent` is given, which must exist too, a branch sharing its body (a branch of a branch
+    /// shares the same one).
+    pub(crate) fn add_support(&mut self, model: u64, tip: Vec3, normal: Vec3, parent: Option<u64>) -> Result<u64> {
+        let parent = match parent {
+            Some(p) => Some(self.root_of(p).ok_or_else(|| EngineError::BadParams(format!("no support {p}")))?),
+            None => None,
+        };
         let m = self.model(model).ok_or_else(|| EngineError::BadParams(format!("no model {model}")))?;
         let inv = m.transform.inverse().ok_or_else(|| EngineError::Failed(format!("model {model} is degenerate")))?;
         let local_tip = inv.point(tip);
         let local_normal = inv.normal(normal).unwrap_or(normal);
         self.next_support_id += 1;
         self.revision += 1;
-        self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: None, local_tip, local_normal });
+        self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: None, parent, local_tip, local_normal });
         Ok(self.next_support_id)
     }
     /// Give each listed support the corners the user placed, or (`None`) its worked-out route
@@ -358,11 +367,11 @@ impl Scene {
         }
         Ok(())
     }
-    /// Remove these models and their supports; whether any model went.
-    pub(crate) fn remove_models(&mut self, gone: impl Fn(u64) -> bool) -> bool {
+    /// Remove these models and their supports, as [`Scene::remove_supports`]; whether any model went.
+    pub(crate) fn remove_models(&mut self, gone: impl Fn(u64) -> bool, preset: &SupportPreset) -> bool {
         let before = self.models.len();
+        self.drop_supports(|s| gone(s.model), preset);
         self.models.retain(|m| !gone(m.id));
-        self.supports.retain(|s| !gone(s.model));
         self.prune_selection();
         // Removing nothing must not bump: it would make an empty undo step.
         let removed = self.models.len() != before;
@@ -371,9 +380,12 @@ impl Scene {
         }
         removed
     }
-    pub(crate) fn remove_supports(&mut self, ids: &[u64]) {
+    /// Remove these tips. A body goes with its last tip: when a support goes and some of its
+    /// branches stay, the first of them takes its body, as placed corners under `preset`, and the
+    /// others branch from it.
+    pub(crate) fn remove_supports(&mut self, ids: &[u64], preset: &SupportPreset) {
         let before = self.supports.len();
-        self.supports.retain(|t| !ids.contains(&t.id));
+        self.drop_supports(|s| ids.contains(&s.id), preset);
         self.prune_selection();
         if self.supports.len() != before {
             self.revision += 1;
@@ -389,14 +401,22 @@ impl Scene {
     pub(crate) fn project_of(&self, keep: impl Fn(u64) -> bool) -> Project {
         let kept: Vec<&Model> = self.models.iter().filter(|m| keep(m.id)).collect();
         let models = kept.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement }).collect();
-        let supports = self
-            .supports
-            .iter()
-            .filter_map(|s| {
-                let model = kept.iter().position(|m| m.id == s.model)?;
-                Some(ProjectSupport { model, tip: s.local_tip, normal: s.local_normal, corners: s.corners.clone() })
-            })
-            .collect();
+        // A branch goes with the support it joins: a parent always comes before its branches, so
+        // it is already kept, or left out, by the time they come.
+        let mut kept_supports: Vec<u64> = Vec::new();
+        let mut supports = Vec::new();
+        for s in &self.supports {
+            let Some(model) = kept.iter().position(|m| m.id == s.model) else { continue };
+            let parent = match s.parent {
+                None => None,
+                Some(p) => match kept_supports.iter().position(|k| *k == p) {
+                    Some(i) => Some(i),
+                    None => continue,
+                },
+            };
+            kept_supports.push(s.id);
+            supports.push(ProjectSupport { model, tip: s.local_tip, normal: s.local_normal, corners: s.corners.clone(), parent });
+        }
         Project { models, supports }
     }
     /// Become the project `p`: everything in the scene goes, its models and
@@ -426,8 +446,17 @@ impl Scene {
             }
             ids.push(id);
         }
+        let mut support_ids: Vec<u64> = Vec::with_capacity(p.supports.len());
         for ps in p.supports {
             let bad = |why: &str| EngineError::Failed(format!("a support in the file {why}"));
+            // Only an earlier support: `resin_io` checks that too, but a project need not come from a file.
+            let parent = match ps.parent {
+                None => None,
+                Some(i) => {
+                    let p = support_ids.get(i).copied().ok_or_else(|| bad("branches from no support before it"))?;
+                    Some(self.root_of(p).ok_or_else(|| bad("branches from no support before it"))?)
+                }
+            };
             let model = *ids.get(ps.model).ok_or_else(|| bad("names no model"))?;
             let m = self.model(model).ok_or_else(|| bad("names no model"))?;
             let local_normal = ps.normal.normalized().ok_or_else(|| bad("has no normal"))?;
@@ -438,7 +467,17 @@ impl Scene {
                 return Err(bad(&format!("is outside the {MAX_EXTENT} mm workspace")));
             }
             self.next_support_id += 1;
-            self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: ps.corners, local_tip: ps.tip, local_normal });
+            self.supports.push(Support {
+                id: self.next_support_id,
+                model,
+                tip,
+                normal,
+                corners: ps.corners,
+                parent,
+                local_tip: ps.tip,
+                local_normal,
+            });
+            support_ids.push(self.next_support_id);
         }
         Ok(ids)
     }
@@ -450,6 +489,45 @@ impl Scene {
         older.next_support_id = older.next_support_id.max(self.next_support_id);
         older.revision = older.revision.max(self.revision) + 1;
         std::mem::replace(self, older)
+    }
+    /// The support whose body `id` shares: itself unless it is a branch. `None` when `id` is unknown.
+    fn root_of(&self, id: u64) -> Option<u64> {
+        let s = self.supports.iter().find(|s| s.id == id)?;
+        match s.parent {
+            None => Some(s.id),
+            Some(p) => self.supports.iter().find(|t| t.id == p && t.parent.is_none()).map(|t| t.id),
+        }
+    }
+    /// [`Scene::remove_supports`] for the supports `gone` takes, without the bump.
+    fn drop_supports(&mut self, gone: impl Fn(&Support) -> bool, preset: &SupportPreset) {
+        let mut heirs: Vec<(u64, u64, Vec<Vec3>)> = Vec::new();
+        for root in self.supports.iter().filter(|s| s.parent.is_none() && gone(s)) {
+            // The first in order: it comes before the other branches, as a parent must.
+            if let Some(heir) = self.supports.iter().find(|b| b.parent == Some(root.id) && !gone(b)) {
+                heirs.push((root.id, heir.id, crate::route::placed_corners(self, root, preset)));
+            }
+        }
+        for (root, heir, corners) in heirs {
+            for s in &mut self.supports {
+                if s.id == heir {
+                    s.parent = None;
+                    s.corners = Some(corners.clone());
+                } else if s.parent == Some(root) {
+                    s.parent = Some(heir);
+                }
+            }
+        }
+        self.supports.retain(|s| !gone(s));
+        // A parent always comes before its branches: one pass in order finds the orphans, which
+        // only a broken scene has.
+        let mut kept: BTreeSet<u64> = BTreeSet::new();
+        self.supports.retain(|s| {
+            let keep = s.parent.is_none_or(|p| kept.contains(&p));
+            if keep {
+                kept.insert(s.id);
+            }
+            keep
+        });
     }
     fn prune_selection(&mut self) {
         let supports = &self.supports;

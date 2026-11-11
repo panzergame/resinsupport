@@ -17,11 +17,11 @@ pub use resin_geom as geom;
 pub use resin_io as io;
 pub use resin_render as render;
 pub use resin_slice as slice;
-pub use route::{Route, route};
+pub use route::{Route, route, support_head};
 pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
 pub use slice_job::{Job, SliceSource};
 pub use support_settings::{Base, Body, BodyShape, ContactShape, GROUPS, PresetId, Raft, SEGMENTS, SupportPreset, SupportSettings, Tip, range};
-pub use support_solids::{Primitive, SupportTessellator, support_primitives};
+pub use support_solids::{Owner, Primitive, SupportTessellator, support_primitives};
 
 pub type Result<T, E = EngineError> = std::result::Result<T, E>;
 
