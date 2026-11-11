@@ -16,9 +16,10 @@ pub(crate) fn import_stl(s: &mut Session, p: &Value) -> Result<Value> {
     let path = std::path::Path::new(str_param(p, "path")?);
     let fit = bool_param(p, "fit")?.unwrap_or(true);
     let lifted = bool_param(p, "lifted")?.unwrap_or(false);
+    let arrange = bool_param(p, "arrange")?.unwrap_or(false);
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (s, path, fit, lifted);
+        let _ = (s, path, fit, lifted, arrange);
         Err(EngineError::Failed("not supported yet: importing from a path in the browser".into()))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -36,11 +37,35 @@ pub(crate) fn import_stl(s: &mut Session, p: &Value) -> Result<Value> {
         if lifted && let Some(at) = s.scene.model(id).map(|m| m.placement) {
             s.scene.place(&[(id, at, Some(true))])?;
         }
+        let mut answer = json!({ "id": id, "name": name, "triangles": triangles, "dropped": read.dropped });
+        if arrange {
+            let beside = s.scene.arrange(&[id], plate(s))?;
+            answer["on_plate"] = json!(beside.is_empty());
+        }
         if fit {
             s.camera.fit(&s.scene.bounds());
         }
-        Ok(json!({ "id": id, "name": name, "triangles": triangles, "dropped": read.dropped }))
+        Ok(answer)
     }
+}
+
+/// The build plate's width and depth, mm.
+fn plate(s: &Session) -> (f64, f64) {
+    let printer = &s.print_config().printer;
+    (printer.display_x, printer.display_y)
+}
+
+/// `ids?` (default every model): arrange them on the plate around the others.
+pub(crate) fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = match ids_param(p, "model")? {
+        Some(ids) => ids,
+        None => s.scene.models().iter().map(|m| m.id).collect(),
+    };
+    check_known(s, &ids)?;
+    let beside = s.scene.arrange(&ids, plate(s))?;
+    let mut answer = placed(s, &ids);
+    answer["beside"] = json!(beside);
+    Ok(answer)
 }
 
 fn id_param(p: &Value) -> Result<u64> {

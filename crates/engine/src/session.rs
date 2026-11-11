@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use resin_geom::{Aabb3, Affine3, Mesh, MeshIndex, Placement, RayHit, Vec3};
+use resin_geom::{Aabb3, Affine3, Item, Mesh, MeshIndex, Placement, RayHit, Rect, Vec3};
 use resin_io::{Project, ProjectModel, ProjectSupport};
 use resin_render::Camera;
 use serde_json::Value;
@@ -263,6 +263,53 @@ impl Scene {
             }
         }
         Ok(())
+    }
+    /// Arrange models `ids` on a `plate` (width, depth) centred on the origin, around the other
+    /// models, which stay put ([`resin_geom::arrange`]): moved across, turned a quarter about Z
+    /// to lay their long side along the plate's or when only that fits, and put down on the
+    /// plate (a lifted one at the lift height). A model with supports is not turned: placed
+    /// corners would stay behind. Returns the ids that found no room on the plate and went beside
+    /// it. All or nothing, as [`Scene::place`].
+    pub(crate) fn arrange(&mut self, ids: &[u64], plate: (f64, f64)) -> Result<Vec<u64>> {
+        let footprint = |b: &Aabb3| Rect { min: [b.min.x, b.min.y], max: [b.max.x, b.max.y] };
+        let fixed: Vec<Rect> = self.models.iter().filter(|m| !ids.contains(&m.id)).map(|m| footprint(&m.bounds)).collect();
+        let moving: Vec<&Model> = self.models.iter().filter(|m| ids.contains(&m.id)).collect();
+        let items: Vec<Item> =
+            moving.iter().map(|m| Item { size: footprint(&m.bounds).size(), turnable: !self.supports.iter().any(|s| s.model == m.id) }).collect();
+        let spots = resin_geom::arrange(Rect::centred(plate.0, plate.1), &fixed, &items);
+        let mut beside = Vec::new();
+        let mut placements = Vec::with_capacity(moving.len());
+        for (m, spot) in moving.iter().zip(spots) {
+            let (mut p, mut b) = (m.placement, footprint(&m.bounds));
+            if spot.turned {
+                // The last of the rotations is about the world Z through `position`, so a quarter
+                // turn added to it turns the bounds about that point, exactly.
+                let turned = |d: f64| {
+                    let z = (p.rotation.z + d).rem_euclid(360.0);
+                    if z > 180.0 { z - 360.0 } else { z }
+                };
+                let left = turned(90.0).abs() <= turned(-90.0).abs();
+                p.rotation.z = if left { turned(90.0) } else { turned(-90.0) };
+                // Both ways give the same size, but the bounds land elsewhere unless centred on
+                // `position`.
+                let (px, py) = (p.position.x, p.position.y);
+                b = if left {
+                    Rect { min: [px - (b.max[1] - py), py + (b.min[0] - px)], max: [px - (b.min[1] - py), py + (b.max[0] - px)] }
+                } else {
+                    Rect { min: [px + (b.min[1] - py), py - (b.max[0] - px)], max: [px + (b.max[1] - py), py - (b.min[0] - px)] }
+                };
+            }
+            let (c, at) = (b.centre(), spot.centre);
+            // Rounding noise is no move: arranging an arranged scene must not make an undo step.
+            let snap = |d: f64| if d.abs() < 1e-9 { 0.0 } else { d };
+            p.position += Vec3::new(snap(at[0] - c[0]), snap(at[1] - c[1]), if m.lifted { 0.0 } else { snap(-m.bounds.min.z) });
+            placements.push((m.id, p, None));
+            if !spot.on_plate {
+                beside.push(m.id);
+            }
+        }
+        self.place(&placements)?;
+        Ok(beside)
     }
     /// Set the lift height and put every lifted model at it. All or nothing, as [`Scene::place`].
     pub(crate) fn set_lift_height(&mut self, h: f64) -> Result<()> {

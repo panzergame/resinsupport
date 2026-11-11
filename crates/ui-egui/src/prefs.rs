@@ -89,6 +89,9 @@ preference_settings! {
     print_config: resin_engine::PrintConfig = resin_engine::PrintConfig::default();
     /// Imported models are lifted (off: they stay where the file puts them, as before lifting).
     lift_on_import: bool = true, GENERAL => check("prefs.lift_on_import", "prefs.lift_on_import.help");
+    /// Imported models are arranged on the plate around the others (off: they stay where the
+    /// file puts them, as before arranging).
+    arrange_on_import: bool = true, GENERAL => check("prefs.arrange_on_import", "prefs.arrange_on_import.help");
     /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
     /// page, like `support_settings`.
     lift_height: f64 = resin_engine::DEFAULT_LIFT_HEIGHT;

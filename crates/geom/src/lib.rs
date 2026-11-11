@@ -1,8 +1,9 @@
-//! L0: vectors, bounding boxes, triangle meshes, their measures and distances, and the solids
+//! L0: vectors, bounding boxes, footprints arranged on the plate, triangle meshes, their measures and distances, and the solids
 //! supports are drawn with. Depends on nothing of ours.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod aabb;
+mod arrange;
 mod bvh;
 mod distance;
 mod mesh;
@@ -13,6 +14,7 @@ mod transform;
 mod vec;
 
 pub use aabb::Aabb3;
+pub use arrange::{ARRANGE_MARGIN, Item, Rect, Spot, arrange};
 pub use bvh::{Bvh, MeshIndex};
 pub use distance::{closest_point_triangle, closest_points_segments, segment_triangle_distance};
 pub use mesh::{Mesh, RayHit};

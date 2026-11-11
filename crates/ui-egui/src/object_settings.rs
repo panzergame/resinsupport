@@ -29,6 +29,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let mut lift_selection = selected > 0 && lifted == selected;
     let mut toggled = false;
     let mut on_import = app.prefs.lift_on_import;
+    let mut arrange_on_import = app.prefs.arrange_on_import;
     let card = Card {
         id: egui::Id::new(CARD_ID),
         title: i18n::tr("models.settings.title"),
@@ -51,9 +52,11 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             toggled = ui_kit::mixed_check_row(ui, &t, i18n::tr("models.lift_selection"), help, &mut lift_selection, mixed).clicked();
         });
         ui_kit::check_row(ui, &t, i18n::tr("prefs.lift_on_import"), i18n::tr("prefs.lift_on_import.help"), &mut on_import);
+        ui_kit::check_row(ui, &t, i18n::tr("prefs.arrange_on_import"), i18n::tr("prefs.arrange_on_import.help"), &mut arrange_on_import);
         ui_kit::hint(ui, &t, i18n::tr("models.lift_hint"));
     });
     app.prefs.lift_on_import = on_import;
+    app.prefs.arrange_on_import = arrange_on_import;
     if height != before {
         // A dragged or typed height is one step: the app closes it once the gesture is over.
         app.session.begin_step();
@@ -115,6 +118,16 @@ mod tests {
         assert_eq!(bottom(&app), resin_engine::DEFAULT_LIFT_HEIGHT);
         let (app, _) = app_with_a_cube(Prefs { lift_on_import: false, ..Prefs::default() });
         assert_eq!(bottom(&app), 0.0, "off, a model stays where the file puts it, as before lifting");
+    }
+
+    #[test]
+    fn imports_are_arranged_unless_the_preference_is_off() {
+        let (app, _) = app_with_a_cube(Prefs::default());
+        let c = app.session.scene.models()[0].bounds.center();
+        assert!(c.x.abs() < 1e-6 && c.y.abs() < 1e-6, "on the plate's centre: {c:?}");
+        let (app, _) = app_with_a_cube(Prefs { arrange_on_import: false, ..Prefs::default() });
+        let b = app.session.scene.models()[0].bounds;
+        assert_eq!((b.min.x, b.min.y, b.max.x, b.max.y), (0.0, 0.0, 10.0, 10.0), "off, it stays where the file puts it");
     }
 
     #[test]

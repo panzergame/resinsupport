@@ -18,7 +18,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - [x] UI text in catalogs (English), a Preferences window from SolidCraft's settings table, agent skills
 - [x] Undo and redo (Ctrl+Z, Ctrl+Y): every scene change is a step, a drag or a typed field one step, Cancel leaves the undo history alone
 - [x] Lift: models kept a global height (5 mm) above the plate through import, rotation and scaling, until moved up or down; an object settings card in Object edition
-- Lay flat, auto-arrange, mirroring
+- [x] Arrange (`model.arrange`, and on import unless the `arrange_on_import` preference is off): each model at the free spot nearest the plate's centre, moved and turned a quarter about Z, never scaled
+- Lay flat, an Arrange button, mirroring
 - Mesh checks: open edges, inverted normals, self-intersections
 
 ## 3. Hollowing and drain holes

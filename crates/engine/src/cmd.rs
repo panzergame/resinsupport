@@ -48,12 +48,15 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("edit.redo", "Redo", edit::redo).noundo(),
         CommandSpec::new("edit.undo", "Undo", edit::undo).noundo(),
         CommandSpec::new("file.import_stl", "Import STL…", model::import_stl)
-            .params("path: string, fit?: bool (default true), lifted?: bool (default false): its lowest point at the lift height"),
+            .params("path: string, fit?: bool (default true), lifted?: bool (default false): its lowest point at the lift height, arrange?: bool (default false): arranged on the plate around the other models as `model.arrange` does, and the answer says `on_plate`"),
         CommandSpec::new("file.open", "Open Project", file::open).noundo().params(
             "path: a .rsup project; its models and supports replace the scene's, unlifted, where they were saved, the view is fitted, and the undo history starts afresh",
         ),
         CommandSpec::new("file.save", "Save Project", file::save).params(
             "path?: string ending in .rsup (default the scene's file); the models (mesh, name, placement) and supports (tip, normal, placed corners), not the lift or any setting; the file it replaces is kept as <path>.bak",
+        ),
+        CommandSpec::new("model.arrange", "Arrange Models", model::arrange).params(
+            "ids?: [integer] (default every model); arranges them, the largest first, each at the free spot nearest the plate's centre, around the other models: moved across, turned a quarter about Z to lay their long side along the plate's or when only that fits (not a model with supports), put down on the plate or at the lift height; those with no room go in a column right of the plate, listed in `beside`",
         ),
         CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
         CommandSpec::new("model.lift", "Lift Models", model::lift).params(

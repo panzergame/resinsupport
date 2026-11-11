@@ -62,6 +62,122 @@ fn a_failed_import_leaves_the_session_unchanged() {
     assert_eq!(s.camera, cam);
 }
 
+/// The default plate's footprint, Elegoo Saturn 2 sized.
+fn plate_of(s: &Session) -> resin_geom::Rect {
+    let p = &s.print_config().printer;
+    resin_geom::Rect::centred(p.display_x, p.display_y)
+}
+
+fn footprint_of(s: &Session, id: u64) -> resin_geom::Rect {
+    let b = s.scene.model(id).unwrap().bounds;
+    resin_geom::Rect { min: [b.min.x, b.min.y], max: [b.max.x, b.max.y] }
+}
+
+fn on(r: &resin_geom::Rect, plate: &resin_geom::Rect) -> bool {
+    r.min[0] >= plate.min[0] && r.min[1] >= plate.min[1] && r.max[0] <= plate.max[0] && r.max[1] <= plate.max[1]
+}
+
+#[test]
+fn imports_are_arranged_on_the_plate_apart_and_put_down() {
+    let dir = temp_dir("import-arranged");
+    let path = write_cube_stl(&dir);
+    let mut s = Session::new();
+    let mut ids = Vec::new();
+    for lifted in [false, false, true] {
+        let r = s.execute("file.import_stl", &json!({ "path": path, "arrange": true, "lifted": lifted })).unwrap();
+        assert_eq!(r["on_plate"], true);
+        ids.push(r["id"].as_u64().unwrap());
+    }
+    let first = s.scene.model(ids[0]).unwrap().bounds;
+    assert!(first.center().x.abs() < 1e-6 && first.center().y.abs() < 1e-6, "the first on the plate's centre: {first:?}");
+    let plate = plate_of(&s);
+    for (k, id) in ids.iter().enumerate() {
+        let (m, f) = (s.scene.model(*id).unwrap(), footprint_of(&s, *id));
+        assert!(on(&f, &plate), "{f:?} on the plate");
+        let want = if m.lifted { s.scene.lift_height() } else { 0.0 };
+        assert!((m.bounds.min.z - want).abs() < 1e-6, "model {id} put down at {want}: {:?}", m.bounds);
+        for o in &ids[..k] {
+            let g = footprint_of(&s, *o);
+            assert!(f.min[0] >= g.max[0] || g.min[0] >= f.max[0] || f.min[1] >= g.max[1] || g.min[1] >= f.max[1], "{f:?} apart from {g:?}");
+        }
+    }
+    // Arranging is part of the import: one undo step takes the model away.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.models().len(), 2);
+
+    // Without `arrange`, the file's coordinates are kept.
+    let r = s.execute("file.import_stl", &json!({ "path": path })).unwrap();
+    assert!(r.get("on_plate").is_none());
+    let b = s.scene.model(r["id"].as_u64().unwrap()).unwrap().bounds;
+    assert_eq!((b.min, b.max), (Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0)));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn arranging_lays_a_long_side_along_the_plate_unless_supported() {
+    let mut s = Session::new();
+    let long = s.scene.add("long".into(), boxes(&[([100.0, 50.0, 7.0], [110.0, 110.0, 12.0])]));
+    let r = s.execute("model.arrange", &json!({})).unwrap();
+    assert_eq!(r["beside"], json!([]));
+    let m = s.scene.model(long).unwrap();
+    assert_eq!(m.placement.rotation.z.abs(), 90.0);
+    let (b, size) = (m.bounds, m.bounds.size());
+    assert!((size.x - 60.0).abs() < 1e-6 && (size.y - 10.0).abs() < 1e-6, "turned: {b:?}");
+    assert!(b.center().x.abs() < 1e-6 && b.center().y.abs() < 1e-6 && b.min.z.abs() < 1e-6, "centred and put down: {b:?}");
+    // Arranged already: a second run changes nothing and makes no step.
+    let depth = s.undo_depth();
+    s.execute("model.arrange", &json!({})).unwrap();
+    assert_eq!(s.undo_depth(), depth);
+
+    // Off-centre on its pivot and turned so the quarter turn back is the shorter one: the bounds
+    // still land on the cell.
+    let mut s = Session::new();
+    let l = s.scene.add("l".into(), boxes(&[([0.0, 0.0, 0.0], [30.0, 10.0, 5.0]), ([0.0, 0.0, 0.0], [10.0, 60.0, 5.0])]));
+    s.execute("model.rotate", &json!({ "ids": [l], "degrees": [0, 0, 30] })).unwrap();
+    s.execute("model.arrange", &json!({})).unwrap();
+    let m = s.scene.model(l).unwrap();
+    assert!((m.placement.rotation.z - -60.0).abs() < 1e-9, "{:?}", m.placement);
+    let c = m.bounds.center();
+    assert!(c.x.abs() < 1e-6 && c.y.abs() < 1e-6, "on the cell: {:?}", m.bounds);
+
+    let mut s = Session::new();
+    let held = s.scene.add("held".into(), boxes(&[([0.0, 0.0, 7.0], [10.0, 60.0, 12.0])]));
+    s.execute("support.add", &json!({ "model": held, "point": [5, 30, 7] })).unwrap();
+    s.execute("model.arrange", &json!({ "ids": [held] })).unwrap();
+    let m = s.scene.model(held).unwrap();
+    assert_eq!(m.placement.rotation.z, 0.0, "a model with supports is only moved");
+    assert!(on(&footprint_of(&s, held), &plate_of(&s)));
+}
+
+/// Two 90 × 47 mm models imported one after the other on the 219 × 123 mm plate: the second fits
+/// only turned, beside the first.
+#[test]
+fn a_model_that_fits_only_turned_is_turned_beside_the_first() {
+    let mut s = Session::new();
+    let first = s.scene.add("first".into(), boxes(&[([0.0, 0.0, 0.0], [90.0, 47.0, 70.0])]));
+    s.execute("model.arrange", &json!({ "ids": [first] })).unwrap();
+    let second = s.scene.add("second".into(), boxes(&[([0.0, 0.0, 0.0], [90.0, 47.0, 70.0])]));
+    let r = s.execute("model.arrange", &json!({ "ids": [second] })).unwrap();
+    assert_eq!(r["beside"], json!([]));
+    let (a, b) = (footprint_of(&s, first), footprint_of(&s, second));
+    assert_eq!(s.scene.model(second).unwrap().placement.rotation.z.abs(), 90.0);
+    assert!(on(&b, &plate_of(&s)), "{b:?}");
+    assert!(b.min[0] >= a.max[0] || a.min[0] >= b.max[0], "beside the first: {a:?} {b:?}");
+}
+
+#[test]
+fn a_model_too_big_for_the_plate_goes_beside_it() {
+    let mut s = Session::new();
+    let small = s.scene.add("small".into(), boxes(&[([0.0, 0.0, 0.0], [10.0, 10.0, 10.0])]));
+    let big = s.scene.add("big".into(), boxes(&[([0.0, 0.0, 0.0], [300.0, 20.0, 10.0])]));
+    let r = s.execute("model.arrange", &json!({})).unwrap();
+    assert_eq!(r["beside"], json!([big]));
+    let plate = plate_of(&s);
+    assert!(footprint_of(&s, big).min[0] > plate.max[0], "right of the plate");
+    assert!(on(&footprint_of(&s, small), &plate));
+    assert!(matches!(s.execute("model.arrange", &json!({ "ids": [999] })), Err(EngineError::BadParams(_))));
+}
+
 #[test]
 fn view_commands() {
     let mut s = Session::new();
@@ -243,6 +359,7 @@ fn hostile_params_never_panic() {
         json!({ "parts": [{ "support": u64::MAX, "segment": u64::MAX }, { "joint": 0 }], "ids": [1] }),
         json!({ "lifted": "yes", "height": -1, "models": [{ "id": 1, "lifted": 1 }] }),
         json!({ "lifted": true, "height": 1e308, "ids": [u64::MAX], "path": "/", "fit": false }),
+        json!({ "arrange": "yes", "ids": [1, 1, 2] }),
         json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
         json!({ "printer": { "name": 1, "resolution_x": 1e308, "display_x": -1, "mirror_x": "yes" }, "layers": [], "slicing": "aa" }),
         json!({ "printer": { "resolution_x": u64::MAX, "resolution_y": 0.5, "display_y": 1e-300 }, "exposure": { "power": 256, "normal": null } }),
@@ -545,9 +662,10 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
     let (a, b, tip) = (f.a, f.b, f.tip);
     Some(match id {
         "edit.redo" | "edit.undo" => None,
-        "file.import_stl" => Some(json!({ "path": f.path, "fit": false })),
+        "file.import_stl" => Some(json!({ "path": f.path, "fit": false, "arrange": true })),
         "file.open" => None,
         "file.save" => Some(json!({ "path": f.project.with_file_name("saved.rsup") })),
+        "model.arrange" => Some(json!({})),
         "model.delete" => Some(json!({ "id": a })),
         "model.lift" => Some(json!({ "lifted": true })),
         "model.list" | "support.list" | "scene.clear" => Some(json!({})),

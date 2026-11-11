@@ -504,13 +504,19 @@ impl ResinApp {
             self.status = Some((i18n::format("status.bad_utf8", &[("path", &path.display())]), true));
             return;
         };
-        if let Some(v) = self.run("file.import_stl", json!({ "path": path_str, "fit": false, "lifted": self.prefs.lift_on_import })) {
+        if let Some(v) = self.run(
+            "file.import_stl",
+            json!({ "path": path_str, "fit": false, "lifted": self.prefs.lift_on_import, "arrange": self.prefs.arrange_on_import }),
+        ) {
             let dropped = v["dropped"].as_u64().unwrap_or(0) as usize;
             let triangles = v["triangles"].as_u64().unwrap_or(0) as usize;
             let name = v["name"].as_str().unwrap_or(i18n::tr("models.unnamed"));
             let mut msg = i18n::count("status.imported", triangles, &[("name", &name)]);
             if dropped > 0 {
                 msg = i18n::count("status.skipped", dropped, &[("imported", &msg)]);
+            }
+            if v["on_plate"] == false {
+                msg = i18n::format("status.beside_plate", &[("imported", &msg)]);
             }
             self.status = Some((msg, false));
         }
