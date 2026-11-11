@@ -104,13 +104,13 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         Line { a: c - dir * r, b: c + dir * r, color }
     });
     overlay.lines.extend(typed_axis);
-    let branch = supports::branch_preview(app).map(|(a, b)| Line { a, b, color: linear(tokens.support_preview) });
+    let branch = supports::tip_preview(app).map(|(a, b)| Line { a, b, color: linear(tokens.support_preview) });
     overlay.lines.extend(branch);
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
         ctx.request_repaint();
     }
-    let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice);
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice, app.supports.moving);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, &support_mesh, &colors, tokens);
     let handles = joint_handles(app, &support_mesh, tokens);
@@ -222,13 +222,17 @@ fn support_spheres(app: &ResinApp, mesh: &SupportMesh, colors: &[[f32; 4]; 3], t
     out
 }
 
-/// The selected joints' handles, in Support edition only: the joints are what it edits.
+/// The selected joints' handles and the selected supports' contact handles, in Support edition
+/// only: the joints and tips are what it edits.
 fn joint_handles(app: &ResinApp, mesh: &SupportMesh, tokens: &Tokens) -> Vec<Sphere> {
     if app.mode != EditMode::Support {
         return Vec::new();
     }
     let color = linear(tokens.support_selected);
-    mesh.handles.iter().filter(|h| h.selected).map(|h| Sphere { center: h.center, radius: h.radius, color }).collect()
+    let joints = mesh.handles.iter().filter(|h| h.selected).map(|h| Sphere { center: h.center, radius: h.radius, color });
+    let contact = linear(tokens.support_preview);
+    let tips = supports::tip_handles(app).into_iter().map(|(_, center, r)| Sphere { center, radius: r as f32, color: contact });
+    joints.chain(tips).collect()
 }
 
 fn fmt_step(step: f64) -> String {

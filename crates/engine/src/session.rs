@@ -349,6 +349,22 @@ impl Scene {
         self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: None, parent, local_tip, local_normal });
         Ok(self.next_support_id)
     }
+    /// Put support `id`'s tip at scene point `tip` with scene normal `normal` on `model`, which
+    /// may be another model than its own. Its placed corners and its branches stay.
+    pub(crate) fn set_tip(&mut self, id: u64, model: u64, tip: Vec3, normal: Vec3) -> Result<()> {
+        let m = self.model(model).ok_or_else(|| EngineError::BadParams(format!("no model {model}")))?;
+        let inv = m.transform.inverse().ok_or_else(|| EngineError::Failed(format!("model {model} is degenerate")))?;
+        let local_tip = inv.point(tip);
+        let local_normal = inv.normal(normal).unwrap_or(normal);
+        let s = self.supports.iter_mut().find(|s| s.id == id).ok_or_else(|| EngineError::BadParams(format!("no support {id}")))?;
+        // Putting it where it is must not bump: it would make an empty undo step.
+        if (s.model, s.tip, s.normal) == (model, tip, normal) {
+            return Ok(());
+        }
+        (s.model, s.tip, s.normal, s.local_tip, s.local_normal) = (model, tip, normal, local_tip, local_normal);
+        self.revision += 1;
+        Ok(())
+    }
     /// Give each listed support the corners the user placed, or (`None`) its worked-out route
     /// back. All or nothing: an unknown support changes nothing.
     pub(crate) fn set_corners(&mut self, corners: Vec<(u64, Option<Vec<Vec3>>)>) -> Result<()> {

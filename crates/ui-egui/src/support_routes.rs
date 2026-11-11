@@ -102,7 +102,7 @@ pub enum Piece {
     Joint(u32),
 }
 
-type MeshKey = (u64, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>);
+type MeshKey = (u64, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, Option<u64>);
 
 #[derive(Default)]
 pub struct RouteCache {
@@ -182,12 +182,13 @@ impl RouteCache {
         self.changed
     }
 
-    /// The solids of every routed support, the selected ones in their look when `selection`,
-    /// rebuilt only when a route or the selection changed.
-    pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: bool) -> Arc<SupportMesh> {
+    /// The solids of every routed support, the selected ones in their look when `selection`, and
+    /// support `hidden`'s tip left out, rebuilt only when a route, the selection or `hidden`
+    /// changed.
+    pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: bool, hidden: Option<u64>) -> Arc<SupportMesh> {
         let none = (BTreeSet::new(), BTreeSet::new());
         let (selected, parts) = if selection { (&scene.selected, &scene.selected_parts) } else { (&none.0, &none.1) };
-        let key = (self.changed, selection, selected.clone(), parts.clone());
+        let key = (self.changed, selection, selected.clone(), parts.clone(), hidden);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
@@ -200,7 +201,13 @@ impl RouteCache {
             let Some((r, _)) = self.routes.get(&s.id) else { continue };
             let whole = if grounded.contains(&s.id) && !r.fault { Look::Plain } else { Look::Unreachable };
             // A selected support lights its tip alone: its body may be shared with other tips.
-            let tip = if selected.contains(&s.id) { Look::Selected } else { whole };
+            let tip = if hidden == Some(s.id) {
+                None
+            } else if selected.contains(&s.id) {
+                Some(Look::Selected)
+            } else {
+                Some(whole)
+            };
             let look = |part: SupportPart| if parts.contains(&(s.id, part)) { Look::Selected } else { whole };
             solids(r, preset, tip, whole, look, &mut groups);
             let radius = (preset.body.diameter / 2.0) as f32;
@@ -272,12 +279,15 @@ fn joints(r: &Route) -> impl Iterator<Item = (u32, Vec3)> + '_ {
 }
 
 /// One support's solids ([`support_primitives`]), each into the group of its look: the tip and
-/// its round contact in `tip`, the base in `whole`, the body's columns and the joint at each bend
+/// its round contact in `tip` (none: left out), the base in `whole`, the body's columns and the joint at each bend
 /// in `look` of their part.
-fn solids(r: &Route, p: &SupportPreset, tip: Look, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [SupportMesh; 3]) {
+fn solids(r: &Route, p: &SupportPreset, tip: Option<Look>, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [SupportMesh; 3]) {
     support_primitives(r, p, |owner, prim| {
         let l = match owner {
-            Owner::Tip => tip,
+            Owner::Tip => match tip {
+                Some(l) => l,
+                None => return,
+            },
             Owner::Base => whole,
             Owner::Part(part) => look(part),
         };
@@ -321,13 +331,13 @@ mod tests {
         while cache.update(&s.scene, &preset) {}
         assert_eq!(cache.routes.len(), 5);
         assert_eq!(cache.unreachable(&s.scene), 0);
-        let mesh = cache.mesh(&s.scene, &preset, true);
+        let mesh = cache.mesh(&s.scene, &preset, true, None);
         assert!(!mesh.vertices.is_empty() && mesh.ranges[1].is_empty() && mesh.ranges[2].is_empty());
-        assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, true)), "nothing changed: the same solids");
+        assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, true, None)), "nothing changed: the same solids");
         // Selecting one moves its tip alone into the selected range: its body and base stay plain,
         // and its joints get no handle.
         s.execute("support.select", &json!({ "ids": [1] })).unwrap();
-        let mesh = cache.mesh(&s.scene, &preset, true);
+        let mesh = cache.mesh(&s.scene, &preset, true, None);
         let mut tip = Vec::new();
         support_primitives(cache.route(1).unwrap(), &preset, |owner, prim| {
             if let (Owner::Tip, Primitive::Frustum { a, b, ra, rb, sides, smooth, caps }) = (owner, prim) {
@@ -340,7 +350,7 @@ mod tests {
         // A selected segment and joint: the segment's column moves into the selected range, the
         // joint's handle is selected, and the rest of the support stays plain.
         s.execute("support.select", &json!({ "parts": [{ "support": 3, "segment": 0 }, { "support": 3, "joint": 0 }] })).unwrap();
-        let mesh = cache.mesh(&s.scene, &preset, true);
+        let mesh = cache.mesh(&s.scene, &preset, true, None);
         assert!(!mesh.ranges[0].is_empty() && !mesh.ranges[1].is_empty());
         assert_eq!(mesh.handles.len(), 5, "one joint per straight support, where the tip meets the body");
         assert_eq!(mesh.handles.iter().filter(|h| h.selected).count(), 1);

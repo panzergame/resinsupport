@@ -3,7 +3,10 @@
 //! on a body segment or a joint's handle selects that part (Shift toggles), Delete removes the
 //! selected supports; a drag from empty space selects with a box (`box_select`). A double press
 //! on a tip starts a branch from that support's head: the next press on a model's surface places
-//! the branch's tip (`support.add` with its `parent`), any other press or Esc puts it away. Selected joints and segments carry the Move arrows, always there in Support
+//! the branch's tip (`support.add` with its `parent`), any other press or Esc puts it away. A
+//! selected support shows a handle on its tip's contact: a press on it hides the tip, and the next
+//! press on a model's surface puts the tip there (`support.move_tip`), any other press or Esc
+//! puts it back. Selected joints and segments carry the Move arrows, always there in Support
 //! edition: a drag places their joints (`support.place_joints`), and the support keeps that path
 //! from then on. Every change goes through the `support.*` commands.
 
@@ -27,6 +30,8 @@ pub enum Hover {
     Support(u64),
     /// A joint's handle or a body segment.
     Part(u64, SupportPart),
+    /// A selected support's contact handle, which starts moving its tip.
+    TipHandle(u64),
 }
 
 /// The pointer's pick, kept until the pointer, the camera or the scene changes: a ray cast per
@@ -43,6 +48,9 @@ pub struct SupportTool {
     /// The support a branch is being placed from, until the next press. Nothing is in the scene
     /// before that press, so putting it away leaves the undo history alone.
     pub branching: Option<u64>,
+    /// The support whose tip is being moved, hidden until the next press. As for a branch, the
+    /// scene is left alone until that press.
+    pub moving: Option<u64>,
 }
 
 impl SupportTool {
@@ -126,12 +134,16 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         }
         None => app.supports.clear(),
     }
-    if matches!(app.supports.hover, Some(Hover::Support(_) | Hover::Part(..))) {
+    if matches!(app.supports.hover, Some(Hover::Support(_) | Hover::Part(..) | Hover::TipHandle(_))) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    if app.supports.branching.is_some_and(|id| !app.session.scene.supports().iter().any(|s| s.id == id)) {
+    let known = |id: u64| app.session.scene.supports().iter().any(|s| s.id == id);
+    if app.supports.branching.is_some_and(|id| !known(id)) {
         app.supports.branching = None;
+    }
+    if app.supports.moving.is_some_and(|id| !known(id)) {
+        app.supports.moving = None;
     }
     let Some((at, mods)) = picking_press(app, ui, resp) else { return };
     let hit = pick(app, proj, at);
@@ -151,10 +163,18 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         && now - t <= delay
         && on_tip(app, proj, at, id)
     {
+        // The first press of a double on a selected tip landed on its contact handle.
+        app.supports.moving = None;
         app.supports.branching = Some(id);
         return;
     }
-    if let Some(Hover::Support(id) | Hover::Part(id, _)) = hit
+    if let Some(id) = app.supports.moving.take() {
+        if let Some(Hover::Surface { model, point, normal }) = hit {
+            app.run("support.move_tip", json!({ "support": id, "model": model, "point": point, "normal": normal }));
+        }
+        return;
+    }
+    if let Some(Hover::Support(id) | Hover::Part(id, _) | Hover::TipHandle(id)) = hit
         && on_tip(app, proj, at, id)
     {
         app.supports.last_tip_press = Some((now, id));
@@ -168,6 +188,9 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
                 app.run("support.select", json!({ "ids": [] }));
             }
             app.run("support.add", json!({ "model": model, "point": point, "normal": normal }));
+        }
+        Some(Hover::TipHandle(id)) => {
+            app.supports.moving = Some(id);
         }
         Some(Hover::Support(id)) => {
             app.run("support.select", json!({ "ids": [id], "mode": mode }));
@@ -192,13 +215,30 @@ fn on_tip(app: &ResinApp, proj: &Proj, at: Pos2, id: u64) -> bool {
     at_contact || app.routes.route(id).is_some_and(|r| resin_engine::geom::ray_capsule(o, d, r.contact, r.head, radius).is_some())
 }
 
-/// While a branch is being placed over a model: its tip, from where it would touch to the head it
-/// would share.
-pub fn branch_preview(app: &ResinApp) -> Option<(Vec3, Vec3)> {
-    let parent = app.supports.branching?;
-    let Some(Hover::Surface { point, .. }) = app.supports.hover else { return None };
-    let s = app.session.scene.supports().iter().find(|s| s.id == parent)?;
-    Some((point, resin_engine::support_head(&app.session.scene, s, app.session.support_settings().current())?))
+/// While a branch is being placed or a tip moved, over a model: the tip, from where it would
+/// touch to its head. A moved tip with a worked-out route takes its head along.
+pub fn tip_preview(app: &ResinApp) -> Option<(Vec3, Vec3)> {
+    let Some(Hover::Surface { point, normal, .. }) = app.supports.hover else { return None };
+    let scene = &app.session.scene;
+    let preset = app.session.support_settings().current();
+    if let Some(parent) = app.supports.branching {
+        let s = scene.supports().iter().find(|s| s.id == parent)?;
+        return Some((point, resin_engine::support_head(scene, s, preset)?));
+    }
+    let mut s = scene.supports().iter().find(|s| Some(s.id) == app.supports.moving)?.clone();
+    (s.tip, s.normal) = (point, normal);
+    Some((point, resin_engine::support_head(scene, &s, preset)?))
+}
+
+/// The contact handles: on each selected support's tip, in Support edition, while no tip is being
+/// placed, the size of the contact sphere. Each one's support, centre and radius.
+pub fn tip_handles(app: &ResinApp) -> Vec<(u64, Vec3, f64)> {
+    if app.mode != crate::EditMode::Support || app.supports.branching.is_some() || app.supports.moving.is_some() {
+        return Vec::new();
+    }
+    let radius = app.session.support_settings().current().tip.contact_diameter / 2.0;
+    let scene = &app.session.scene;
+    scene.supports().iter().filter(|s| scene.selected.contains(&s.id)).map(|s| (s.id, s.tip, radius)).collect()
 }
 
 /// A left press over the viewport that picks rather than navigates: where it happened and the
@@ -226,17 +266,31 @@ fn part_param(id: u64, part: SupportPart) -> Value {
     }
 }
 
-/// A selected joint's handle wins over everything: it is drawn over everything. Otherwise the nearest of a
+/// While a tip is moved, the surface alone. Otherwise a contact handle, then a selected joint's
+/// handle, win over everything: they are drawn over everything. Otherwise the nearest of a
 /// support's solids and the models' surface; a support wins when the ray reaches it first, or
 /// within the tip's radius past the surface (the tip is half buried).
 fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
     let (o, d) = proj.ray(p);
     let scene = &app.session.scene;
     let preset = app.session.support_settings().current();
+    let surface = scene.ray_hit(o, d);
+    let on_surface = |(model, h): (u64, resin_engine::geom::RayHit)| {
+        // In the scene, as `support.add` takes it: the mesh's own normal is off for a turned model.
+        let normal = scene.model(model).and_then(|m| m.face_normal(h.triangle)).unwrap_or(-d);
+        Hover::Surface { model, point: h.point, normal }
+    };
+    // Its own hidden tip must not stand in the way.
+    if app.supports.moving.is_some() {
+        return surface.map(on_surface);
+    }
+    let handle = tip_handles(app).into_iter().filter_map(|(id, c, r)| resin_engine::geom::ray_sphere(o, d, c, r).map(|t| (id, t)));
+    if let Some((id, _)) = handle.min_by(|a, b| a.1.total_cmp(&b.1)) {
+        return Some(Hover::TipHandle(id));
+    }
     if let Some((id, joint, _)) = app.routes.joint_hit(scene, preset, o, d) {
         return Some(Hover::Part(id, SupportPart::Joint(joint)));
     }
-    let surface = scene.ray_hit(o, d);
     let radius = tip_radius(app);
     let tip = scene.support_hit(o, d, radius).map(|(id, t)| (Hover::Support(id), t));
     let piece = app.routes.piece_hit(scene, preset, o, d).map(|(id, piece, t)| match piece {
@@ -248,11 +302,7 @@ fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
     match (surface, support) {
         (Some((_, h)), Some((hover, t))) if t <= h.t + radius => Some(hover),
         (None, Some((hover, _))) => Some(hover),
-        (Some((model, h)), _) => {
-            // In the scene, as `support.add` takes it: the mesh's own normal is off for a turned model.
-            let normal = scene.model(model).and_then(|m| m.face_normal(h.triangle)).unwrap_or(-d);
-            Some(Hover::Surface { model, point: h.point, normal })
-        }
+        (Some(hit), _) => Some(on_surface(hit)),
         (None, None) => None,
     }
 }
@@ -346,7 +396,7 @@ mod tests {
         assert!(app.session.scene.selected.contains(&id));
         press(&mut app, tip, 1.15);
         assert_eq!(app.supports.branching, Some(id));
-        assert_eq!(branch_preview(&app), None, "nothing over the model yet");
+        assert_eq!(tip_preview(&app), None, "nothing over the model yet");
         let depth = app.session.undo_depth();
         press(&mut app, surface, 2.0);
         let all = app.session.scene.supports();
@@ -363,5 +413,87 @@ mod tests {
         let depth = app.session.undo_depth();
         press(&mut app, away, 4.0);
         assert_eq!((app.supports.branching, app.session.scene.supports().len(), app.session.undo_depth()), (None, 2, depth));
+    }
+
+    /// A press on a selected support's contact handle hides its tip; the next press on the model
+    /// moves the tip there in one step, a press off it puts the tip back with no step. A double
+    /// press on the selected tip still starts a branch.
+    #[test]
+    fn a_press_on_the_contact_handle_then_on_the_model_moves_the_tip() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-move-tip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plate.stl");
+        // A floating square plate, facing down.
+        let text = "solid p\nfacet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 20 10\nendloop\nendfacet\n\
+                    facet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 20 20 10\nvertex 20 0 10\nendloop\nendfacet\nendsolid p\n";
+        std::fs::write(&path, text).unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let m = app.run("file.import_stl", json!({ "path": path, "fit": false })).unwrap()["id"].as_u64().unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        let id = app.run("support.add", json!({ "model": m, "point": [5, 5, 10], "normal": [0, 0, -1] })).unwrap()["id"].as_u64().unwrap();
+        let preset = *app.session.support_settings().current();
+        while app.routes.update(&app.session.scene, &preset) {}
+        app.mode = crate::EditMode::Support;
+        app.run("view.standard", json!({ "view": "bottom" })).unwrap();
+        app.run("view.fit", json!({ "aspect": 800.0 / 600.0 })).unwrap();
+        let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let proj = Proj { cam: app.session.camera, rect };
+        let ctx = egui::Context::default();
+        let at = |p: [f64; 3]| proj.to_screen(Vec3::new(p[0], p[1], p[2])).unwrap();
+        let (tip, surface, away) = (at([5.0, 5.0, 10.0]), at([15.0, 15.0, 10.0]), rect.left_top() + egui::vec2(5.0, 5.0));
+        let press = |app: &mut ResinApp, pos: Pos2, time: f64| {
+            for (pressed, t) in [(true, time), (false, time + 0.05)] {
+                let button = egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+                let raw = egui::RawInput {
+                    screen_rect: Some(rect),
+                    time: Some(t),
+                    events: vec![egui::Event::PointerMoved(pos), button],
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |ui| {
+                    let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                    handle(app, ui, &proj, &resp);
+                });
+                out.textures_delta.clear();
+            }
+        };
+        let tip_drawn = |app: &mut ResinApp| {
+            let mesh = app.routes.mesh(&app.session.scene, &preset, true, app.supports.moving);
+            let contact = Vec3::from(mesh.vertices.iter().map(|v| v.pos).fold([0.0f32; 3], |a, p| if p[2] > a[2] { p } else { a }));
+            (contact.z - 10.0).abs() < 1.0
+        };
+
+        assert!(tip_handles(&app).is_empty(), "nothing selected, no handle");
+        // egui knows the pointer is over the view from the frame before: bring it there first.
+        let raw = egui::RawInput { screen_rect: Some(rect), time: Some(0.0), events: vec![egui::Event::PointerMoved(tip)], ..Default::default() };
+        let mut out = ctx.run_ui(raw, |ui| {
+            ui.allocate_rect(rect, egui::Sense::click_and_drag());
+        });
+        out.textures_delta.clear();
+        press(&mut app, tip, 0.5);
+        assert_eq!(tip_handles(&app).iter().map(|h| (h.0, h.1)).collect::<Vec<_>>(), vec![(id, Vec3::new(5.0, 5.0, 10.0))]);
+        press(&mut app, tip, 1.0);
+        assert_eq!((app.supports.moving, app.supports.branching), (Some(id), None), "a press on the handle, not a double");
+        assert!(tip_handles(&app).is_empty() && !tip_drawn(&mut app), "the tip is hidden while it moves");
+        let depth = app.session.undo_depth();
+        press(&mut app, surface, 2.0);
+        let s = &app.session.scene.supports()[0];
+        assert!((s.tip - Vec3::new(15.0, 15.0, 10.0)).len() < 1e-6, "{:?}", s.tip);
+        assert_eq!((app.supports.moving, app.session.undo_depth()), (None, depth + 1), "one press, one step");
+        while app.routes.update(&app.session.scene, &preset) {}
+        assert!(tip_drawn(&mut app));
+
+        // Put back by a press off the model: the scene and the history untouched.
+        press(&mut app, surface, 3.0);
+        assert_eq!(app.supports.moving, Some(id));
+        let (revision, depth) = (app.session.scene.revision(), app.session.undo_depth());
+        press(&mut app, away, 4.0);
+        assert_eq!((app.supports.moving, app.session.scene.revision(), app.session.undo_depth()), (None, revision, depth));
+
+        // A double press on the selected tip: its first press lands on the handle, the second branches.
+        app.run("support.select", json!({ "ids": [id] }));
+        press(&mut app, surface, 5.0);
+        press(&mut app, surface, 5.15);
+        assert_eq!((app.supports.moving, app.supports.branching), (None, Some(id)));
     }
 }

@@ -228,6 +228,7 @@ impl ResinApp {
         }
         self.mode = mode;
         self.supports.branching = None;
+        self.supports.moving = None;
         self.boxsel = None;
         if mode == EditMode::Slice && !self.slice_is_fresh() {
             self.slice_now();
@@ -301,6 +302,7 @@ impl ResinApp {
         }
         self.tool = None;
         self.supports.branching = None;
+        self.supports.moving = None;
         let (id, msg) = if forward { ("edit.redo", "status.redone") } else { ("edit.undo", "status.undone") };
         if let Some(v) = self.run(id, json!({})) {
             let step = i18n::tr_built(&format!("cmd.{}", v["command"].as_str().unwrap_or_default()));
@@ -607,6 +609,9 @@ impl ResinApp {
                 if self.supports.branching.is_some() {
                     ui.separator();
                     ui.label(i18n::tr("status.branch_place"));
+                } else if self.supports.moving.is_some() {
+                    ui.separator();
+                    ui.label(i18n::tr("status.tip_place"));
                 }
                 let unreachable = self.routes.unreachable(&self.session.scene);
                 if unreachable > 0 {
@@ -705,6 +710,7 @@ impl ResinApp {
                     self.tool = None;
                     self.boxsel = None;
                     self.supports.branching = None;
+                    self.supports.moving = None;
                 }
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
                 egui::Key::R if plain => transform::open(self, transform::Op::Rotate),

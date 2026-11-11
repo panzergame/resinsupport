@@ -17,7 +17,9 @@ fn check_known(s: &Session, ids: &[u64]) -> Result<()> {
     }
 }
 
-pub(crate) fn add(s: &mut Session, p: &Value) -> Result<Value> {
+/// `model`, `point` on it and outward `normal` (default down), as `support.add` and
+/// `support.move_tip` take them.
+fn surface_params(s: &Session, p: &Value) -> Result<(u64, Vec3, Vec3)> {
     let model = p.get("model").and_then(Value::as_u64).ok_or_else(|| EngineError::BadParams("`model` must be a model id".into()))?;
     let point = vec3_param(p, "point")?.ok_or_else(|| EngineError::BadParams("`point` is required".into()))?;
     let m = s.scene.model(model).ok_or_else(|| EngineError::BadParams(format!("no model {model}")))?;
@@ -32,12 +34,25 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> Result<Value> {
         Some(n) => n.normalized().ok_or_else(|| EngineError::BadParams("`normal` must not be zero".into()))?,
         None => -Vec3::Z,
     };
+    Ok((model, point, normal))
+}
+
+pub(crate) fn add(s: &mut Session, p: &Value) -> Result<Value> {
+    let (model, point, normal) = surface_params(s, p)?;
     let parent = match p.get("parent") {
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_u64().ok_or_else(|| EngineError::BadParams("`parent` must be a support id".into()))?),
     };
     let id = s.scene.add_support(model, point, normal, parent)?;
     Ok(json!({ "id": id }))
+}
+
+pub(crate) fn move_tip(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = p.get("support").and_then(Value::as_u64).ok_or_else(|| EngineError::BadParams("`support` must be a support id".into()))?;
+    check_known(s, &[id])?;
+    let (model, point, normal) = surface_params(s, p)?;
+    s.scene.set_tip(id, model, point, normal)?;
+    Ok(json!({}))
 }
 
 pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {

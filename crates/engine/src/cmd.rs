@@ -97,6 +97,9 @@ pub fn commands() -> &'static [CommandSpec] {
         ),
         CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection); a body goes with its last tip, and a deleted support's first remaining branch takes its body"),
         CommandSpec::new("support.list", "List Supports", support::list),
+        CommandSpec::new("support.move_tip", "Move Support Tip", support::move_tip).params(
+            "support: integer, model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down); placed corners and branches stay, the tip stretches to its head",
+        ),
         CommandSpec::new("support.place_joints", "Move Support Joints", support::place_joints).params(
             "joints: [{ support: integer, joint: integer, position: [x, y, z] mm, Z from 0 }] in the scene; a support whose route was worked out keeps that route as placed corners first",
         ),

@@ -236,6 +236,46 @@ fn supports_are_added_selected_and_deleted() {
 }
 
 #[test]
+fn a_tip_moves_on_the_surface_and_keeps_its_body_and_branches() {
+    let (mut s, wall, high, a_id, a, b) = branch_scene();
+    let p = *s.support_settings().current();
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": a, "joint": 0, "position": [6, 10, 4] }] })).unwrap();
+    let depth = s.undo_depth();
+    let before = s.scene.clone();
+
+    // Onto the other model: the tip follows it, the placed head stays, the branch stays.
+    s.execute("support.move_tip", &json!({ "support": a, "model": high, "point": [10, 5, 12], "normal": [0, 0, -3] })).unwrap();
+    let t = &s.scene.supports()[0];
+    assert_eq!((t.model, t.tip, t.normal, t.corners.clone()), (high, Vec3::new(10.0, 5.0, 12.0), -Vec3::Z, Some(vec![Vec3::new(6.0, 10.0, 4.0)])));
+    assert_eq!(s.scene.supports()[1].parent, Some(a_id));
+    assert_eq!(s.undo_depth(), depth + 1);
+    // Where it is already: no step.
+    s.execute("support.move_tip", &json!({ "support": a, "model": high, "point": [10, 5, 12] })).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+    // It is carried with the model it now sits on.
+    s.execute("model.move", &json!({ "ids": [high], "by": [1, 0, 0] })).unwrap();
+    assert_eq!(s.scene.supports()[0].tip, Vec3::new(11.0, 5.0, 12.0));
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.supports(), before.supports());
+
+    // A branch's tip moves too, still running to its parent's head.
+    s.execute("support.move_tip", &json!({ "support": b, "model": high, "point": [12, 15, 12] })).unwrap();
+    let branch = crate::route(&s.scene, &s.scene.supports()[1], &p);
+    assert_eq!((branch.contact, branch.head), (Vec3::new(12.0, 15.0, 12.0), Vec3::new(6.0, 10.0, 4.0)));
+
+    for bad in [
+        json!({ "support": 99, "model": wall, "point": [4, 10, 6.5] }),
+        json!({ "support": a, "model": wall, "point": [40, 10, 6.5] }),
+        json!({ "support": a, "model": 99, "point": [4, 10, 6.5] }),
+        json!({ "support": a, "model": wall, "point": [4, 10, 6.5], "normal": [0, 0, 0] }),
+        json!({ "model": wall, "point": [4, 10, 6.5] }),
+    ] {
+        assert!(matches!(s.execute("support.move_tip", &bad), Err(EngineError::BadParams(_))), "{bad}");
+    }
+}
+
+#[test]
 fn models_are_selected_moved_rotated_and_scaled() {
     let dir = temp_dir("transform");
     let path = write_cube_stl(&dir);
@@ -811,6 +851,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "print.reset" | "print.settings" | "print.slice" => Some(json!({})),
         "support.add" => Some(json!({ "model": b, "point": [35, 5, 0], "parent": tip })),
         "support.delete" => Some(json!({ "ids": [tip] })),
+        "support.move_tip" => Some(json!({ "support": tip, "model": b, "point": [35, 5, 0] })),
         "support.configure" => {
             Some(json!({ "preset": "light", "active": "heavy", "tip": { "contact_diameter": 0.3 }, "raft": { "enabled": false } }))
         }
