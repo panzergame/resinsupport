@@ -1,7 +1,8 @@
 //! The print settings card: the printer profile and how the resin is exposed and the plate moves,
 //! on four tabs (Printer, Bottom Layers, Regular Layers, Slicing), and Restore defaults. Every edit runs
 //! `print.configure` at once; the configuration is not an undo step, and `ResinApp::run` keeps it
-//! in the preferences. Opened from the ribbon until the Slice edit mode holds it.
+//! in the preferences. Opened from the ribbon until the Slice edit mode holds it; the header's
+//! close button or the ribbon button closes it, Esc doesn't.
 
 use egui::{DragValue, pos2, vec2};
 use resin_engine::PrintConfig;
@@ -50,9 +51,9 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         at,
         bounds: app.viewport_rect,
         width: FORM_TABBED_CARD_WIDTH,
-        buttons: Buttons::None,
+        buttons: Buttons::CloseOnly,
     };
-    card.show(ctx, &t, |ui| {
+    let action = card.show(ctx, &t, |ui| {
         let tabs = TABS.map(i18n::tr);
         ui_kit::segmented(ui, &t, &mut tab, &tabs);
         match tab {
@@ -67,6 +68,9 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         ui_kit::hint(ui, &t, i18n::tr("printing.hint"));
     });
     app.print_tab = tab;
+    if action == Action::Cancel {
+        app.print_open = false;
+    }
     if let Some(edit) = changes(&before, &c) {
         configure(app, edit);
     }
@@ -262,6 +266,29 @@ mod tests {
         frame(&ctx, &mut app, vec![]);
         frame(&ctx, &mut app, vec![]);
         assert!(!shown(&ctx));
+    }
+
+    #[test]
+    fn the_close_button_closes_the_card() {
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        app.print_open = true;
+        let ctx = egui::Context::default();
+        // A window's first frame only sizes it.
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        let card = ctx.memory(|m| m.area_rect(egui::Id::new(CARD_ID))).unwrap();
+        let at = pos2(card.right() - SPACE_8 - FORM_CLOSE_SIZE / 2.0, card.top() + FORM_HEADER_HEIGHT / 2.0);
+        let button =
+            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let config = app.session.print_config().clone();
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, &mut app, vec![button(true)]);
+        frame(&ctx, &mut app, vec![button(false)]);
+        assert!(!app.print_open);
+        frame(&ctx, &mut app, vec![]);
+        frame(&ctx, &mut app, vec![]);
+        assert!(!shown(&ctx));
+        assert_eq!(*app.session.print_config(), config, "closing changes no setting");
     }
 
     #[test]

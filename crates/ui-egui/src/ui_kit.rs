@@ -43,6 +43,9 @@ pub enum Buttons {
     /// A permanent panel, shown while its mode lasts: no footer, no close button, and Esc leaves
     /// it alone. Its edits apply as they are made.
     None,
+    /// A panel the user opens and closes: no footer, the header's close button
+    /// ([`Action::Cancel`]), and Esc leaves it alone, as for [`Buttons::None`].
+    CloseOnly,
     /// A confirmation: the action (primary, a catalog id, [`Action::Ok`]) and Cancel.
     Confirm { ok: &'static str },
 }
@@ -67,7 +70,7 @@ impl Card<'_> {
     pub fn show(self, ctx: &egui::Context, t: &Tokens, body: impl FnOnce(&mut Ui)) -> Action {
         let typing = ctx.text_edit_focused();
         let frame = card_frame(t);
-        let permanent = self.buttons == Buttons::None;
+        let permanent = matches!(self.buttons, Buttons::None | Buttons::CloseOnly);
         let mut action = Action::None;
         let mut window = egui::Window::new(self.title);
         if let Some(b) = self.bounds {
@@ -76,7 +79,7 @@ impl Card<'_> {
         window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).default_pos(self.at).show(ctx, |ui| {
             ui.set_width(self.width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            if header(ui, t, self.icon, self.title, !permanent) {
+            if header(ui, t, self.icon, self.title, self.buttons != Buttons::None) {
                 action = Action::Cancel;
             }
             egui::Frame::NONE.inner_margin(SPACE_12).show(ui, |ui| scope(ui, t, body));
@@ -153,7 +156,7 @@ fn footer(ui: &mut Ui, t: &Tokens, buttons: Buttons) -> Action {
         Buttons::OkCancel { ok_enabled } => (vec![("ui.ok", Action::Ok, true), ("ui.cancel", Action::Cancel, false)], ok_enabled),
         Buttons::ResetClose => (vec![("ui.close", Action::Ok, true)], true),
         Buttons::Confirm { ok } => (vec![(ok, Action::Ok, true), ("ui.cancel", Action::Cancel, false)], true),
-        Buttons::None => (Vec::new(), true),
+        Buttons::None | Buttons::CloseOnly => (Vec::new(), true),
     };
     let width_of = |ui: &Ui, label: &str, primary: bool| {
         let text = ui.painter().layout_no_wrap(label.into(), FontId::proportional(FONT_LABEL), t.form_ink).size().x;
