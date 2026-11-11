@@ -244,6 +244,12 @@ fn hostile_params_never_panic() {
         json!({ "lifted": "yes", "height": -1, "models": [{ "id": 1, "lifted": 1 }] }),
         json!({ "lifted": true, "height": 1e308, "ids": [u64::MAX], "path": "/", "fit": false }),
         json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
+        json!({ "printer": { "name": 1, "resolution_x": 1e308, "display_x": -1, "mirror_x": "yes" }, "layers": [], "slicing": "aa" }),
+        json!({ "printer": { "resolution_x": u64::MAX, "resolution_y": 0.5, "display_y": 1e-300 }, "exposure": { "power": 256, "normal": null } }),
+        json!({ "layers": { "height": 1e-300, "bottom_count": u64::MAX, "transition_count": -1 }, "motion": { "lift_speed": 1e308 } }),
+        json!({ "layers": { "bottom_count": 200, "transition_count": 200 }, "printer": { "build_height": 1 }, "estimates": { "bottle_cost": -0.0 } }),
+        json!({ "slicing": { "anti_aliasing": 3 }, "estimates": { "resin_density": 1e308, "bottle_volume": "1" }, "printer": { "name": "\u{0}" } }),
+        json!({ "printer": { "name": "x".repeat(10_000), "display_x": 1, "resolution_x": 32768 }, "from_the_future": {} }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -551,6 +557,10 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "model.rotate" => Some(json!({ "degrees": [0, 90, 0] })),
         "model.scale" => Some(json!({ "factors": 1.5 })),
         "model.select" => Some(json!({ "ids": [b] })),
+        "print.configure" => {
+            Some(json!({ "printer": { "name": "Other", "mirror_x": true }, "layers": { "height": 0.03 }, "slicing": { "anti_aliasing": 4 } }))
+        }
+        "print.reset" | "print.settings" => Some(json!({})),
         "support.add" => Some(json!({ "model": b, "point": [35, 5, 0] })),
         "support.delete" => Some(json!({ "ids": [tip] })),
         "support.configure" => {
@@ -796,6 +806,127 @@ fn support_settings_are_never_an_undo_step() {
     // A failing command leaves them as they were.
     assert!(s.execute("support.configure", &json!({ "tip": { "length": 2.4 }, "body": { "segments": 0 } })).is_err());
     assert_eq!(*s.support_settings(), settings);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn print_config_merges_validates_and_round_trips() {
+    use crate::PrintConfig;
+    use resin_slice::{PrintSettings, PrinterProfile};
+    let mut s = Session::new();
+    let all = s.execute("print.settings", &json!({})).unwrap();
+    assert_eq!(all["printer"]["name"], "ELEGOO SATURN 2");
+    assert_eq!(all["printer"]["resolution_x"], 7680);
+    assert_eq!(all["layers"]["height"], 0.05);
+    assert_eq!(all["exposure"]["bottom"], 30.0);
+    // What the command lists is what storage reads back, unchanged.
+    assert_eq!(PrintConfig::from_stored(&all), (s.print_config().clone(), vec![]));
+
+    // A partial patch changes only what it names.
+    s.execute("print.configure", &json!({ "exposure": { "normal": 2.5 } })).unwrap();
+    let mut expected = PrintConfig::default();
+    expected.settings.exposure.normal = 2.5;
+    assert_eq!(*s.print_config(), expected);
+    s.execute("print.configure", &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200 }, "slicing": { "anti_aliasing": 8 } }))
+        .unwrap();
+    let c = s.print_config();
+    assert_eq!((c.printer.name.as_str(), c.printer.mirror_y, c.printer.display_x), ("Mars 4", true, 200.0));
+    assert_eq!((c.printer.mirror_x, c.printer.display_y), (false, 123.12));
+    assert_eq!((c.settings.slicing.anti_aliasing, c.settings.exposure.normal), (8, 2.5));
+
+    // A bad patch leaves everything as it was and names the field.
+    let before = s.print_config().clone();
+    for (bad, names) in [
+        (json!({ "exposure": { "normal": 0 } }), "exposure.normal"),
+        (json!({ "exposure": { "normal": 2.0, "bottom": 1e9 } }), "exposure.bottom"),
+        (json!({ "exposure": { "power": 255.5 } }), "exposure.power"),
+        (json!({ "layers": { "height": 0.5 } }), "layers.height"),
+        (json!({ "layers": { "bottom_count": -1 } }), "layers.bottom_count"),
+        (json!({ "slicing": { "anti_aliasing": 3 } }), "slicing.anti_aliasing"),
+        (json!({ "estimates": { "bottle_cost": -1 } }), "estimates.bottle_cost"),
+        (json!({ "estimates": { "resin_density": "1.1" } }), "estimates.resin_density"),
+        (json!({ "printer": { "resolution_x": 0 } }), "printer.resolution_x"),
+        (json!({ "printer": { "mirror_x": 1 } }), "printer.mirror_x"),
+        (json!({ "printer": { "name": "n".repeat(65) } }), "printer.name"),
+        (json!({ "printer": { "colour": "red" } }), "printer.colour"),
+        (json!({ "layers": "thin" }), "layers"),
+        (json!({ "elevation": 5 }), "elevation"),
+        // Each fits alone; together they don't: 2 mm hold 40 layers of 0.05 mm.
+        (json!({ "printer": { "build_height": 2 }, "layers": { "bottom_count": 40, "transition_count": 1 } }), "build height"),
+        (json!({ "printer": { "display_x": 1, "resolution_x": 32768 } }), "µm"),
+    ] {
+        match s.execute("print.configure", &bad) {
+            Err(EngineError::BadParams(why)) => assert!(why.contains(names), "{bad}: {why}"),
+            other => panic!("{bad}: {other:?}"),
+        }
+        assert_eq!(*s.print_config(), before, "{bad}");
+    }
+    assert!(matches!(s.execute("print.configure", &json!([1])), Err(EngineError::BadParams(_))));
+    assert!(
+        s.set_print_config(PrintConfig { printer: PrinterProfile { build_height: f64::NAN, ..PrinterProfile::default() }, ..before.clone() })
+            .is_err()
+    );
+    assert_eq!(*s.print_config(), before);
+
+    // Restore defaults: the print settings only; the printer stays.
+    s.execute("print.reset", &json!({})).unwrap();
+    assert_eq!(s.print_config().settings, PrintSettings::default());
+    assert_eq!(s.print_config().printer, before.printer);
+}
+
+#[test]
+fn stored_print_config_falls_back_field_by_field() {
+    use crate::PrintConfig;
+    use resin_slice::{PrintSettings, PrinterProfile};
+    let stored = json!({
+        "printer": { "name": "Mine", "resolution_x": "many", "mirror_x": true, "from_the_future": 1 },
+        "layers": { "height": 0.1, "bottom_count": 1e9 },
+        "exposure": { "normal": f64::NAN, "bottom": 20 },
+        "motion": 7,
+        "extra": true,
+    });
+    let (c, mut problems) = PrintConfig::from_stored(&stored);
+    problems.sort();
+    assert_eq!(problems, ["exposure.normal", "layers.bottom_count", "motion", "printer.resolution_x"]);
+    let (p, d) = (PrinterProfile::default(), PrintSettings::default());
+    assert_eq!((c.printer.name.as_str(), c.printer.mirror_x, c.printer.resolution_x), ("Mine", true, p.resolution_x));
+    assert_eq!((c.settings.layers.height, c.settings.layers.bottom_count), (0.1, d.layers.bottom_count));
+    assert_eq!((c.settings.exposure.normal, c.settings.exposure.bottom), (d.exposure.normal, 20.0));
+    assert_eq!(c.settings.motion, d.motion);
+    assert!(c.validate().is_ok());
+
+    // Fields that read but don't fit together: the layers' group, then the printer's.
+    let crowded = json!({ "printer": { "build_height": 1 }, "layers": { "bottom_count": 100, "height": 0.01 } });
+    let (c, problems) = PrintConfig::from_stored(&crowded);
+    assert_eq!(problems, ["layers"]);
+    assert_eq!((c.printer.build_height, c.settings.layers), (1.0, d.layers));
+    let tiny = json!({ "printer": { "display_x": 1, "resolution_x": 32768, "name": "Tiny" } });
+    let (c, problems) = PrintConfig::from_stored(&tiny);
+    assert_eq!((problems, c.printer), (vec!["printer".to_string()], p.clone()));
+
+    // Through serde too, which is how preferences read it; nothing makes it fail.
+    let c2: PrintConfig = serde_json::from_value(stored.clone()).unwrap();
+    assert_eq!(c2, PrintConfig::from_stored(&stored).0);
+    assert_eq!(serde_json::from_value::<PrintConfig>(json!("junk")).unwrap(), PrintConfig::default());
+    assert_eq!(PrintConfig::from_stored(&json!(3)).1, ["print_config"]);
+}
+
+#[test]
+fn print_config_is_never_an_undo_step() {
+    let dir = temp_dir("print_undo");
+    let f = fixture(&dir);
+    let mut s = f.session;
+    s.execute("support.add", &json!({ "model": f.a, "point": [2, 2, 0] })).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    let (undo, redo, revision) = (s.undo_depth(), s.redo_depth(), s.scene.revision());
+    s.execute("print.configure", &json!({ "layers": { "height": 0.025 } })).unwrap();
+    s.execute("print.reset", &json!({})).unwrap();
+    s.execute("print.configure", &json!({ "exposure": { "normal": 4 } })).unwrap();
+    assert_eq!((s.undo_depth(), s.redo_depth(), s.scene.revision()), (undo, redo, revision), "no step, redo kept, scene untouched");
+    let config = s.print_config().clone();
+    s.execute("edit.redo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(*s.print_config(), config, "undo leaves the print settings alone");
     std::fs::remove_dir_all(dir).ok();
 }
 

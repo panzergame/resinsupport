@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 /// Each library crate's layer. A crate may depend only on crates in lower layers.
-const LAYERS: &[(&str, u8)] = &[("resin-geom", 0), ("resin-render", 1), ("resin-io", 3), ("resin-engine", 4), ("resin-ui-egui", 5)];
+const LAYERS: &[(&str, u8)] =
+    &[("resin-geom", 0), ("resin-render", 1), ("resin-slice", 2), ("resin-io", 3), ("resin-engine", 4), ("resin-ui-egui", 5)];
 /// Front-end crates: only layer 5 and the apps may use them, so the UI stays swappable.
 const UI_ONLY: &[&str] = &["eframe", "egui", "egui-wgpu", "rfd", "wgpu", "winit"];
 const CRASH_GUARD: &str =

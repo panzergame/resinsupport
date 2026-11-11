@@ -4,12 +4,13 @@
 |---|---|---|
 | L0 | `geom` | vectors, bounding boxes, triangle meshes and their measures (area, volume), ray hits (watertight test, BVH), segment and triangle distances (BVH box queries), spheres and frustums |
 | L1 | `render` | headless view math: the camera, projections, view animations, grid and axis geometry |
+| L2 | `slice` | the print job: printer profile, print settings (ranges, cross-field rules, exposure per layer) and the sliced job (layers as runs of grey) |
 | L3 | `io` | model file import (STL binary and ASCII), project files (`.rsup`), crash-safe writes |
 | L4 | `engine` | the session (scene: models, support tips, selection; camera; undo history) and the command registry |
 | L5 | `ui-egui` | the egui front end: viewport renderer (wgpu), navigation, menus, panels |
 | apps | `resinsupport` | the desktop app |
 
-L2 is kept free for the print job (printer profile, placement, supports), which will sit between the view math and the file formats. Support tips live in `engine::Scene` until supports get settings and generation, then move there.
+Support tips live in `engine::Scene` until supports get settings and generation, then move there.
 
 ## Commands
 `Session::execute(id, params)` looks the id up in `crates/engine/src/cmd.rs`, runs it on a clone-protected session (a failing or panicking command leaves the scene and camera as they were), and returns JSON. The UI only calls commands, apart from continuous camera drags, which move `session.camera` directly as SolidCraft's do.
@@ -29,6 +30,9 @@ L2 is kept free for the print job (printer profile, placement, supports), which 
 | `model.rotate` | turn models `degrees` [x, y, z], about X then Y then Z, around their joint bounds' centre |
 | `model.scale` | scale models by `factors` [x, y, z] (or one number), each 0.001 to 1000, along each model's own axes |
 | `model.select` | select models `ids`: `replace` (default; empty clears), `add` or `toggle` |
+| `print.configure` | merge partial `printer`, `layers`, `exposure`, `motion`, `slicing`, `estimates`; validated as a whole; no undo step |
+| `print.reset` | put the print settings back to their built-in values (the printer profile stays); no undo step, no confirmation |
+| `print.settings` | the printer profile and the print settings: `printer`, `layers`, `exposure`, `motion`, `slicing`, `estimates` |
 | `scene.clear` | remove every model (and its supports) |
 | `scene.lift_height` | put every lifted model's lowest point at `height` mm (0 to 500) |
 | `support.add` | a tip on model `model` at `point`, with outward `normal` |
@@ -49,6 +53,8 @@ L2 is kept free for the print job (printer profile, placement, supports), which 
 Ported from SolidCraft. A command that changes the scene (its `revision` moves) is one step: `execute` pushes the scene from before, with the command's id and label, keeps the last `MAX_UNDO` (200) and clears redo. `Scene` is cheap to copy (meshes and indexes are shared) and holds everything a step puts back, selection included; the camera is not part of it. `edit.undo` and `edit.redo` swap the scene with a step through `Scene::restore`, which keeps model and support ids and the revision growing: a model id never names another mesh, and nothing keyed on the revision mistakes the restored scene. `Scene`'s models and supports are private so that every change goes through a method that bumps the revision; `every_scene_change_is_undoable` runs each command on a fixture and checks it undoes and redoes exactly.
 
 The support settings (`engine::SupportSettings`: three presets and the active one) live on `Session` beside the camera, not in `Scene`, so a settings change is never a step and undoing a support edit never changes a setting. `SupportSettings::validate` holds the ranges and cross-field rules (contact ≤ upper ≤ body ≤ base diameter, penetration ≤ tip length) that `support.configure` and the stored preferences share; `execute` puts them back when a command fails.
+
+The print configuration (`engine::PrintConfig`: the printer profile and print settings of `resin_slice`) lives there too, for the same reasons. `resin_slice::validate` holds its ranges (`resin_slice::FIELDS`) and cross-field rules (the bottom and transition layers fit in the build height, a pixel is at least 1 µm); `print.configure`, `print.settings` and the stored preferences share one JSON shape, `{ printer, layers, exposure, motion, slicing, estimates }`. `PrintSettings::exposure_for` gives a layer's exposure: bottom, then the transition in even steps that reach neither end, then normal. The print settings card edits it live; until the Slice edit mode holds it, a ribbon button in Object edition opens it.
 
 A gesture is one step: `Session::begin_step` merges the commands that follow into the first one's step until `end_step`. A gizmo drag or a dragged or typed panel field opens one; the app closes it once no button is held and no field is typed in. Deleting several models or importing several files is one step. The transform tool takes `history_mark` when it opens; Cancel puts the placements back and `forget_since` drops the tool's steps, unless another command's step came between. Undo and redo put the tool away. Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes; the File menu and the application bar's buttons do the same, their tooltips naming the step.
 

@@ -10,7 +10,8 @@
 Left from SolidCraft's navigation for later: navigation cube and clickable gizmo, continuous orbit, orbit snapping, 3D mouse, macOS inertia handling, held-arrow continuous turning.
 
 ## 2. Printer and placement
-- Printer profiles (build volume, resolution, pixel size); the grid becomes the build plate
+- [x] Printer profile (build volume, resolution, pixel size, mirroring), in the print settings
+- The grid becomes the build plate
 - [x] Object edition and Support edition (Tab); model selection by click (through each model's BVH) or the Models panel
 - [x] Move / Rotate / Scale tools (T, R, S): a gizmo ported from SolidCraft and a live panel, measured from the model as imported; supports follow their model
 - [x] SolidCraft's chrome: application bar, ribbon (workspace card, a tab per edit mode, icon buttons), tool dialog cards, theme
@@ -32,7 +33,10 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - Overhang and island detection, automatic generation, raft
 
 ## 5. Slicing
-- Layer images from the mesh, layer preview, exposure settings
+- [x] Print settings: crate `resin-slice` (printer profile, print settings, the sliced job's types), `print.configure`, `print.reset`, `print.settings`, a print settings card, kept in the preferences, never undo steps
+- Layer images from the mesh, layer preview
+- Printer profile, later: portrait orientation (PrusaSlicer `display_orientation`), gamma or exposure remap (PrusaSlicer `gamma_correction`, mslicer `ExposureRemap`), XY absolute and XYZ scale correction (PrusaSlicer `absolute_correction`, `relative_correction`)
+- Print settings, later: two-stage lift and retract, waits before cure, after cure and after lift (CTB v4 and up); elephant-foot compensation and minimum width (PrusaSlicer `elefant_foot_compensation`, mslicer `elephant_foot_fixer.rs`); hollowing, Z bleed correction (PrusaSlicer `hollowing_*`, `zcorrection_layers`)
 
 ## 6. Export
 - Layer images in a zip first, then printer formats from public documentation or GPLv3-compatible implementations

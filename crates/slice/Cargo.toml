@@ -1,0 +1,18 @@
+[package]
+name = "resin-slice"
+description = "Printer profiles, print settings and the sliced job"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+resin-geom = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

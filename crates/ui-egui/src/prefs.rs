@@ -84,6 +84,9 @@ preference_settings! {
     /// The support settings card's presets: tool data, on no page, so no page's Restore defaults
     /// wipes it. Read field by field ([`resin_engine::SupportSettings::from_stored`]).
     support_settings: resin_engine::SupportSettings = resin_engine::SupportSettings::default();
+    /// The print settings card's printer profile and print settings: tool data, on no page, like
+    /// `support_settings`. Read field by field ([`resin_engine::PrintConfig::from_stored`]).
+    print_config: resin_engine::PrintConfig = resin_engine::PrintConfig::default();
     /// Imported models are lifted (off: they stay where the file puts them, as before lifting).
     lift_on_import: bool = true, GENERAL => check("prefs.lift_on_import", "prefs.lift_on_import.help");
     /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
@@ -151,6 +154,9 @@ pub fn lenient(saved: &serde_json::Value) -> (Prefs, Vec<String>) {
         .get("support_settings")
         .map(|v| resin_engine::SupportSettings::from_stored(v).1.into_iter().map(|p| format!("support_settings.{p}")).collect())
         .unwrap_or_default();
+    if let Some(v) = saved.get("print_config") {
+        problems.extend(resin_engine::PrintConfig::from_stored(v).1.into_iter().map(|p| format!("print_config.{p}")));
+    }
     if let Ok(p) = serde_json::from_value::<Prefs>(saved.clone()) {
         return (p, problems);
     }
@@ -506,7 +512,7 @@ mod tests {
     #[test]
     fn every_setting_has_a_page_and_restore_defaults_restores_it() {
         // Tool data has no page, so no page's Restore defaults wipes it.
-        const TOOL_DATA: &[&str] = &["support_settings", "lift_height"];
+        const TOOL_DATA: &[&str] = &["support_settings", "print_config", "lift_height"];
         for (field, page) in FIELD_PAGES {
             assert!(page.is_some_and(|p| p < PAGES.len()) || (page.is_none() && TOOL_DATA.contains(field)), "{field}");
         }
@@ -541,6 +547,29 @@ mod tests {
         let p = Prefs { nav: "maya".into(), support_settings: edited_settings(), ..Prefs::default() };
         let saved: serde_json::Value = serde_json::from_str(&to_json(&p).unwrap()).unwrap();
         assert_eq!(lenient(&saved), (p, vec![]));
+    }
+
+    #[test]
+    fn print_settings_round_trip_and_a_damaged_field_falls_back_alone() {
+        let mut s = resin_engine::Session::new();
+        s.execute(
+            "print.configure",
+            &serde_json::json!({ "printer": { "name": "Mine", "mirror_y": true }, "layers": { "height": 0.025 }, "exposure": { "normal": 2.4 } }),
+        )
+        .unwrap();
+        let p = Prefs { print_config: s.print_config().clone(), ..Prefs::default() };
+        let mut saved: serde_json::Value = serde_json::from_str(&to_json(&p).unwrap()).unwrap();
+        assert_eq!(lenient(&saved), (p.clone(), vec![]));
+
+        saved["print_config"]["exposure"]["normal"] = serde_json::json!("long");
+        saved["print_config"]["layers"]["bottom_count"] = serde_json::json!(-3);
+        let (back, mut problems) = lenient(&saved);
+        problems.sort();
+        assert_eq!(problems, ["print_config.exposure.normal", "print_config.layers.bottom_count"]);
+        let (c, defaults) = (&back.print_config, resin_engine::slice::PrintSettings::default());
+        assert_eq!((c.settings.exposure.normal, c.settings.layers.bottom_count), (defaults.exposure.normal, defaults.layers.bottom_count));
+        assert_eq!((c.printer.clone(), c.settings.layers.height), (p.print_config.printer.clone(), 0.025));
+        assert_eq!(Prefs { print_config: p.print_config.clone(), ..back }, p, "nothing else moved");
     }
 
     #[test]

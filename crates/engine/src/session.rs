@@ -7,7 +7,7 @@ use resin_io::{Project, ProjectModel, ProjectSupport};
 use resin_render::Camera;
 use serde_json::Value;
 
-use crate::{CommandSpec, EngineError, Result, SupportSettings, cmd};
+use crate::{CommandSpec, EngineError, PrintConfig, Result, SupportSettings, cmd};
 
 /// How far from the origin a model may be moved or grown, in millimetres: well past any build
 /// plate, and still exact enough in the f32 the mesh is stored in.
@@ -447,7 +447,8 @@ pub(crate) struct History {
     open: Option<bool>,
 }
 
-/// What is open: the models and the view onto them, the support settings, and the undo history.
+/// What is open: the models and the view onto them, the support and print settings, and the undo
+/// history.
 #[derive(Clone, Debug, Default)]
 pub struct Session {
     pub scene: Scene,
@@ -455,6 +456,8 @@ pub struct Session {
     /// Outside `scene` on purpose: a settings change is never an undo step, and undoing a support
     /// edit never changes a setting. Changed only through validated commands or the setter.
     pub(crate) support_settings: SupportSettings,
+    /// The printer profile and print settings: outside `scene` for the same reason.
+    pub(crate) print_config: PrintConfig,
     pub(crate) history: History,
     /// The scene's file and the scene revision last saved to or opened from it.
     pub(crate) file: Option<(String, u64)>,
@@ -474,10 +477,12 @@ impl Session {
         let spec = cmd::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_owned()))?;
         let (scene, camera, settings) = (self.scene.clone(), self.camera, self.support_settings);
         let history = if spec.undoable { None } else { Some(self.history.clone()) };
+        let print = self.print_config.clone();
         let restore = |s: &mut Session| {
             s.scene = scene.clone();
             s.camera = camera;
             s.support_settings = settings;
+            s.print_config = print.clone();
             if let Some(h) = &history {
                 s.history = h.clone();
             }
@@ -624,6 +629,18 @@ impl Session {
     pub fn set_support_settings(&mut self, s: SupportSettings) -> Result<()> {
         s.validate()?;
         self.support_settings = s;
+        Ok(())
+    }
+
+    pub fn print_config(&self) -> &PrintConfig {
+        &self.print_config
+    }
+
+    /// Replace the print configuration (the stored one, at start), if it passes
+    /// [`PrintConfig::validate`]. No undo step, as for `print.configure`.
+    pub fn set_print_config(&mut self, c: PrintConfig) -> Result<()> {
+        c.validate()?;
+        self.print_config = c;
         Ok(())
     }
 }

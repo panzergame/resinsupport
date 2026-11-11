@@ -33,7 +33,7 @@ A command takes its parameters as JSON and never opens a dialog or file picker. 
 ## Layering
 `cargo xtask layers` fails when a lower layer depends on a higher one:
 
-L0 `geom` → L1 `render` → L3 `io` → L4 `engine` → L5 `ui-egui` → apps.
+L0 `geom` → L1 `render` → L2 `slice` → L3 `io` → L4 `engine` → L5 `ui-egui` → apps.
 
 - Nothing below L5 uses egui, eframe, wgpu, winit or rfd.
 - No `std::fs` outside `io` and the apps, and file access behind `cfg(not(target_arch = "wasm32"))`.

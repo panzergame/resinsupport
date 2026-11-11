@@ -64,6 +64,7 @@ pub const MESSAGE_NAMESPACES: &[&str] = &[
     "models",
     "nav",
     "prefs",
+    "printing",
     "reason",
     "ribbon",
     "status",

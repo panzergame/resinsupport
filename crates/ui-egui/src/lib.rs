@@ -12,6 +12,7 @@ pub mod objects;
 pub mod preferences;
 pub mod prefs;
 pub mod prefs_writer;
+pub mod print_settings;
 pub mod support_routes;
 pub mod support_settings;
 pub mod supports;
@@ -83,6 +84,11 @@ pub struct ResinApp {
     pub(crate) settings_tab: usize,
     /// Restore defaults was clicked: its confirmation is open.
     pub(crate) confirm_reset: bool,
+    /// The print settings card is open, on this tab.
+    pub(crate) print_open: bool,
+    pub(crate) print_tab: usize,
+    /// The print settings' Restore defaults was clicked: its confirmation is open.
+    pub(crate) confirm_print_reset: bool,
     prefs_writer: prefs_writer::PrefsWriter,
     /// The window title last sent, so it is sent only when it changes.
     title: String,
@@ -108,6 +114,9 @@ impl ResinApp {
         if let Err(e) = session.set_support_settings(prefs.support_settings) {
             log::warn!("support settings: {e}");
         }
+        if let Err(e) = session.set_print_config(prefs.print_config.clone()) {
+            log::warn!("print settings: {e}");
+        }
         if let Err(e) = session.set_lift_height(prefs.lift_height) {
             log::warn!("lift height: {e}");
         }
@@ -131,6 +140,9 @@ impl ResinApp {
             pending: Vec::new(),
             settings_tab: 0,
             confirm_reset: false,
+            print_open: false,
+            print_tab: 0,
+            confirm_print_reset: false,
             prefs_writer: writer,
             title: String::new(),
             pending_open: None,
@@ -159,11 +171,14 @@ impl ResinApp {
         }
     }
 
-    /// Copy the session's support settings and lift height into the preferences when a command
+    /// Copy the session's support and print settings and lift height into the preferences when a command
     /// changed them, whoever ran it (a card, a script, undo), so they are saved.
     fn keep_settings(&mut self) {
         if self.prefs.support_settings != *self.session.support_settings() {
             self.prefs.support_settings = *self.session.support_settings();
+        }
+        if self.prefs.print_config != *self.session.print_config() {
+            self.prefs.print_config = self.session.print_config().clone();
         }
         let lift = self.session.scene.lift_height();
         if self.prefs.lift_height != lift {
@@ -642,6 +657,7 @@ impl eframe::App for ResinApp {
         transform::panel(self, &ctx);
         object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
+        print_settings::panel(self, &ctx);
         preferences::window(self, &ctx);
         self.confirm_open(&ctx, &tokens);
         // A gesture's undo step (a gizmo drag, a dragged or typed field) lasts while the button is

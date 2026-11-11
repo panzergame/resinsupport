@@ -14,6 +14,7 @@ workspace = true
 resin-geom = { workspace = true }
 resin-render = { workspace = true }
 resin-io = { workspace = true }
+resin-slice = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

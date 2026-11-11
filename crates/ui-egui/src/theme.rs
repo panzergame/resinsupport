@@ -40,6 +40,8 @@ pub mod metrics {
     pub const FORM_HEADER_HEIGHT: f32 = 40.0;
     pub const FORM_FOOTER_HEIGHT: f32 = 48.0;
     pub const FORM_CARD_WIDTH: f32 = 264.0;
+    /// A card whose tab strip carries two-word tab names.
+    pub const FORM_TABBED_CARD_WIDTH: f32 = 400.0;
     pub const FORM_BUTTON_HEIGHT: f32 = 28.0;
     pub const FORM_ICON_SIZE: f32 = 19.0;
     pub const FORM_CLOSE_SIZE: f32 = 26.0;

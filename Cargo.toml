@@ -13,6 +13,7 @@ authors = ["ResinSupport contributors"]
 # internal
 resin-geom = { path = "crates/geom" }
 resin-render = { path = "crates/render" }
+resin-slice = { path = "crates/slice" }
 resin-io = { path = "crates/io" }
 resin-engine = { path = "crates/engine" }
 resin-ui-egui = { path = "crates/ui-egui" }

@@ -46,6 +46,7 @@ enum Cmd {
     Fit,
     Home,
     Perspective,
+    PrintSettings,
 }
 
 /// A button's state this frame.
@@ -72,6 +73,7 @@ impl Cmd {
             Cmd::Fit => "ribbon.fit",
             Cmd::Home => "ribbon.home",
             Cmd::Perspective => "ribbon.perspective",
+            Cmd::PrintSettings => "ribbon.print_settings",
         }
     }
 
@@ -86,6 +88,7 @@ impl Cmd {
             Cmd::Fit => "fit",
             Cmd::Home => "home",
             Cmd::Perspective => "perspective",
+            Cmd::PrintSettings => "settings",
         }
     }
 
@@ -110,6 +113,7 @@ impl Cmd {
             Cmd::Fit => state(Some("F"), None, false),
             Cmd::Home => state(None, None, false),
             Cmd::Perspective => state(Some("P"), None, app.session.camera.fov > 0.0),
+            Cmd::PrintSettings => state(None, None, app.print_open),
         }
     }
 
@@ -134,6 +138,7 @@ impl Cmd {
             Cmd::Fit => app.animate_command("view.fit", json!({ "aspect": app.aspect() })),
             Cmd::Home => app.animate_home(app.aspect()),
             Cmd::Perspective => app.toggle_projection(),
+            Cmd::PrintSettings => app.print_open = !app.print_open,
         }
     }
 }
@@ -152,6 +157,8 @@ fn groups(mode: EditMode) -> &'static [Group] {
             Group { name: "group.import", cmds: &[Cmd::Import], views: false },
             Group { name: "group.arrange", cmds: &[Cmd::Move, Cmd::Rotate, Cmd::Scale], views: false },
             Group { name: "group.edit", cmds: &[Cmd::DeleteModels, Cmd::Clear], views: false },
+            // Until the Slice edit mode holds the print settings card.
+            Group { name: "group.print", cmds: &[Cmd::PrintSettings], views: false },
             VIEW,
         ],
         EditMode::Support => &[Group { name: "group.supports", cmds: &[Cmd::PlaceTips, Cmd::DeleteTips], views: false }, VIEW],

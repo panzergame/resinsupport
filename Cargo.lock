@@ -2707,6 +2707,7 @@ dependencies = [
  "resin-geom",
  "resin-io",
  "resin-render",
+ "resin-slice",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2733,6 +2734,15 @@ dependencies = [
 
 [[package]]
 name = "resin-render"
+version = "0.1.0"
+dependencies = [
+ "resin-geom",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "resin-slice"
 version = "0.1.0"
 dependencies = [
  "resin-geom",

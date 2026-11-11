@@ -3,6 +3,7 @@
 mod edit;
 mod file;
 mod model;
+mod print_config;
 mod support;
 mod support_settings;
 mod view;
@@ -22,7 +23,7 @@ pub struct CommandSpec {
     pub params: &'static str,
     pub run: fn(&mut Session, &Value) -> Result<Value>,
     /// A run that changes the scene is an undo step. True unless `noundo`: only undo, redo and
-    /// opening a project (which starts a fresh history) opt out; a command that leaves the scene alone (the view, the support settings) makes no
+    /// opening a project (which starts a fresh history) opt out; a command that leaves the scene alone (the view, the support or print settings) makes no
     /// step anyway.
     pub undoable: bool,
 }
@@ -70,6 +71,11 @@ pub fn commands() -> &'static [CommandSpec] {
         ),
         CommandSpec::new("model.select", "Select Models", model::select)
             .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
+        CommandSpec::new("print.configure", "Print Settings", print_config::configure).params(
+            "printer?: { name: string (at most 64 characters), resolution_x, resolution_y px, display_x, display_y mm, build_height mm, mirror_x, mirror_y }, layers?: { height mm, bottom_count, transition_count }, exposure?: { normal, bottom, light_off, bottom_light_off s, power, bottom_power 1-255 }, motion?: { lift_height, bottom_lift_height mm, lift_speed, bottom_lift_speed, retract_speed mm/min }, slicing?: { anti_aliasing: 1 | 2 | 4 | 8 }, estimates?: { resin_density g/ml, bottle_volume ml, bottle_cost }; each partial, the result validated as a whole",
+        ),
+        CommandSpec::new("print.reset", "Restore Print Settings", print_config::reset),
+        CommandSpec::new("print.settings", "List Print Settings", print_config::settings),
         CommandSpec::new("scene.clear", "Clear Scene", model::clear),
         CommandSpec::new("scene.lift_height", "Lift Height", model::lift_height)
             .params("height: mm, 0 to 500: where every lifted model's lowest point sits"),
