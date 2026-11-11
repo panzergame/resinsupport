@@ -1,5 +1,5 @@
 //! Selecting models, in Object mode: a left press on a model selects it (Shift toggles it),
-//! elsewhere clears the selection. Through `model.select`.
+//! elsewhere clears the selection and may start a box (`box_select`). Through `model.select`.
 
 use serde_json::json;
 
@@ -14,9 +14,11 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         Some((id, _)) => {
             app.run("model.select", json!({ "ids": [id], "mode": if mods.shift { "toggle" } else { "replace" } }));
         }
-        None if !mods.shift && !app.session.scene.selected_models.is_empty() => {
-            app.run("model.select", json!({ "ids": [] }));
+        None => {
+            if !mods.shift && !app.session.scene.selected_models.is_empty() {
+                app.run("model.select", json!({ "ids": [] }));
+            }
+            crate::box_select::press(app, at, mods);
         }
-        None => {}
     }
 }

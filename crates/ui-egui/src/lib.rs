@@ -2,6 +2,7 @@
 //! [`ResinApp::run`], which runs engine commands.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod box_select;
 pub mod gizmo;
 pub mod gpu;
 pub mod i18n;
@@ -89,6 +90,8 @@ pub struct ResinApp {
     pub(crate) prefs_page: usize,
     pub(crate) nav: navigation::NavState,
     pub(crate) supports: supports::SupportTool,
+    /// The selection box while it is dragged.
+    pub(crate) boxsel: Option<box_select::BoxDrag>,
     /// Every support's route to the plate, and the solids it is drawn with.
     pub(crate) routes: support_routes::RouteCache,
     pub(crate) viewport_rect: Option<egui::Rect>,
@@ -158,6 +161,7 @@ impl ResinApp {
             prefs_page: 0,
             nav: Default::default(),
             supports: Default::default(),
+            boxsel: None,
             routes: Default::default(),
             viewport_rect: None,
             anim: None,
@@ -223,6 +227,7 @@ impl ResinApp {
             self.cancel_pending();
         }
         self.mode = mode;
+        self.boxsel = None;
         if mode == EditMode::Slice && !self.slice_is_fresh() {
             self.slice_now();
         }
@@ -637,6 +642,10 @@ impl ResinApp {
             self.step_history(false);
         }
         self.clipboard_keys(ctx);
+        if self.mode == EditMode::Object && ctx.input_mut(|i| i.consume_shortcut(&SELECT_ALL)) {
+            let ids: Vec<u64> = self.session.scene.models().iter().map(|m| m.id).collect();
+            self.run("model.select", json!({ "ids": ids }));
+        }
         let pressed: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
             i.events
                 .iter()
@@ -664,7 +673,10 @@ impl ResinApp {
                     });
                     self.set_mode(self.mode.next());
                 }
-                egui::Key::Escape if plain => self.tool = None,
+                egui::Key::Escape if plain => {
+                    self.tool = None;
+                    self.boxsel = None;
+                }
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
                 egui::Key::R if plain => transform::open(self, transform::Op::Rotate),
                 egui::Key::S if plain => transform::open(self, transform::Op::Scale),
@@ -793,6 +805,7 @@ const DEFAULT_MAX_TEXTURE: u32 = 8192;
 
 pub(crate) const UNDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
 pub(crate) const REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Y);
+const SELECT_ALL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::A);
 const REDO_SHIFT_Z: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }, egui::Key::Z);
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -968,6 +981,10 @@ mod tests {
         let ctrl_v = egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
         send(&mut app, vec![ctrl_v]);
         assert_eq!(app.session.scene.models().len(), 3);
+        let ctrl_a = egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        let mut out = ctx.run_ui(egui::RawInput { events: vec![ctrl_a], ..Default::default() }, |ui| app.keys(ui.ctx()));
+        out.textures_delta.clear();
+        assert_eq!(app.session.scene.selected_models.len(), 3, "Ctrl+A selects every model");
         app.mode = EditMode::Support;
         send(&mut app, vec![egui::Event::Paste("t".into())]);
         assert_eq!(app.session.scene.models().len(), 3, "models paste in Arrange only");

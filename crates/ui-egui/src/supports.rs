@@ -1,7 +1,7 @@
 //! Placing support tips by hand, in Support mode: the pointer over a model shows where a tip
 //! would go, a left press places it, a left press on a placed tip or base selects the support, one
 //! on a body segment or a joint's handle selects that part (Shift toggles), Delete removes the
-//! selected supports. Selected joints and segments carry the Move arrows, always there in Support
+//! selected supports; a drag from empty space selects with a box (`box_select`). Selected joints and segments carry the Move arrows, always there in Support
 //! edition: a drag places their joints (`support.place_joints`), and the support keeps that path
 //! from then on. Every change goes through the `support.*` commands.
 
@@ -140,10 +140,12 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         Some(Hover::Part(id, part)) => {
             app.run("support.select", json!({ "parts": [part_param(id, part)], "mode": mode }));
         }
-        None if !mods.shift && any_selected => {
-            app.run("support.select", json!({ "ids": [] }));
+        None => {
+            if !mods.shift && any_selected {
+                app.run("support.select", json!({ "ids": [] }));
+            }
+            crate::box_select::press(app, at, mods);
         }
-        None => {}
     }
     app.supports.key = None;
 }

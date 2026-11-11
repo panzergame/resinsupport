@@ -56,6 +56,9 @@ pub struct Tokens {
     pub model_selected: Color32,
     /// Support tips: where one would go under the pointer, placed, and selected.
     pub support_preview: Color32,
+    /// The selection box dragged rightwards (takes what is inside) and leftwards (what it touches).
+    pub box_window: Color32,
+    pub box_crossing: Color32,
     /// The outline of the cut at the shown layer, and the pixel grid of the layer view.
     pub cap_edge: Color32,
     pub layer_grid: Color32,
@@ -118,6 +121,8 @@ impl Tokens {
                 model: Color32::from_rgb(0x7f, 0xa8, 0xd8),
                 model_selected: Color32::from_rgb(0xc0, 0x8c, 0xf0),
                 support_preview: Color32::from_rgb(0x5c, 0xe0, 0x8a),
+                box_window: Color32::from_rgb(70, 150, 255),
+                box_crossing: Color32::from_rgb(80, 200, 120),
                 cap_edge: Color32::from_rgb(0x24, 0x3a, 0x5a),
                 layer_grid: Color32::from_rgba_unmultiplied(0x6c, 0x7c, 0x94, 0xa0),
                 support: Color32::from_rgb(0xe8, 0xe4, 0xd8),
@@ -169,6 +174,8 @@ impl Tokens {
                 model: Color32::from_rgb(0x4f, 0x7f, 0xb8),
                 model_selected: Color32::from_rgb(0x9a, 0x50, 0xd8),
                 support_preview: Color32::from_rgb(0x1f, 0xa8, 0x50),
+                box_window: Color32::from_rgb(38, 120, 218),
+                box_crossing: Color32::from_rgb(40, 160, 80),
                 cap_edge: Color32::from_rgb(0x1a, 0x30, 0x52),
                 layer_grid: Color32::from_rgba_unmultiplied(0x6c, 0x7c, 0x94, 0xa0),
                 support: Color32::from_rgb(0xf4, 0xf1, 0xe8),

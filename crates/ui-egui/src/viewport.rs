@@ -12,7 +12,7 @@ use crate::gpu::{Cap, Clip, ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
-use crate::{EditMode, ResinApp, gizmo, i18n, layer_preview, layer_view, navigation, objects, supports, transform};
+use crate::{EditMode, ResinApp, box_select, gizmo, i18n, layer_preview, layer_view, navigation, objects, supports, transform};
 
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let rect = ui.available_rect_before_wrap();
@@ -62,6 +62,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         // Nothing is picked: the view only navigates.
         EditMode::Slice => app.supports.clear(),
     }
+    box_select::track(app, ui, &proj);
 
     let (frame, step) = frame(app, ui.ctx(), rect, tokens);
     let (right, up, back) = app.session.camera.basis();
@@ -69,6 +70,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     painter.set(scene_slot, egui_wgpu::Callback::new_paint_callback(rect, ViewportCallback(frame)));
 
     axis_gizmo(&painter, rect, right, up, back, tokens);
+    box_select::paint(app, &painter, tokens);
     painter.text(
         rect.right_bottom() + vec2(-10.0, -8.0),
         Align2::RIGHT_BOTTOM,
