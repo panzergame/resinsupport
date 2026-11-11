@@ -13,6 +13,8 @@ struct Frame {
     // The cut's fill (linear RGB), and its outline or the layer view's pixel grid.
     cap: vec4<f32>,
     edge: vec4<f32>,
+    // Faces looking down are tinted toward this, on instances whose colour alpha asks for it.
+    overhang: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -82,7 +84,8 @@ struct MeshIn {
 struct MeshOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) normal: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    // rgb: the colour; a: how much faces looking down are tinted.
+    @location(1) color: vec4<f32>,
     @location(2) world_z: f32,
 };
 
@@ -94,9 +97,15 @@ fn mesh_vs(v: MeshIn) -> MeshOut {
     out.pos = frame.view_proj * vec4<f32>(world, 1.0);
     out.world_z = world.z;
     out.normal = vec3<f32>(dot(v.nrow0.xyz, v.normal), dot(v.nrow1.xyz, v.normal), dot(v.nrow2.xyz, v.normal));
-    out.color = v.color.rgb;
+    out.color = v.color;
     return out;
 }
+
+// Normals this far below horizontal start to tint (sin 30°), and straight down is fully tinted.
+const OVERHANG_START: f32 = 0.5;
+const OVERHANG_FULL: f32 = 0.95;
+// Faces this close to the plate rest on it and need no support, mm.
+const ON_PLATE: f32 = 0.05;
 
 @fragment
 fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
@@ -105,11 +114,13 @@ fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
     var n = normalize(in.normal);
     // Faces wound the wrong way (an inside-out STL) show as a darker red-tinted shade.
-    var base = in.color;
+    var base = in.color.rgb;
     if !front {
         n = -n;
         base = mix(base, vec3<f32>(0.55, 0.12, 0.12), 0.7);
     }
+    let down = smoothstep(OVERHANG_START, OVERHANG_FULL, -n.z) * step(ON_PLATE, in.world_z);
+    base = mix(base, frame.overhang.rgb, 0.85 * down * in.color.a);
     let key = max(dot(n, frame.light.xyz), 0.0);
     let fill = max(dot(n, frame.back.xyz), 0.0);
     let c = base * (0.18 + 0.62 * key + 0.25 * fill);

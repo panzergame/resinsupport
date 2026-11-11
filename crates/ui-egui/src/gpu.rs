@@ -37,6 +37,8 @@ struct FrameUniform {
     /// The cap's fill (linear RGB), and its outline or the layer view's pixel grid.
     cap: [f32; 4],
     edge: [f32; 4],
+    /// Faces looking down are tinted toward this (linear RGB).
+    overhang: [f32; 4],
 }
 
 /// A corner of a layer quad: where it is (scene mm for the cap, image mm for the 2D view), its
@@ -87,17 +89,19 @@ struct LineVertex {
     color: [f32; 4],
 }
 
-/// A model to draw: its mesh as imported (uploaded once per id), where it sits, and its linear
-/// RGBA `color`.
+/// A model to draw: its mesh as imported (uploaded once per id), where it sits, its linear RGB
+/// `color`, and whether its faces looking down are tinted in the frame's overhang colour.
 pub struct ModelDraw {
     pub id: u64,
     pub mesh: Arc<Mesh>,
     pub transform: Affine3,
     pub color: [f32; 4],
+    pub overhang: bool,
 }
 
 /// Per model, as an instance attribute: the placement's rows (3×4), the normals' rows (the
-/// cofactor matrix, so a stretched model still shades right) and the colour.
+/// cofactor matrix, so a stretched model still shades right) and the colour, whose alpha is how
+/// much faces looking down are tinted (the solids are opaque, so it is free).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ModelInstance {
@@ -108,7 +112,8 @@ struct ModelInstance {
 
 impl ModelInstance {
     fn new(m: &ModelDraw) -> ModelInstance {
-        ModelInstance::placed(&m.transform, m.color)
+        let [r, g, b, _] = m.color;
+        ModelInstance::placed(&m.transform, [r, g, b, f32::from(u8::from(m.overhang))])
     }
     fn placed(a: &Affine3, color: [f32; 4]) -> ModelInstance {
         let t: [f64; 3] = a.t.into();
@@ -153,6 +158,8 @@ pub struct ViewFrame {
     /// The supports' solids, already in the scene, and the colour of each [`Look`].
     pub supports: Option<Arc<SupportMesh>>,
     pub support_colors: [[f32; 4]; 3],
+    /// The tint of the models' faces looking down, for those drawn with [`ModelDraw::overhang`].
+    pub overhang: [f32; 4],
     /// In Slice edition with a job: what is kept of the solids, and the cap on the cut.
     pub clip: Option<Clip>,
     pub cap: Option<Cap>,
@@ -628,6 +635,7 @@ impl Renderer {
             clip: [0.0, 0.0, 0.0, if f.dim { 1.0 } else { 0.0 }],
             cap: [0.0; 4],
             edge: f.grid,
+            overhang: [0.0; 4],
         };
         queue.write_buffer(&self.flat_uniform, 0, bytemuck::bytes_of(&u));
         self.upload_layer(device, queue, &f.image);
@@ -665,6 +673,7 @@ impl Renderer {
             },
             cap: f.cap.as_ref().map_or([0.0; 4], |c| c.color),
             edge: f.cap.as_ref().map_or([0.0; 4], |c| c.edge),
+            overhang: f.overhang,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         self.cap_count = 0;
@@ -684,7 +693,7 @@ impl Renderer {
             self.meshes.entry(m.id).or_insert_with(|| upload_mesh(device, &m.mesh));
         }
         let mut instances: Vec<ModelInstance> = f.models.iter().map(ModelInstance::new).collect();
-        instances.extend(f.support_colors.map(|c| ModelInstance::placed(&Affine3::IDENTITY, c)));
+        instances.extend(f.support_colors.map(|[r, g, b, _]| ModelInstance::placed(&Affine3::IDENTITY, [r, g, b, 0.0])));
         write_growing(device, queue, &mut self.model_instances, "viewport_model_instances", bytemuck::cast_slice(&instances));
 
         let fresh = match (&f.supports, &self.supports_uploaded) {
