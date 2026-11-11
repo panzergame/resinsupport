@@ -214,7 +214,8 @@ fn support_spheres(app: &ResinApp, mesh: &SupportMesh, colors: &[[f32; 4]; 3], t
     let mut out: Vec<Sphere> =
         mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect();
     if let Some(Hover::Surface { point, .. }) = app.supports.hover {
-        out.push(Sphere { center: point, radius: supports::tip_radius(app) as f32, color: linear(tokens.support_preview) });
+        let radius = app.session.support_settings().current().tip.contact_diameter / 2.0;
+        out.push(Sphere { center: point, radius: radius as f32, color: linear(tokens.support_preview) });
     }
     out
 }

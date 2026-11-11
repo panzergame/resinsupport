@@ -162,7 +162,7 @@ pub(crate) fn picking_press(app: &ResinApp, ui: &egui::Ui, resp: &egui::Response
     (!navigates).then_some((at, mods))
 }
 
-/// The radius a tip is picked in and previewed with: its widest part.
+/// The radius a tip is picked in: its widest part.
 pub(crate) fn tip_radius(app: &ResinApp) -> f64 {
     let tip = app.session.support_settings().current().tip;
     tip.upper_diameter.max(tip.contact_diameter) / 2.0
