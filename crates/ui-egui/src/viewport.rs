@@ -118,12 +118,13 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, &support_mesh, &colors, tokens);
     let handles = joint_handles(app, &support_mesh, tokens);
-    let mut bounds = app.session.scene.bounds().union(&support_mesh.bounds);
+    let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
     for s in spheres.iter().chain(&handles) {
         let r = f64::from(s.radius);
-        bounds.add(s.center - Vec3::new(r, r, r));
-        bounds.add(s.center + Vec3::new(r, r, r));
+        solid.add(s.center - Vec3::new(r, r, r));
+        solid.add(s.center + Vec3::new(r, r, r));
     }
+    let mut bounds = solid;
     bounds.add(overlay.center + Vec3::new(-r, -r, 0.0));
     bounds.add(overlay.center + Vec3::new(r, r, overlay.step * 10.0));
     for l in plate.iter().chain(&typed_axis).chain(&branch) {
@@ -141,7 +142,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         Some(Cap { image, z: c.above, color: linear(tokens.model), edge: linear(tokens.cap_edge), dim })
     });
     let frame = ViewFrame {
-        view_proj: cam.view_proj_bounds(aspect, &bounds).to_f32(),
+        view_proj: cam.view_proj_bounds(aspect, &bounds, &solid).to_f32(),
         light,
         back,
         bg_top: linear(tokens.viewport_top),

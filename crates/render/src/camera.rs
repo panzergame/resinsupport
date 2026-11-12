@@ -286,16 +286,20 @@ impl Camera {
     pub fn clip(&self, radius: f64) -> (f64, f64) {
         let r = radius.max(1e-3);
         if self.fov > 0.0 {
-            ((self.distance - r * 2.0).max(self.distance * 1e-3).max(1e-3), self.distance + r * 2.0)
+            // The floor sets the depth precision: a 24-bit buffer resolves about
+            // z² / (near · 2²⁴), so a hundredth of the distance gives about a micrometre there.
+            ((self.distance - r * 2.0).max(self.distance * 1e-2).max(1e-3), self.distance + r * 2.0)
         } else {
             (self.distance - r * 4.0 - 1.0, self.distance + r * 4.0 + 1.0)
         }
     }
     /// Clip a known scene, retaining the radius-based margin for grids and overlays.
     /// In perspective the orbit distance is not the nearest geometry's depth: a deep assembly
-    /// can reach almost to the eye. Cap the usual near plane at half that nearest depth so the
-    /// distance-based precision floor cannot clip its front components after a projection change.
-    pub fn clip_bounds(&self, bounds: &Aabb3) -> (f64, f64) {
+    /// can reach almost to the eye. Cap the usual near plane at half the nearest depth of
+    /// `solid` so the distance-based precision floor cannot clip its front components after a
+    /// projection change. `solid` leaves out the grid and guide lines: the grid reaches behind
+    /// the eye, which would pull the near plane to its minimum and the precision with it.
+    pub fn clip_bounds(&self, bounds: &Aabb3, solid: &Aabb3) -> (f64, f64) {
         let fallback = self.clip((self.half_height() * 2.0).max(50.0));
         if bounds.is_empty() || !bounds.min.is_finite() || !bounds.max.is_finite() {
             return fallback;
@@ -305,14 +309,14 @@ impl Camera {
             return fallback;
         }
         let (near, far) = self.clip(radius.max(self.half_height() * 2.0).max(10.0));
-        if self.fov <= 0.0 {
+        if self.fov <= 0.0 || solid.is_empty() || !solid.min.is_finite() || !solid.max.is_finite() {
             return (near, far);
         }
         let back = self.back();
         let nearest = Vec3::new(
-            if back.x >= 0.0 { bounds.max.x } else { bounds.min.x },
-            if back.y >= 0.0 { bounds.max.y } else { bounds.min.y },
-            if back.z >= 0.0 { bounds.max.z } else { bounds.min.z },
+            if back.x >= 0.0 { solid.max.x } else { solid.min.x },
+            if back.y >= 0.0 { solid.max.y } else { solid.min.y },
+            if back.z >= 0.0 { solid.max.z } else { solid.min.z },
         );
         let depth = self.distance + (self.target - nearest).dot(back);
         if !depth.is_finite() {
@@ -340,8 +344,8 @@ impl Camera {
         self.proj(aspect, n, f).mul(&self.view())
     }
     /// View-projection using the current scene bounds to admit nearby components.
-    pub fn view_proj_bounds(&self, aspect: f64, bounds: &Aabb3) -> Mat4 {
-        let (n, f) = self.clip_bounds(bounds);
+    pub fn view_proj_bounds(&self, aspect: f64, bounds: &Aabb3, solid: &Aabb3) -> Mat4 {
+        let (n, f) = self.clip_bounds(bounds, solid);
         self.proj(aspect, n, f).mul(&self.view())
     }
     /// World point → pixel coordinates (x right, y down) and depth (0 near … 1 far).
@@ -839,10 +843,10 @@ mod tests {
         for scale in [1.0, 100.0] {
             let bounds = Aabb3 { min: Vec3::new(-0.25, -10_000.0, -0.25) * scale, max: Vec3::new(0.25, 10_000.0, 0.25) * scale };
             let mut cam = Camera { yaw: 0.0, pitch: 0.0, distance: 10_002.0 * scale, ..Default::default() };
-            let original = cam.view_proj_bounds(16.0 / 9.0, &bounds);
+            let original = cam.view_proj_bounds(16.0 / 9.0, &bounds, &bounds);
             for fov in [0.0, 0.6, 0.0, 0.6, 0.0] {
                 cam.fov = fov;
-                let vp = cam.view_proj_bounds(16.0 / 9.0, &bounds);
+                let vp = cam.view_proj_bounds(16.0 / 9.0, &bounds, &bounds);
                 let gpu = vp.to_f32();
                 assert!(gpu.iter().flatten().all(|v| v.is_finite()));
                 for x in [bounds.min.x, bounds.max.x] {
@@ -869,10 +873,10 @@ mod tests {
     fn bounds_clipping_handles_eye_crossing_and_invalid_bounds() {
         let cam = Camera { yaw: 0.0, pitch: 0.0, distance: 10_000.0, fov: 0.6, ..Default::default() };
         let crossing = Aabb3 { min: Vec3::new(-1.0, -10_001.0, -1.0), max: Vec3::new(1.0, 10_001.0, 1.0) };
-        let (near, far) = cam.clip_bounds(&crossing);
+        let (near, far) = cam.clip_bounds(&crossing, &crossing);
         assert_eq!(near, 1e-3);
         assert!(far.is_finite() && far > near);
-        let c = cam.view_proj_bounds(1.0, &crossing).apply(Vec3::new(0.0, -9_999.0, 0.0));
+        let c = cam.view_proj_bounds(1.0, &crossing, &crossing).apply(Vec3::new(0.0, -9_999.0, 0.0));
         assert!(c[3] > 0.0 && (0.0..=c[3]).contains(&c[2]));
         let fallback = cam.clip((cam.half_height() * 2.0).max(50.0));
         for bounds in [
@@ -881,9 +885,24 @@ mod tests {
             Aabb3 { min: Vec3::ZERO, max: Vec3::new(f64::INFINITY, 1.0, 1.0) },
             Aabb3 { min: Vec3::new(-f64::MAX, -1.0, -1.0), max: Vec3::new(f64::MAX, 1.0, 1.0) },
         ] {
-            assert_eq!(cam.clip_bounds(&bounds), fallback);
-            assert!(cam.view_proj_bounds(1.0, &bounds).0.iter().flatten().all(|v| v.is_finite()));
+            assert_eq!(cam.clip_bounds(&bounds, &bounds), fallback);
+            assert!(cam.view_proj_bounds(1.0, &bounds, &bounds).0.iter().flatten().all(|v| v.is_finite()));
         }
+    }
+
+    /// The grid reaches behind the eye in a perspective view from above; it must not drag the
+    /// near plane down to its minimum, where a 24-bit depth buffer loses whole millimetres at the
+    /// model and its back faces show through.
+    #[test]
+    fn grid_behind_the_eye_keeps_depth_precision_at_the_model() {
+        let cam = Camera { yaw: 0.5, pitch: 0.5, distance: 200.0, fov: 45f64.to_radians(), ..Default::default() };
+        let grid = Aabb3 { min: Vec3::new(-450.0, -450.0, 0.0), max: Vec3::new(450.0, 450.0, 10.0) };
+        let model = Aabb3 { min: Vec3::new(-20.0, -20.0, 0.0), max: Vec3::new(20.0, 20.0, 30.0) };
+        let (near, far) = cam.clip_bounds(&grid.union(&model), &model);
+        let depth_step = |z: f64| z * z * (far - near) / (near * far) / f64::from(1u32 << 24);
+        assert!(depth_step(cam.distance) < 2e-3, "near {near}, far {far}: {} mm", depth_step(cam.distance));
+        let c = cam.view_proj_bounds(16.0 / 9.0, &grid.union(&model), &model).apply(model.max);
+        assert!(c[3] > 0.0 && (0.0..=c[3]).contains(&c[2]), "the model's nearest corner is clipped: {c:?}");
     }
 
     /// A fit whose distance would overflow (a subnormal aspect, a huge product) is refused
