@@ -8,6 +8,7 @@ mod print_config;
 mod route;
 mod session;
 mod slice_job;
+mod support_line;
 mod support_settings;
 mod support_solids;
 
@@ -20,6 +21,7 @@ pub use resin_slice as slice;
 pub use route::{Route, route, support_head};
 pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
 pub use slice_job::{Job, SliceSource};
+pub use support_line::{DEFAULT_LINE_SPACING, DEFAULT_TIPS_PER_BODY, LinePoint, MAX_LINE_TIPS, line_points};
 pub use support_settings::{Base, Body, BodyShape, ContactShape, GROUPS, PresetId, Raft, SEGMENTS, SupportPreset, SupportSettings, Tip, range};
 pub use support_solids::{Owner, Primitive, SupportTessellator, support_primitives};
 

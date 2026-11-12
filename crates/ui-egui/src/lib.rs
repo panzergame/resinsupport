@@ -18,6 +18,7 @@ pub mod prefs;
 pub mod prefs_writer;
 pub mod print_settings;
 pub mod slice_runner;
+pub mod support_line;
 pub mod support_routes;
 pub mod support_settings;
 pub mod supports;
@@ -90,6 +91,7 @@ pub struct ResinApp {
     pub(crate) prefs_page: usize,
     pub(crate) nav: navigation::NavState,
     pub(crate) supports: supports::SupportTool,
+    pub(crate) line: support_line::LineState,
     /// The selection box while it is dragged.
     pub(crate) boxsel: Option<box_select::BoxDrag>,
     /// Every support's route to the plate, and the solids it is drawn with.
@@ -161,6 +163,7 @@ impl ResinApp {
             prefs_page: 0,
             nav: Default::default(),
             supports: Default::default(),
+            line: Default::default(),
             boxsel: None,
             routes: Default::default(),
             viewport_rect: None,
@@ -229,6 +232,7 @@ impl ResinApp {
         self.mode = mode;
         self.supports.branching = None;
         self.supports.moving = None;
+        self.line.tool = None;
         self.boxsel = None;
         if mode == EditMode::Slice && !self.slice_is_fresh() {
             self.slice_now();
@@ -303,6 +307,7 @@ impl ResinApp {
         self.tool = None;
         self.supports.branching = None;
         self.supports.moving = None;
+        self.line.tool = None;
         let (id, msg) = if forward { ("edit.redo", "status.redone") } else { ("edit.undo", "status.undone") };
         if let Some(v) = self.run(id, json!({})) {
             let step = i18n::tr_built(&format!("cmd.{}", v["command"].as_str().unwrap_or_default()));
@@ -612,6 +617,9 @@ impl ResinApp {
                 } else if self.supports.moving.is_some() {
                     ui.separator();
                     ui.label(i18n::tr("status.tip_place"));
+                } else if self.line.tool.as_ref().is_some_and(|t| t.to.is_none()) {
+                    ui.separator();
+                    ui.label(i18n::tr("status.line_place"));
                 }
                 let unreachable = self.routes.unreachable(&self.session.scene);
                 if unreachable > 0 {
@@ -711,7 +719,9 @@ impl ResinApp {
                     self.boxsel = None;
                     self.supports.branching = None;
                     self.supports.moving = None;
+                    self.line.tool = None;
                 }
+                egui::Key::L if plain => support_line::open(self),
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
                 egui::Key::R if plain => transform::open(self, transform::Op::Rotate),
                 egui::Key::S if plain => transform::open(self, transform::Op::Scale),
@@ -900,6 +910,7 @@ impl eframe::App for ResinApp {
         egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
+        support_line::card(self, &ctx);
         object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
         print_settings::panel(self, &ctx);

@@ -12,7 +12,7 @@ use crate::gpu::{Cap, Clip, ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
-use crate::{EditMode, ResinApp, box_select, gizmo, i18n, layer_preview, layer_view, navigation, objects, supports, transform};
+use crate::{EditMode, ResinApp, box_select, gizmo, i18n, layer_preview, layer_view, navigation, objects, support_line, supports, transform};
 
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let rect = ui.available_rect_before_wrap();
@@ -38,6 +38,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let proj = navigation::Proj { cam: app.session.camera, rect };
     app.gizmo_grab = gizmo::dragging(ui.ctx(), gizmo_id)
         || pressed_triad.zip(pressed_on).is_some_and(|(t, p)| resp.contains_pointer() && gizmo::contains_pointer(&proj, &t, p));
+    support_line::wheel(app, ui, &resp);
     navigation::handle(app, ui, rect, &resp);
     let proj = navigation::Proj { cam: app.session.camera, rect };
     if let Some(t) = triad(app) {
@@ -62,6 +63,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         // Nothing is picked: the view only navigates.
         EditMode::Slice => app.supports.clear(),
     }
+    support_line::refresh(app);
     box_select::track(app, ui, &proj);
 
     let (frame, step) = frame(app, ui.ctx(), rect, tokens);
@@ -106,6 +108,8 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     overlay.lines.extend(typed_axis);
     let branch = supports::tip_preview(app).map(|(a, b)| Line { a, b, color: linear(tokens.support_preview) });
     overlay.lines.extend(branch);
+    let line = support_line::guide(app).map(|(a, b, _)| Line { a, b, color: linear(tokens.support_preview) });
+    overlay.lines.extend(line);
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
         ctx.request_repaint();
@@ -219,6 +223,15 @@ fn support_spheres(app: &ResinApp, mesh: &SupportMesh, colors: &[[f32; 4]; 3], t
         let radius = app.session.support_settings().current().tip.contact_diameter / 2.0;
         out.push(Sphere { center: point, radius: radius as f32, color: linear(tokens.support_preview) });
     }
+    // The line's points: green where they land, in the warning colour where they hang in the air.
+    let radius = (app.session.support_settings().current().tip.contact_diameter / 2.0) as f32;
+    let (landed, off) = (linear(tokens.support_preview), linear(tokens.warning));
+    let points = support_line::points(app).iter().map(|p| match p.hit {
+        Some((_, at, _)) => Sphere { center: at, radius, color: landed },
+        None => Sphere { center: p.at, radius, color: off },
+    });
+    out.extend(points);
+    out.extend(support_line::guide(app).and_then(|(.., end)| end).map(|center| Sphere { center, radius, color: landed }));
     out
 }
 

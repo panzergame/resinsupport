@@ -2,8 +2,9 @@ use serde_json::{Value, json};
 
 use std::collections::BTreeMap;
 
-use super::{ids_param, select_ids, vec3_param};
+use super::{ids_param, num_param, select_ids, vec3_param};
 use crate::session::MAX_EXTENT;
+use crate::support_line::{DEFAULT_TIPS_PER_BODY, MAX_LINE_TIPS, line_points};
 use crate::{EngineError, Result, Session, SupportPart, route};
 use resin_geom::Vec3;
 
@@ -45,6 +46,73 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let id = s.scene.add_support(model, point, normal, parent)?;
     Ok(json!({ "id": id }))
+}
+
+/// Tips between support `from` and `to` (a support, or a surface where a new support goes first).
+/// Ends sharing one body give it every new tip; otherwise the new tips go in runs of `per_body`
+/// along the line, each run's middle tip a new support and the others its branches, so no tip
+/// reaches far sideways to its head. Points that land on no surface are skipped, and end a run.
+pub(crate) fn add_line(s: &mut Session, p: &Value) -> Result<Value> {
+    let from = p.get("from").and_then(Value::as_u64).ok_or_else(|| EngineError::BadParams("`from` must be a support id".into()))?;
+    check_known(s, &[from])?;
+    let spacing = num_param(p, "spacing")?.ok_or_else(|| EngineError::BadParams("`spacing` is required".into()))?;
+    let per_body = match p.get("per_body") {
+        None | Some(Value::Null) => DEFAULT_TIPS_PER_BODY,
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=MAX_LINE_TIPS).contains(n))
+            .ok_or_else(|| EngineError::BadParams(format!("`per_body` must be a whole number from 1 to {MAX_LINE_TIPS}")))?,
+    };
+    let tip_of = |s: &Session, id: u64| s.scene.supports().iter().find(|t| t.id == id).map(|t| (t.tip, t.normal));
+    let a = tip_of(s, from).ok_or_else(|| EngineError::BadParams(format!("no support {from}")))?;
+    let to = p.get("to").ok_or_else(|| EngineError::BadParams("`to` is required".into()))?;
+    let (b, surface) = match to.as_u64() {
+        Some(id) if id == from => return Err(EngineError::BadParams("`from` and `to` must be two supports".into())),
+        Some(id) => (tip_of(s, id).ok_or_else(|| EngineError::BadParams(format!("no support {id}")))?, None),
+        None if to.is_object() => {
+            let (model, point, normal) = surface_params(s, to)?;
+            ((point, normal), Some(model))
+        }
+        None => return Err(EngineError::BadParams("`to` must be a support id or { model, point, normal? }".into())),
+    };
+    let points = line_points(&s.scene, a, b, spacing)
+        .ok_or_else(|| EngineError::BadParams(format!("`spacing` must be positive and make at most {MAX_LINE_TIPS} tips")))?;
+    let mut ids = Vec::new();
+    // A new destination is a body of its own, never `from`'s.
+    let to_root = to.as_u64().and_then(|id| s.scene.root_of(id));
+    let hits: Vec<(u64, Vec3, Vec3)> = points.iter().filter_map(|q| q.hit).collect();
+    let skipped = points.len() - hits.len();
+    match s.scene.root_of(from).filter(|r| Some(*r) == to_root) {
+        Some(root) => {
+            for &(model, point, normal) in &hits {
+                ids.push(s.scene.add_support(model, point, normal, Some(root))?);
+            }
+        }
+        None => {
+            // A point landing nowhere ends a run: a body must not reach across the gap it marks.
+            let stretches = points.split(|q| q.hit.is_none()).map(|stretch| stretch.iter().filter_map(|q| q.hit).collect::<Vec<_>>());
+            for stretch in stretches {
+                for run in stretch.chunks(per_body) {
+                    let mid = run.len() / 2;
+                    let Some(&(model, point, normal)) = run.get(mid) else { continue };
+                    // Before its branches, as a parent must be.
+                    let root = s.scene.add_support(model, point, normal, None)?;
+                    ids.push(root);
+                    for (i, &(model, point, normal)) in run.iter().enumerate() {
+                        if i != mid {
+                            ids.push(s.scene.add_support(model, point, normal, Some(root))?);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Last, so the newest support is where the line ended and the next line can start there.
+    if let Some(model) = surface {
+        ids.push(s.scene.add_support(model, b.0, b.1, None)?);
+    }
+    Ok(json!({ "ids": ids, "skipped": skipped }))
 }
 
 pub(crate) fn move_tip(s: &mut Session, p: &Value) -> Result<Value> {

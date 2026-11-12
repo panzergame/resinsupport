@@ -275,6 +275,117 @@ fn a_tip_moves_on_the_surface_and_keeps_its_body_and_branches() {
     }
 }
 
+/// A line between two supports with bodies of their own: runs of `per_body` new tips, each run's
+/// middle tip a new support and the others its branches, all in one step. Between two tips of
+/// one body: branches of it. To a surface: a new support there first. Points over a gap are
+/// skipped, and no run reaches across it.
+#[test]
+fn a_line_of_tips_between_two_tips() {
+    let mut s = Session::new();
+    // Two plates facing down, with a gap between them.
+    let left = s.scene.add("left".into(), boxes(&[([0.0, 0.0, 10.0], [20.0, 20.0, 11.0])]));
+    let right = s.scene.add("right".into(), boxes(&[([30.0, 0.0, 10.0], [50.0, 20.0, 11.0])]));
+    let add = |s: &mut Session, model: u64, x: f64, y: f64, parent: Option<u64>| {
+        s.execute("support.add", &json!({ "model": model, "point": [x, y, 10], "parent": parent })).unwrap()["id"].as_u64().unwrap()
+    };
+    let a = add(&mut s, left, 1.0, 10.0, None);
+    let b = add(&mut s, left, 19.0, 10.0, None);
+    let depth = s.undo_depth();
+    let before = s.scene.clone();
+
+    // 18 mm in gaps of at most 2: 8 points between, runs of 3, 3 and 2.
+    let r = s.execute("support.add_line", &json!({ "from": a, "to": b, "spacing": 2, "per_body": 3 })).unwrap();
+    assert_eq!((r["ids"].as_array().map(Vec::len), r["skipped"].as_u64()), (Some(8), Some(0)), "{r}");
+    assert_eq!(s.undo_depth(), depth + 1, "one line, one step");
+    let new = &s.scene.supports()[2..];
+    // Each run's middle tip first, as a parent comes before its branches.
+    let xs: Vec<f64> = new.iter().map(|t| t.tip.x).collect();
+    assert_eq!(xs, vec![5.0, 3.0, 7.0, 11.0, 9.0, 13.0, 17.0, 15.0]);
+    let roots: Vec<f64> = new.iter().filter(|t| t.parent.is_none()).map(|t| t.tip.x).collect();
+    assert_eq!(roots, vec![5.0, 11.0, 17.0]);
+    for t in new {
+        assert!((t.tip.z - 10.0).abs() < 1e-9 && t.normal == -Vec3::Z && t.model == left, "{t:?}");
+        if let Some(p) = t.parent {
+            let root = s.scene.supports().iter().find(|r| r.id == p).unwrap();
+            assert!(root.parent.is_none() && (root.tip.x - t.tip.x).abs() == 2.0, "{t:?} to {root:?}");
+        }
+    }
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.supports(), before.supports());
+
+    // Between two tips of one body: every new tip a branch of it.
+    let c = add(&mut s, left, 1.0, 16.0, Some(a));
+    let r = s.execute("support.add_line", &json!({ "from": c, "to": a, "spacing": 2 })).unwrap();
+    let ids: Vec<u64> = r["ids"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(s.scene.supports().iter().filter(|t| ids.contains(&t.id)).all(|t| t.parent == Some(a)));
+
+    // To a surface: the line as between two bodies, then a new support there, the newest of all
+    // so that the next line can start where this one ended.
+    let r = s
+        .execute("support.add_line", &json!({ "from": b, "to": { "model": left, "point": [19, 2, 10], "normal": [0, 0, -1] }, "spacing": 4 }))
+        .unwrap();
+    let ids: Vec<u64> = r["ids"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+    assert_eq!(ids.len(), 2, "one tip between and the new support: {r}");
+    let newest = s.scene.supports().iter().max_by_key(|t| t.id).unwrap();
+    assert_eq!((Some(&newest.id), newest.tip, newest.parent), (ids.last(), Vec3::new(19.0, 2.0, 10.0), None));
+
+    // Over the gap: the points there land nowhere and are skipped; the others land on either plate.
+    let d = add(&mut s, right, 39.0, 10.0, None);
+    let r = s.execute("support.add_line", &json!({ "from": b, "to": d, "spacing": 2 })).unwrap();
+    assert_eq!((r["ids"].as_array().map(Vec::len), r["skipped"].as_u64()), (Some(4), Some(5)), "{r}");
+    // Across it, with tips on both sides: no run reaches over the gap.
+    let r = s.execute("support.add_line", &json!({ "from": a, "to": d, "spacing": 2 })).unwrap();
+    assert_eq!((r["ids"].as_array().map(Vec::len), r["skipped"].as_u64()), (Some(13), Some(5)), "{r}");
+    let ids: Vec<u64> = r["ids"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+    for t in s.scene.supports().iter().filter(|t| ids.contains(&t.id)) {
+        if let Some(p) = t.parent {
+            let root = s.scene.supports().iter().find(|r| r.id == p).unwrap();
+            assert!((root.tip.x - t.tip.x).abs() <= 2.0 + 1e-9 && root.model == t.model, "{t:?} to {root:?}");
+        }
+    }
+
+    for bad in [
+        json!({ "from": a, "to": a, "spacing": 2 }),
+        json!({ "from": 99, "to": a, "spacing": 2 }),
+        json!({ "from": a, "to": 99, "spacing": 2 }),
+        json!({ "from": a, "to": b }),
+        json!({ "from": a, "to": b, "spacing": 0 }),
+        json!({ "from": a, "to": b, "spacing": -1 }),
+        json!({ "from": a, "to": b, "spacing": 1e-6 }),
+        json!({ "from": a, "to": b, "spacing": 2, "per_body": 0 }),
+        json!({ "from": a, "to": "b", "spacing": 2 }),
+        json!({ "from": a, "to": { "model": left, "point": [90, 2, 10] }, "spacing": 2 }),
+    ] {
+        assert!(matches!(s.execute("support.add_line", &bad), Err(EngineError::BadParams(_))), "{bad}");
+    }
+}
+
+/// The points between two tips on different faces are cast along the blended normal onto the
+/// nearer face: through the solid over a convex edge, through the air into a concave corner.
+#[test]
+fn a_line_lands_on_the_faces_around_an_edge() {
+    let cast = |s: &Session, a: (Vec3, Vec3), b: (Vec3, Vec3)| crate::line_points(&s.scene, a, b, 2.0).unwrap();
+    let mut s = Session::new();
+    // A floating cube: from its bottom face to its +X side, the chord runs inside it.
+    s.scene.add("cube".into(), boxes(&[([0.0, 0.0, 10.0], [10.0, 10.0, 20.0])]));
+    let points = cast(&s, (Vec3::new(5.0, 5.0, 10.0), -Vec3::Z), (Vec3::new(10.0, 5.0, 15.0), Vec3::X));
+    assert_eq!(points.len(), 3);
+    let hits: Vec<(Vec3, Vec3)> = points.iter().map(|p| p.hit.map(|(_, at, n)| (at, n)).unwrap()).collect();
+    assert!((hits[0].0.z - 10.0).abs() < 1e-9 && hits[0].1 == -Vec3::Z, "{hits:?}");
+    assert!((hits[1].0 - Vec3::new(10.0, 5.0, 10.0)).len() < 1e-6, "on the edge: {hits:?}");
+    assert!((hits[2].0.x - 10.0).abs() < 1e-9 && hits[2].1 == Vec3::X, "{hits:?}");
+
+    // A shelf on a wall: from under the shelf to the wall's face, the chord runs through the air.
+    let mut s = Session::new();
+    s.scene.add("shelf".into(), boxes(&[([0.0, 0.0, 10.0], [10.0, 10.0, 12.0]), ([0.0, 0.0, 0.0], [2.0, 10.0, 10.0])]));
+    let points = cast(&s, (Vec3::new(6.0, 5.0, 10.0), -Vec3::Z), (Vec3::new(2.0, 5.0, 6.0), Vec3::X));
+    let hits: Vec<(Vec3, Vec3)> = points.iter().map(|p| p.hit.map(|(_, at, n)| (at, n)).unwrap()).collect();
+    assert_eq!(hits.len(), 2);
+    assert!((hits[0].0 - Vec3::new(4.0, 5.0, 10.0)).len() < 1e-6 && hits[0].1 == -Vec3::Z, "{hits:?}");
+    assert!((hits[1].0 - Vec3::new(2.0, 5.0, 8.0)).len() < 1e-6 && hits[1].1 == Vec3::X, "{hits:?}");
+}
+
 #[test]
 fn models_are_selected_moved_rotated_and_scaled() {
     let dir = temp_dir("transform");
@@ -850,6 +961,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         }
         "print.reset" | "print.settings" | "print.slice" => Some(json!({})),
         "support.add" => Some(json!({ "model": b, "point": [35, 5, 0], "parent": tip })),
+        "support.add_line" => Some(json!({ "from": tip, "to": { "model": a, "point": [9, 9, 0] }, "spacing": 2 })),
         "support.delete" => Some(json!({ "ids": [tip] })),
         "support.move_tip" => Some(json!({ "support": tip, "model": b, "point": [35, 5, 0] })),
         "support.configure" => {

@@ -507,7 +507,7 @@ impl Scene {
         std::mem::replace(self, older)
     }
     /// The support whose body `id` shares: itself unless it is a branch. `None` when `id` is unknown.
-    fn root_of(&self, id: u64) -> Option<u64> {
+    pub fn root_of(&self, id: u64) -> Option<u64> {
         let s = self.supports.iter().find(|s| s.id == id)?;
         match s.parent {
             None => Some(s.id),

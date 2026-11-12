@@ -92,6 +92,9 @@ pub fn commands() -> &'static [CommandSpec] {
             .params("height: mm, 0 to 500: where every lifted model's lowest point sits"),
         CommandSpec::new("support.add", "Add Support", support::add)
             .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down), parent?: integer (a branch: a straight tip to that support's head, sharing its body)"),
+        CommandSpec::new("support.add_line", "Add Support Line", support::add_line).params(
+            "from: integer, to: integer (another support) | { model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down) } (a new support there, made last), spacing: mm (the gaps are equal and at most this, at most 1000 tips), per_body?: integer (default 3); the points between the two tips are cast onto the surface along the normal blended from theirs, those landing nowhere skipped (and ending a run); ends sharing a body get every new tip as a branch of it, otherwise each run of `per_body` tips is a new support (its middle tip) and its branches. Returns the new `ids` and how many points were `skipped`",
+        ),
         CommandSpec::new("support.configure", "Support Settings", support_settings::configure).params(
             "preset?: light | medium | heavy (default the active one), active?: light | medium | heavy, tip?: { contact_shape: cone | sphere, contact_diameter, penetration, length, upper_diameter mm, max_angle degrees }, body?: { shape: cylinder | prism, diameter mm, max_angle degrees, segments }, base?: { diameter, height } mm, raft?: { enabled, thickness mm, margin mm, chamfer_angle degrees }; each partial, the result validated as a whole",
         ),

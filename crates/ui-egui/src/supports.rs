@@ -8,7 +8,8 @@
 //! press on a model's surface puts the tip there (`support.move_tip`), any other press or Esc
 //! puts it back. Selected joints and segments carry the Move arrows, always there in Support
 //! edition: a drag places their joints (`support.place_joints`), and the support keeps that path
-//! from then on. Every change goes through the `support.*` commands.
+//! from then on. While a tip line is out (`support_line`), a press only places its other end.
+//! Every change goes through the `support.*` commands.
 
 use egui::Pos2;
 use resin_engine::SupportPart;
@@ -148,6 +149,11 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
     let Some((at, mods)) = picking_press(app, ui, resp) else { return };
     let hit = pick(app, proj, at);
     app.supports.key = None;
+    // While a line is out, a press only places its other end.
+    if app.line.tool.is_some() {
+        crate::support_line::press(app, hit);
+        return;
+    }
     if let Some(parent) = app.supports.branching.take() {
         if let Some(Hover::Surface { model, point, normal }) = hit {
             app.run("support.add", json!({ "model": model, "point": point, "normal": normal, "parent": parent }));
@@ -233,7 +239,7 @@ pub fn tip_preview(app: &ResinApp) -> Option<(Vec3, Vec3)> {
 /// The contact handles: on each selected support's tip, in Support edition, while no tip is being
 /// placed, the size of the contact sphere. Each one's support, centre and radius.
 pub fn tip_handles(app: &ResinApp) -> Vec<(u64, Vec3, f64)> {
-    if app.mode != crate::EditMode::Support || app.supports.branching.is_some() || app.supports.moving.is_some() {
+    if app.mode != crate::EditMode::Support || app.supports.branching.is_some() || app.supports.moving.is_some() || app.line.tool.is_some() {
         return Vec::new();
     }
     let radius = app.session.support_settings().current().tip.contact_diameter / 2.0;
@@ -271,6 +277,10 @@ fn part_param(id: u64, part: SupportPart) -> Value {
 /// support's solids and the models' surface; a support wins when the ray reaches it first, or
 /// within the tip's radius past the surface (the tip is half buried).
 fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
+    // A line between two tips takes no pick; one waiting for its other end takes surfaces alone.
+    if app.line.tool.is_some() && !crate::support_line::placing(app) {
+        return None;
+    }
     let (o, d) = proj.ray(p);
     let scene = &app.session.scene;
     let preset = app.session.support_settings().current();
@@ -280,8 +290,8 @@ fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
         let normal = scene.model(model).and_then(|m| m.face_normal(h.triangle)).unwrap_or(-d);
         Hover::Surface { model, point: h.point, normal }
     };
-    // Its own hidden tip must not stand in the way.
-    if app.supports.moving.is_some() {
+    // Its own hidden tip must not stand in the way; nor may a tip under a line's other end.
+    if app.supports.moving.is_some() || crate::support_line::placing(app) {
         return surface.map(on_surface);
     }
     let handle = tip_handles(app).into_iter().filter_map(|(id, c, r)| resin_engine::geom::ray_sphere(o, d, c, r).map(|t| (id, t)));

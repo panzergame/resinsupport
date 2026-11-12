@@ -33,6 +33,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - [x] Move arrows on selected joints and segments; an edited support keeps its placed corners (only its tip follows the model), checked and flagged, never routed again
 - [x] Manual branches: a double press on a tip, then a press on a surface, places a straight tip to that support's head, sharing its body; any tip deletable, the body going with the last
 - [x] Moving a tip: a press on a selected support's contact handle hides the tip, the next press on a surface puts it there (`support.move_tip`), any other press or Esc puts it back
+- [x] Tip lines: L with two tips selected (or one, or none for the newest, then a press on a surface for the other end, so lines chain on) lays evenly spaced tips between them, cast onto the surface; Shift+wheel or the card sets the spacing, Enter adds them in one step (`support.add_line`)
+- A ribbon button for the tip line (L)
 - A button for `support.reset_route`
 - Overhang and island detection, automatic generation, raft
 
