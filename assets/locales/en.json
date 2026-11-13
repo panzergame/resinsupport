@@ -260,7 +260,7 @@
   "ribbon.with_key": "{label} ({key})",
   "status.bad_utf8": "{path}: the file name is not valid UTF-8",
   "status.beside_plate": "{imported}; no room on the plate, so it was put beside it",
-  "status.branch_place": "Click a model to place the branch's tip; Esc cancels",
+  "status.branch_place": "Click a model to place a branch's tip; Esc finishes",
   "status.copied_models.one": "Copied 1 model",
   "status.copied_models.other": "Copied {n} models",
   "status.deleted_models.one": "Deleted 1 model",

@@ -316,7 +316,7 @@ impl ResinApp {
             return;
         }
         self.tool = None;
-        self.supports.branching = None;
+        // Branching stays until Esc: its parent is checked every frame (`supports::handle`).
         self.supports.moving = None;
         self.line.tool = None;
         let (id, msg) = if forward { ("edit.redo", "status.redone") } else { ("edit.undo", "status.undone") };

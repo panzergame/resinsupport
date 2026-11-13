@@ -2,8 +2,8 @@
 //! would go, a left press places it, a left press on a placed tip or base selects the support, one
 //! on a body segment or a joint's handle selects that part (Shift toggles), Delete removes the
 //! selected supports; a drag from empty space selects with a box (`box_select`). A double press
-//! on a tip starts a branch from that support's head: the next press on a model's surface places
-//! the branch's tip (`support.add` with its `parent`), any other press or Esc puts it away. A
+//! on a tip starts placing branches from that support's head: each press on a model's surface
+//! places a branch's tip (`support.add` with its `parent`) until Esc. A
 //! selected support shows a handle on its tip's contact: a press on it hides the tip, and the next
 //! press on a model's surface puts the tip there (`support.move_tip`), any other press or Esc
 //! puts it back. Selected joints and segments carry the Move arrows, always there in Support
@@ -46,8 +46,8 @@ pub struct SupportTool {
     drag: Option<Vec<(u64, u32, Vec3)>>,
     /// The last press on a tip: when (egui's clock) and on which support, the first of a double press.
     last_tip_press: Option<(f64, u64)>,
-    /// The support a branch is being placed from, until the next press. Nothing is in the scene
-    /// before that press, so putting it away leaves the undo history alone.
+    /// The support branches are being placed from, until Esc. Each press on a surface is a step of
+    /// its own; putting the tool away leaves the undo history alone.
     pub branching: Option<u64>,
     /// The support whose tip is being moved, hidden until the next press. As for a branch, the
     /// scene is left alone until that press.
@@ -154,7 +154,7 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         crate::support_line::press(app, hit);
         return;
     }
-    if let Some(parent) = app.supports.branching.take() {
+    if let Some(parent) = app.supports.branching {
         if let Some(Hover::Surface { model, point, normal }) = hit {
             app.run("support.add", json!({ "model": model, "point": point, "normal": normal, "parent": parent }));
         }
@@ -358,10 +358,11 @@ mod tests {
         assert_eq!(triad(&app).map(|t| t.center), Some(head + by * 2.0));
     }
 
-    /// A double press on a tip, then a press on the model, places a branch of that support in
-    /// one step; a slow second press is no double, and a press off the model puts the branch away.
+    /// A double press on a tip, then each press on the model, places a branch of that support in
+    /// one step each, until Esc; a slow second press is no double, a press off the model or an
+    /// undo keeps placing.
     #[test]
-    fn a_double_press_on_a_tip_starts_a_branch_the_next_press_places() {
+    fn a_double_press_on_a_tip_places_branches_until_esc() {
         let dir = std::env::temp_dir().join(format!("resin-ui-branch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("plate.stl");
@@ -414,15 +415,36 @@ mod tests {
         assert_eq!(all[1].parent, Some(id));
         assert!((all[1].tip - Vec3::new(15.0, 15.0, 10.0)).len() < 1e-6, "{:?}", all[1].tip);
         assert_eq!(app.session.undo_depth(), depth + 1, "one press, one step");
-        assert_eq!(app.supports.branching, None, "one branch per double press");
+        assert_eq!(app.supports.branching, Some(id), "still placing after a branch");
 
-        // Put away by a press off the model: nothing added, no step.
-        press(&mut app, tip, 3.0);
-        press(&mut app, tip, 3.1);
-        assert_eq!(app.supports.branching, Some(id));
-        let depth = app.session.undo_depth();
+        press(&mut app, at([15.0, 5.0, 10.0]), 3.0);
+        let all = app.session.scene.supports();
+        assert_eq!((all.len(), all[2].parent), (3, Some(id)));
+        assert_eq!(app.session.undo_depth(), depth + 2);
+
+        // A press off the model places nothing and keeps placing; so does an undo.
         press(&mut app, away, 4.0);
-        assert_eq!((app.supports.branching, app.session.scene.supports().len(), app.session.undo_depth()), (None, 2, depth));
+        assert_eq!((app.supports.branching, app.session.scene.supports().len(), app.session.undo_depth()), (Some(id), 3, depth + 2));
+        app.step_history(false);
+        assert_eq!((app.supports.branching, app.session.scene.supports().len()), (Some(id), 2));
+
+        // Esc puts it away, leaving the history alone.
+        let depth = app.session.undo_depth();
+        let raw = egui::RawInput {
+            screen_rect: Some(rect),
+            time: Some(5.0),
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| app.keys(ui.ctx()));
+        out.textures_delta.clear();
+        assert_eq!((app.supports.branching, app.session.undo_depth()), (None, depth));
     }
 
     /// A press on a selected support's contact handle hides its tip; the next press on the model
