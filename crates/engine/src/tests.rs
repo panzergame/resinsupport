@@ -520,6 +520,8 @@ fn hostile_params_never_panic() {
         json!({ "printer": { "name": "x".repeat(10_000), "display_x": 1, "resolution_x": 32768 }, "from_the_future": {} }),
         json!({ "path": "/", "encryption_key": -1 }),
         json!({ "path": "plate.CTB.stl", "encryption_key": u64::MAX }),
+        json!({ "ids": [1, 2], "pattern": "spiral", "pairing": 3, "angle": 1e308, "diameter_ratio": -1, "max_distance": 0, "braces": "all" }),
+        json!({ "ids": [u64::MAX, 0], "pattern": null, "pairing": "all", "angle": 90, "head_gap": 1e300, "foot_gap": -0.0, "braces": [u64::MAX, -1] }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -534,12 +536,12 @@ fn hostile_params_never_panic() {
 /// What a step must put back, selection aside: the models, where they are, their supports.
 fn content(s: &Session) -> String {
     let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted)).collect();
-    format!("{models:?} {:?} {}", s.scene.supports(), s.scene.lift_height())
+    format!("{models:?} {:?} {:?} {}", s.scene.supports(), s.scene.braces(), s.scene.lift_height())
 }
 
 /// All of it, selection included.
 fn fingerprint(s: &Session) -> String {
-    format!("{} {:?} {:?} {:?}", content(s), s.scene.selected_models, s.scene.selected, s.scene.selected_parts)
+    format!("{} {:?} {:?} {:?} {:?}", content(s), s.scene.selected_models, s.scene.selected, s.scene.selected_parts, s.scene.selected_braces)
 }
 
 /// Axis-aligned boxes `(min, max)` as one mesh, wound outward.
@@ -909,7 +911,8 @@ fn moving_a_model_moves_its_supports_routes() {
     assert_eq!(routes(&s)[0].head.z, 13.0);
 }
 
-/// Two cubes (the first selected, moved off the second) and a selected tip on the first.
+/// Two cubes (the first selected, moved off the second) and a selected tip on the first; a
+/// floating slab with two braced supports under it.
 struct Fixture {
     session: Session,
     path: std::path::PathBuf,
@@ -918,6 +921,8 @@ struct Fixture {
     a: u64,
     b: u64,
     tip: u64,
+    /// The slab's supports.
+    braced: [u64; 2],
 }
 
 fn fixture(dir: &std::path::Path) -> Fixture {
@@ -927,13 +932,18 @@ fn fixture(dir: &std::path::Path) -> Fixture {
     let b = s.execute("file.import_stl", &json!({ "path": path })).unwrap()["id"].as_u64().unwrap();
     s.execute("model.move", &json!({ "ids": [b], "by": [30, 0, 0] })).unwrap();
     let tip = s.execute("support.add", &json!({ "model": a, "point": [5, 5, 0] })).unwrap()["id"].as_u64().unwrap();
+    let slab = s.scene.add("slab".into(), boxes(&[([60.0, 0.0, 20.0], [80.0, 20.0, 22.0])]));
+    let under = |s: &mut Session, x: f64| s.execute("support.add", &json!({ "model": slab, "point": [x, 10, 20] })).unwrap()["id"].as_u64().unwrap();
+    let braced = [under(&mut s, 64.0), under(&mut s, 72.0)];
+    let made = s.execute("support.add_braces", &json!({ "ids": braced })).unwrap();
+    assert_eq!(made["ids"].as_array().map(Vec::len), Some(1), "{made}");
     s.execute("model.select", &json!({ "ids": [a] })).unwrap();
     s.execute("support.select", &json!({ "ids": [tip] })).unwrap();
     // Something for `edit.paste` to paste.
     s.execute("edit.copy", &json!({ "ids": [a] })).unwrap();
     let project = dir.join("fixture.rsup");
     std::fs::write(&project, resin_io::write_project(&s.scene.project()).unwrap()).unwrap();
-    Fixture { session: s, path, project, a, b, tip }
+    Fixture { session: s, path, project, a, b, tip, braced }
 }
 
 /// Valid parameters for every command, run on the fixture. `None`: undo and redo, the history
@@ -964,6 +974,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         }
         "print.reset" | "print.settings" | "print.slice" => Some(json!({})),
         "support.add" => Some(json!({ "model": b, "point": [35, 5, 0], "parent": tip })),
+        "support.add_braces" => Some(json!({ "ids": f.braced, "pattern": "cross", "angle": 60 })),
         "support.add_line" => Some(json!({ "from": tip, "to": { "model": a, "point": [9, 9, 0] }, "spacing": 2 })),
         "support.delete" => Some(json!({ "ids": [tip] })),
         "support.move_tip" => Some(json!({ "support": tip, "model": b, "point": [35, 5, 0] })),
@@ -1489,7 +1500,7 @@ fn a_saved_project_opens_as_it_was_saved_unlifted() {
 
     let mut o = Session::new();
     let r = o.execute("file.open", &json!({ "path": path })).unwrap();
-    assert_eq!((r["models"].as_u64(), r["supports"].as_u64()), (Some(2), Some(3)));
+    assert_eq!((r["models"].as_u64(), r["supports"].as_u64()), (Some(3), Some(5)));
     assert_eq!(o.scene.project(), s.scene.project());
     let placements = |s: &Session| s.scene.models().iter().map(|m| (m.name.clone(), m.placement, m.bounds)).collect::<Vec<_>>();
     assert_eq!(placements(&o), placements(&s));
@@ -1634,4 +1645,106 @@ fn a_stale_job_is_refused() {
     assert!(s.adopt_job(job, unreachable));
     assert!(s.job_is_current());
     std::fs::remove_dir_all(dir).ok();
+}
+
+/// H's command: the selected supports (a selected segment standing for its support) braced in
+/// pairs, as one step; asking again as braced makes no step; editing a braced support removes its
+/// braces, moving its model keeps them; a model in the way leaves struts out; braces are saved,
+/// selected, deleted and printed.
+#[test]
+fn braces_join_selected_supports_until_one_is_edited() {
+    let mut s = Session::new();
+    let slab = s.scene.add("slab".into(), boxes(&[([0.0, 0.0, 20.0], [40.0, 20.0, 22.0])]));
+    let under = |s: &mut Session, x: f64| s.execute("support.add", &json!({ "model": slab, "point": [x, 10, 20] })).unwrap()["id"].as_u64().unwrap();
+    let (a, b, c) = (under(&mut s, 4.0), under(&mut s, 12.0), under(&mut s, 20.0));
+    let branch = s.execute("support.add", &json!({ "model": slab, "point": [14, 12, 20], "parent": b })).unwrap()["id"].as_u64().unwrap();
+    assert!(s.execute("support.add_braces", &json!({ "ids": [a] })).is_err(), "one support has nothing to brace to");
+    assert!(s.execute("support.add_braces", &json!({ "ids": [b, branch] })).is_err(), "a branch shares its support's body");
+
+    // A segment of `a`, the branch for `b`, and `c`: a tree joins neighbours 8 mm apart, not the ends 16 mm apart.
+    s.execute("support.select", &json!({ "ids": [branch, c], "parts": [{ "support": a, "segment": 0 }] })).unwrap();
+    let depth = s.undo_depth();
+    let made = s.execute("support.add_braces", &json!({ "angle": 50 })).unwrap();
+    assert_eq!((made["ids"].as_array().map(Vec::len), made["skipped"].as_u64()), (Some(2), Some(0)), "{made}");
+    assert_eq!(s.undo_depth(), depth + 1);
+    let pairs: Vec<(u64, u64)> = s.scene.braces().iter().map(|x| (x.a, x.b)).collect();
+    assert_eq!(pairs, vec![(a, b), (b, c)]);
+    let list = s.execute("support.list", &json!({})).unwrap();
+    let struts = list["braces"][0]["struts"].as_array().unwrap().clone();
+    assert!(!struts.is_empty());
+    for st in &struts {
+        let (p, q) = (&st[0], &st[1]);
+        let rise = q[2].as_f64().unwrap() - p[2].as_f64().unwrap();
+        let run = (q[0].as_f64().unwrap() - p[0].as_f64().unwrap()).hypot(q[1].as_f64().unwrap() - p[1].as_f64().unwrap());
+        assert!(rise.atan2(run).to_degrees() >= 50.0 - 1e-9, "{st}");
+    }
+    // As braced already: the same braces, no step. Other settings replace them.
+    let again = s.execute("support.add_braces", &json!({ "angle": 50 })).unwrap();
+    assert_eq!((again["ids"].clone(), s.undo_depth()), (made["ids"].clone(), depth + 1));
+    s.execute("support.add_braces", &json!({ "angle": 30, "pattern": "cross", "pairing": "all", "max_distance": 20 })).unwrap();
+    assert_eq!(s.scene.braces().len(), 3);
+    assert!(s.scene.braces().iter().all(|x| x.params.pattern == crate::BracePattern::Cross));
+    // Another pairing rebuilds the braces among them rather than adding to them, in one step.
+    let rebuilt = s.execute("support.add_braces", &json!({ "angle": 50 })).unwrap();
+    assert_eq!(rebuilt["replaced"].as_u64(), Some(3));
+    assert_eq!(s.scene.braces().iter().map(|x| (x.a, x.b)).collect::<Vec<_>>(), vec![(a, b), (b, c)]);
+    // Only braces joining two of the supports given: `a`'s brace to `b` stays.
+    s.execute("support.add_braces", &json!({ "ids": [b, c], "angle": 60 })).unwrap();
+    let kept: Vec<(u64, u64, f64)> = s.scene.braces().iter().map(|x| (x.a, x.b, x.params.angle)).collect();
+    assert_eq!(kept, vec![(a, b, 50.0), (b, c, 60.0)]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.braces().len(), 3);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.braces().len(), 2);
+
+    // Printed with the supports.
+    let solids = |s: &Session| s.slice_input().0.solids.len();
+    let with = solids(&s);
+    // Moving the model carries the braces; moving a branch's tip leaves its support's body, and braces, alone.
+    s.execute("model.move", &json!({ "ids": [slab], "by": [5, 0, 0] })).unwrap();
+    s.execute("support.move_tip", &json!({ "support": branch, "model": slab, "point": [20, 14, 20] })).unwrap();
+    assert_eq!(s.scene.braces().len(), 2);
+    // Editing a braced support removes its braces in the same step.
+    s.execute("support.move_tip", &json!({ "support": a, "model": slab, "point": [10, 8, 20] })).unwrap();
+    assert_eq!(s.scene.braces().iter().map(|x| (x.a, x.b)).collect::<Vec<_>>(), vec![(b, c)]);
+    assert_eq!(solids(&s), with - 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.braces().len(), 2);
+    s.execute("support.place_joints", &json!({ "joints": [{ "support": c, "joint": 0, "position": [25, 10, 17] }] })).unwrap();
+    assert_eq!(s.scene.braces().iter().map(|x| (x.a, x.b)).collect::<Vec<_>>(), vec![(a, b)]);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // Saved and opened again.
+    let dir = temp_dir("braces");
+    let file = dir.join("braced.rsup");
+    s.execute("file.save", &json!({ "path": file })).unwrap();
+    let mut t = Session::new();
+    t.execute("file.open", &json!({ "path": file })).unwrap();
+    assert_eq!(t.scene.braces().len(), 2);
+    assert_eq!(t.scene.braces().iter().map(|x| x.params).collect::<Vec<_>>(), s.scene.braces().iter().map(|x| x.params).collect::<Vec<_>>());
+    std::fs::remove_dir_all(dir).ok();
+
+    // Selected and deleted alone; a deleted support takes its braces.
+    let first = s.scene.braces()[0].id;
+    s.execute("support.select", &json!({ "braces": [first] })).unwrap();
+    assert!(s.scene.selected.is_empty() && s.scene.selected_braces.contains(&first));
+    let gone = s.execute("support.delete", &json!({})).unwrap();
+    assert_eq!((gone["removed"].clone(), gone["removed_braces"].clone()), (json!([]), json!([first])));
+    s.execute("support.delete", &json!({ "ids": [c] })).unwrap();
+    assert!(s.scene.braces().is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.scene.braces().len(), 1);
+
+    // A wall between two supports leaves out the struts that would cross it.
+    let mut s = Session::new();
+    let slab = s.scene.add("slab".into(), boxes(&[([0.0, 0.0, 20.0], [40.0, 20.0, 22.0]), ([7.5, 0.0, 0.0], [8.5, 20.0, 10.0])]));
+    let a = s.execute("support.add", &json!({ "model": slab, "point": [4, 10, 20] })).unwrap()["id"].as_u64().unwrap();
+    let b = s.execute("support.add", &json!({ "model": slab, "point": [12, 10, 20] })).unwrap()["id"].as_u64().unwrap();
+    let r = s.execute("support.add_braces", &json!({ "ids": [a, b], "angle": 15, "foot_gap": 0 })).unwrap();
+    let list = s.execute("support.list", &json!({})).unwrap();
+    let preset = *s.support_settings().current();
+    let all = crate::brace_struts(&routes(&s)[0], &routes(&s)[1], &crate::BraceParams { angle: 15.0, foot_gap: 0.0, ..Default::default() }, &preset);
+    let kept = list["braces"][0]["struts"].as_array().map_or(0, Vec::len);
+    assert!(r["ids"].as_array().map(Vec::len) == Some(1) && kept > 0 && kept < all.len(), "{r} {kept} of {}", all.len());
 }

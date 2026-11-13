@@ -10,7 +10,7 @@ use resin_slice::{SliceInput, SlicedJob, Solid, SolidKind, Stamp};
 use serde::Serialize;
 
 use crate::support_solids::SupportTessellator;
-use crate::{PrintConfig, Scene, Session, SupportPreset, route};
+use crate::{PrintConfig, Scene, Session, SupportPreset, brace_solids, route};
 
 /// A sliced job and what was left out of it.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,16 +50,27 @@ impl SliceSource {
         let mut unreachable = 0;
         let mut tess = SupportTessellator::default();
         // A branch hangs from its parent, which comes before it: printed without it, it would float.
-        let mut printed = std::collections::BTreeSet::new();
+        let mut printed = std::collections::BTreeMap::new();
         for s in self.scene.supports() {
             let r = route(&self.scene, s, &self.preset);
-            if !r.reachable() || s.parent.is_some_and(|p| !printed.contains(&p)) {
+            if !r.reachable() || s.parent.is_some_and(|p| !printed.contains_key(&p)) {
                 unreachable += 1;
                 continue;
             }
-            printed.insert(s.id);
             let mut triangles = Vec::new();
             tess.triangles(&r, &self.preset, &mut triangles);
+            solids.push(Solid { kind: SolidKind::Support, triangles });
+            printed.insert(s.id, r);
+        }
+        // Only between printed supports: a brace to one left out would hang in the air.
+        for b in self.scene.braces() {
+            let (Some(ra), Some(rb)) = (printed.get(&b.a), printed.get(&b.b)) else { continue };
+            let (struts, _) = brace_solids(&self.scene, ra, rb, &b.params, &self.preset);
+            if struts.is_empty() {
+                continue;
+            }
+            let mut triangles = Vec::new();
+            tess.strut_triangles(&struts, b.params.diameter_ratio, &self.preset, &mut triangles);
             solids.push(Solid { kind: SolidKind::Support, triangles });
         }
         let input = SliceInput { solids, profile: self.config.printer.clone(), settings: self.config.settings, stamp: self.stamp };

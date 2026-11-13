@@ -20,6 +20,7 @@ pub mod prefs;
 pub mod prefs_writer;
 pub mod print_settings;
 pub mod slice_runner;
+pub mod support_brace;
 pub mod support_line;
 pub mod support_routes;
 pub mod support_settings;
@@ -94,6 +95,7 @@ pub struct ResinApp {
     pub(crate) nav: navigation::NavState,
     pub(crate) supports: supports::SupportTool,
     pub(crate) line: support_line::LineState,
+    pub(crate) brace: support_brace::BraceState,
     /// The selection box while it is dragged.
     pub(crate) boxsel: Option<box_select::BoxDrag>,
     /// Every support's route to the plate, and the solids it is drawn with.
@@ -159,6 +161,11 @@ impl ResinApp {
         if let Err(e) = session.set_lift_height(prefs.lift_height) {
             log::warn!("lift height: {e}");
         }
+        let mut brace = support_brace::BraceState::default();
+        let mut line = support_line::LineState::default();
+        let mut problems = problems.to_vec();
+        problems.extend(brace.restore(&prefs.brace_tool).into_iter().map(|f| format!("brace_tool.{f}")));
+        problems.extend(line.restore(&prefs.line_tool).into_iter().map(|f| format!("line_tool.{f}")));
         let status = (!problems.is_empty()).then(|| (i18n::format("status.prefs_reset", &[("fields", &problems.join(", "))]), true));
         let writer = prefs_writer::PrefsWriter::read(prefs::to_json(&prefs));
         let mut app = ResinApp {
@@ -171,7 +178,8 @@ impl ResinApp {
             prefs_page: 0,
             nav: Default::default(),
             supports: Default::default(),
-            line: Default::default(),
+            line,
+            brace,
             boxsel: None,
             routes: Default::default(),
             viewport_rect: None,
@@ -217,8 +225,9 @@ impl ResinApp {
         }
     }
 
-    /// Copy the session's support and print settings and lift height into the preferences when a command
-    /// changed them, whoever ran it (a card, a script, undo), so they are saved.
+    /// Copy the session's support and print settings and lift height, and the brace and tip line
+    /// tools' settings, into the preferences when they changed, whoever changed them (a card, a
+    /// script, undo), so they are saved.
     fn keep_settings(&mut self) {
         if self.prefs.support_settings != *self.session.support_settings() {
             self.prefs.support_settings = *self.session.support_settings();
@@ -229,6 +238,14 @@ impl ResinApp {
         let lift = self.session.scene.lift_height();
         if self.prefs.lift_height != lift {
             self.prefs.lift_height = lift;
+        }
+        let brace = self.brace.settings();
+        if self.prefs.brace_tool != brace {
+            self.prefs.brace_tool = brace;
+        }
+        let line = self.line.settings();
+        if self.prefs.line_tool != line {
+            self.prefs.line_tool = line;
         }
     }
 
@@ -244,6 +261,7 @@ impl ResinApp {
         self.supports.branching = None;
         self.supports.moving = None;
         self.line.tool = None;
+        self.brace.tool = None;
         self.boxsel = None;
         if mode == EditMode::Slice && !self.slice_is_fresh() {
             self.slice_now();
@@ -616,7 +634,7 @@ impl ResinApp {
             ui.separator();
             let selected = match self.mode {
                 EditMode::Object => scene.selected_models.len(),
-                EditMode::Support => scene.selected.len() + scene.selected_parts.len(),
+                EditMode::Support => scene.selected.len() + scene.selected_parts.len() + scene.selected_braces.len(),
                 EditMode::Slice => 0,
             };
             ui.label(i18n::format(
@@ -749,7 +767,9 @@ impl ResinApp {
                     self.supports.branching = None;
                     self.supports.moving = None;
                     self.line.tool = None;
+                    self.brace.tool = None;
                 }
+                egui::Key::H if plain => support_brace::open(self),
                 egui::Key::L if plain => support_line::open(self),
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
                 egui::Key::R if plain => transform::open(self, transform::Op::Rotate),
@@ -817,10 +837,12 @@ impl ResinApp {
                     self.status = Some((i18n::count("status.deleted_models", n, &[]), false));
                 }
             }
-            EditMode::Support if !self.session.scene.selected.is_empty() => {
+            EditMode::Support if !self.session.scene.selected.is_empty() || !self.session.scene.selected_braces.is_empty() => {
                 if let Some(v) = self.run("support.delete", json!({})) {
                     let n = v["removed"].as_array().map_or(0, Vec::len);
-                    self.status = Some((i18n::count("status.deleted_supports", n, &[]), false));
+                    let braces = v["removed_braces"].as_array().map_or(0, Vec::len);
+                    let msg = if n > 0 { i18n::count("status.deleted_supports", n, &[]) } else { i18n::count("status.deleted_braces", braces, &[]) };
+                    self.status = Some((msg, false));
                 }
             }
             EditMode::Support | EditMode::Slice => {}
@@ -953,6 +975,9 @@ impl eframe::App for ResinApp {
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
         support_line::card(self, &ctx);
+        support_brace::card(self, &ctx);
+        // The tools' cards and Shift+wheel change their settings without a command.
+        self.keep_settings();
         object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
         print_settings::panel(self, &ctx);

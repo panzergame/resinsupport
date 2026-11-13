@@ -34,7 +34,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - [x] Manual branches: a double press on a tip, then each press on a surface until Esc, places a straight tip to that support's head, sharing its body; any tip deletable, the body going with the last
 - [x] Moving a tip: a press on a selected support's contact handle hides the tip, the next press on a surface puts it there (`support.move_tip`), any other press or Esc puts it back
 - [x] Tip lines: L with two tips selected (or one, or none for the newest, then a press on a surface for the other end, so lines chain on) lays evenly spaced tips between them, cast onto the surface; Shift+wheel or the card sets the spacing, Enter adds them in one step (`support.add_line`)
-- A ribbon button for the tip line (L)
+- [x] Braces: H with supports selected (a selected segment standing for its support) pairs them by chain, spanning tree or every pair within a reach, and lays struts between their bodies, zig-zag or crossed, at an angle from horizontal measured in the plane of the two bodies, section by section between their knees (only ever steeper, so whole bays fill each section), a share of the body's diameter, clear of the head and the base cones by set gaps; struts near a model are left out; editing a braced support removes its braces (`support.add_braces`)
+- A ribbon button for the tip line (L) and braces (H)
 - A button for `support.reset_route`
 - Overhang and island detection, automatic generation, raft
 

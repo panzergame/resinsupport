@@ -1,11 +1,14 @@
 use serde_json::{Value, json};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{ids_param, num_param, select_ids, vec3_param};
 use crate::session::MAX_EXTENT;
 use crate::support_line::{DEFAULT_TIPS_PER_BODY, MAX_LINE_TIPS, line_points};
-use crate::{EngineError, Result, Session, SupportPart, route};
+use crate::{
+    BracePairing, BraceParams, BracePattern, DEFAULT_MAX_DISTANCE, EngineError, MAX_BRACES, MAX_DISTANCE_RANGE, Result, Route, Session, SupportPart,
+    brace_pairs, brace_solids, route,
+};
 use resin_geom::Vec3;
 
 /// How far off its model's bounds a tip may be: the surface can be anywhere inside them.
@@ -123,19 +126,106 @@ pub(crate) fn move_tip(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({}))
 }
 
+/// Supports `ids` and braces `braces`; with neither, the selected ones of both. A brace goes with
+/// either of its supports.
 pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
-    let ids = match ids_param(p, "support")? {
+    let (ids, braces) = (ids_param(p, "support")?, braces_param(p)?);
+    if let Some(ids) = &ids {
+        check_known(s, ids)?;
+    }
+    if let Some(bad) = braces.iter().flatten().find(|id| !s.scene.braces().iter().any(|b| b.id == **id)) {
+        return Err(EngineError::BadParams(format!("no brace {bad}")));
+    }
+    let (ids, braces) = match (ids, braces) {
+        (None, None) => (s.scene.selected.iter().copied().collect(), s.scene.selected_braces.iter().copied().collect()),
+        (ids, braces) => (ids.unwrap_or_default(), braces.unwrap_or_default()),
+    };
+    let before: Vec<u64> = s.scene.supports().iter().map(|t| t.id).collect();
+    let braces_before: Vec<u64> = s.scene.braces().iter().map(|b| b.id).collect();
+    s.scene.remove_braces(&braces);
+    let preset = *s.support_settings.current();
+    s.scene.remove_supports(&ids, &preset);
+    let removed: Vec<u64> = before.into_iter().filter(|id| !s.scene.supports().iter().any(|t| t.id == *id)).collect();
+    let removed_braces: Vec<u64> = braces_before.into_iter().filter(|id| !s.scene.braces().iter().any(|b| b.id == *id)).collect();
+    Ok(json!({ "removed": removed, "removed_braces": removed_braces }))
+}
+
+/// The settings a new brace takes, each defaulting to [`BraceParams::default`].
+fn brace_params(p: &Value) -> Result<BraceParams> {
+    let d = BraceParams::default();
+    let pattern = match p.get("pattern") {
+        None | Some(Value::Null) => d.pattern,
+        Some(v) => v.as_str().and_then(BracePattern::parse).ok_or_else(|| EngineError::BadParams("`pattern` must be zigzag or cross".into()))?,
+    };
+    let params = BraceParams {
+        pattern,
+        angle: num_param(p, "angle")?.unwrap_or(d.angle),
+        diameter_ratio: num_param(p, "diameter_ratio")?.unwrap_or(d.diameter_ratio),
+        head_gap: num_param(p, "head_gap")?.unwrap_or(d.head_gap),
+        foot_gap: num_param(p, "foot_gap")?.unwrap_or(d.foot_gap),
+    };
+    params.validate().map_err(EngineError::BadParams)?;
+    Ok(params)
+}
+
+/// The supports a brace command acts on: those given, or the selected ones and those with
+/// selected parts; each as the support whose body it shares.
+fn brace_roots(s: &Session, p: &Value) -> Result<BTreeSet<u64>> {
+    let ids: Vec<u64> = match ids_param(p, "support")? {
         Some(ids) => {
             check_known(s, &ids)?;
             ids
         }
-        None => s.scene.selected.iter().copied().collect(),
+        None => s.scene.selected.iter().copied().chain(s.scene.selected_parts.iter().map(|(id, _)| *id)).collect(),
     };
-    let before: Vec<u64> = s.scene.supports().iter().map(|t| t.id).collect();
+    Ok(ids.into_iter().filter_map(|id| s.scene.root_of(id)).collect())
+}
+
+/// Brace the supports' bodies, paired as `pairing` says, those standing at most `max_distance`
+/// apart, in place of every brace already joining two of them: changing the pairing or a setting
+/// and running it again rebuilds them. A pair with no strut to make (too close, too short, every
+/// strut near a model) is skipped.
+pub(crate) fn add_braces(s: &mut Session, p: &Value) -> Result<Value> {
+    let roots = brace_roots(s, p)?;
+    if roots.len() < 2 {
+        return Err(EngineError::BadParams("select at least two supports to brace".into()));
+    }
+    let params = brace_params(p)?;
+    let pairing = match p.get("pairing") {
+        None | Some(Value::Null) => BracePairing::Tree,
+        Some(v) => v.as_str().and_then(BracePairing::parse).ok_or_else(|| EngineError::BadParams("`pairing` must be chain, tree or all".into()))?,
+    };
+    let max_distance = num_param(p, "max_distance")?.unwrap_or(DEFAULT_MAX_DISTANCE);
+    if !MAX_DISTANCE_RANGE.contains(&max_distance) {
+        let r = MAX_DISTANCE_RANGE;
+        return Err(EngineError::BadParams(format!("`max_distance` must be a number from {} to {}", r.start(), r.end())));
+    }
     let preset = *s.support_settings.current();
-    s.scene.remove_supports(&ids, &preset);
-    let removed: Vec<u64> = before.into_iter().filter(|id| !s.scene.supports().iter().any(|t| t.id == *id)).collect();
-    Ok(json!({ "removed": removed }))
+    let scene = &s.scene;
+    let routes: BTreeMap<u64, Route> = scene
+        .supports()
+        .iter()
+        .filter(|t| roots.contains(&t.id))
+        .map(|t| (t.id, route(scene, t, &preset)))
+        .filter(|(_, r)| r.reachable() && r.foot)
+        .collect();
+    let feet: Vec<(u64, Vec3)> = routes.iter().filter_map(|(id, r)| r.body.last().map(|f| (*id, *f))).collect();
+    let pairs = brace_pairs(&feet, pairing, max_distance);
+    if pairs.len() > MAX_BRACES {
+        return Err(EngineError::BadParams(format!("{} braces asked for, at most {MAX_BRACES} at once", pairs.len())));
+    }
+    let mut braced = Vec::with_capacity(pairs.len());
+    let mut skipped = 0;
+    for (a, b) in pairs {
+        let (Some(ra), Some(rb)) = (routes.get(&a), routes.get(&b)) else { continue };
+        if brace_solids(scene, ra, rb, &params, &preset).0.is_empty() {
+            skipped += 1;
+        } else {
+            braced.push((a, b, params));
+        }
+    }
+    let (ids, replaced) = s.scene.rebuild_braces(&roots, &braced)?;
+    Ok(json!({ "ids": ids, "skipped": skipped, "replaced": replaced }))
 }
 
 /// Each support with its route under the preset in use: `path` runs from the contact through the
@@ -180,7 +270,39 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
             })
         })
         .collect();
-    Ok(json!({ "supports": supports }))
+    let mut routes: BTreeMap<u64, Route> = BTreeMap::new();
+    for b in s.scene.braces() {
+        for id in [b.a, b.b] {
+            if let (None, Some(t)) = (routes.get(&id), s.scene.supports().iter().find(|t| t.id == id)) {
+                routes.insert(id, route(&s.scene, t, &preset));
+            }
+        }
+    }
+    let braces: Vec<Value> = s
+        .scene
+        .braces()
+        .iter()
+        .map(|b| {
+            let struts = match (routes.get(&b.a), routes.get(&b.b)) {
+                (Some(ra), Some(rb)) => brace_solids(&s.scene, ra, rb, &b.params, &preset).0,
+                _ => Vec::new(),
+            };
+            let pr = b.params;
+            json!({
+                "id": b.id,
+                "a": b.a,
+                "b": b.b,
+                "pattern": pr.pattern.id(),
+                "angle": pr.angle,
+                "diameter_ratio": pr.diameter_ratio,
+                "head_gap": pr.head_gap,
+                "foot_gap": pr.foot_gap,
+                "selected": s.scene.selected_braces.contains(&b.id),
+                "struts": struts.iter().map(|(a, b)| [a, b]).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(json!({ "supports": supports, "braces": braces }))
 }
 
 /// Put joints where they are given. A support whose route was worked out first keeps that route
@@ -245,16 +367,35 @@ pub(crate) fn reset_route(s: &mut Session, p: &Value) -> Result<Value> {
 pub(crate) fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = ids_param(p, "support")?;
     let parts = parts_param(p)?;
-    if ids.is_none() && parts.is_none() {
-        return Err(EngineError::BadParams("`ids` or `parts` is required".into()));
+    let braces = braces_param(p)?;
+    if ids.is_none() && parts.is_none() && braces.is_none() {
+        return Err(EngineError::BadParams("`ids`, `parts` or `braces` is required".into()));
     }
-    let (ids, parts) = (ids.unwrap_or_default(), parts.unwrap_or_default());
+    let (ids, parts, braces) = (ids.unwrap_or_default(), parts.unwrap_or_default(), braces.unwrap_or_default());
     check_known(s, &ids)?;
     check_known(s, &parts.iter().map(|(id, _)| *id).collect::<Vec<_>>())?;
-    // One mode over both sets: a plain click on a part replaces the supports selected too.
+    if let Some(bad) = braces.iter().find(|id| !s.scene.braces().iter().any(|b| b.id == **id)) {
+        return Err(EngineError::BadParams(format!("no brace {bad}")));
+    }
+    // One mode over every set: a plain click on a part replaces the supports selected too.
     select_ids(&mut s.scene.selected, ids, p)?;
     select_ids(&mut s.scene.selected_parts, parts, p)?;
-    Ok(json!({ "selected": s.scene.selected, "parts": s.scene.selected_parts.iter().map(|&(id, part)| part_json(id, part)).collect::<Vec<_>>() }))
+    select_ids(&mut s.scene.selected_braces, braces, p)?;
+    Ok(json!({
+        "selected": s.scene.selected,
+        "parts": s.scene.selected_parts.iter().map(|&(id, part)| part_json(id, part)).collect::<Vec<_>>(),
+        "braces": s.scene.selected_braces,
+    }))
+}
+
+/// The optional `braces`: brace ids.
+fn braces_param(p: &Value) -> Result<Option<Vec<u64>>> {
+    let bad = || EngineError::BadParams("`braces` must be an array of brace ids".into());
+    match p.get("braces") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(a)) => a.iter().map(|v| v.as_u64().ok_or_else(bad)).collect::<Result<_>>().map(Some),
+        Some(_) => Err(bad()),
+    }
 }
 
 /// The optional `parts`: `[{ support, joint: i } | { support, segment: i }]`. The numbers are not

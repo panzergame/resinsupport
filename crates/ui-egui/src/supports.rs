@@ -1,7 +1,7 @@
 //! Placing support tips by hand, in Support mode: the pointer over a model shows where a tip
 //! would go, a left press places it, a left press on a placed tip or base selects the support, one
-//! on a body segment or a joint's handle selects that part (Shift toggles), Delete removes the
-//! selected supports; a drag from empty space selects with a box (`box_select`). A double press
+//! on a body segment or a joint's handle selects that part, one on a brace's strut the brace
+//! (Shift toggles), Delete removes the selected supports and braces; a drag from empty space selects with a box (`box_select`). A double press
 //! on a tip starts placing branches from that support's head: each press on a model's surface
 //! places a branch's tip (`support.add` with its `parent`) until Esc. A
 //! selected support shows a handle on its tip's contact: a press on it hides the tip, and the next
@@ -33,6 +33,8 @@ pub enum Hover {
     Part(u64, SupportPart),
     /// A selected support's contact handle, which starts moving its tip.
     TipHandle(u64),
+    /// A brace's strut: the brace as a whole.
+    Brace(u64),
 }
 
 /// The pointer's pick, kept until the pointer, the camera or the scene changes: a ray cast per
@@ -135,7 +137,7 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         }
         None => app.supports.clear(),
     }
-    if matches!(app.supports.hover, Some(Hover::Support(_) | Hover::Part(..) | Hover::TipHandle(_))) {
+    if matches!(app.supports.hover, Some(Hover::Support(_) | Hover::Part(..) | Hover::TipHandle(_) | Hover::Brace(_))) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
@@ -187,7 +189,7 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
     }
     let mode = if mods.shift { "toggle" } else { "replace" };
     let scene = &app.session.scene;
-    let any_selected = !scene.selected.is_empty() || !scene.selected_parts.is_empty();
+    let any_selected = !scene.selected.is_empty() || !scene.selected_parts.is_empty() || !scene.selected_braces.is_empty();
     match hit {
         Some(Hover::Surface { model, point, normal }) => {
             if !mods.shift && any_selected {
@@ -203,6 +205,9 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         }
         Some(Hover::Part(id, part)) => {
             app.run("support.select", json!({ "parts": [part_param(id, part)], "mode": mode }));
+        }
+        Some(Hover::Brace(id)) => {
+            app.run("support.select", json!({ "braces": [id], "mode": mode }));
         }
         None => {
             if !mods.shift && any_selected {
@@ -308,7 +313,8 @@ fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
         Piece::Segment(i) => (Hover::Part(id, SupportPart::Segment(i)), t),
         Piece::Joint(i) => (Hover::Part(id, SupportPart::Joint(i)), t),
     });
-    let support = [tip, piece].into_iter().flatten().min_by(|a, b| a.1.total_cmp(&b.1));
+    let brace = app.routes.brace_hit(scene, preset, o, d).map(|(id, t)| (Hover::Brace(id), t));
+    let support = [tip, piece, brace].into_iter().flatten().min_by(|a, b| a.1.total_cmp(&b.1));
     match (surface, support) {
         (Some((_, h)), Some((hover, t))) if t <= h.t + radius => Some(hover),
         (None, Some((hover, _))) => Some(hover),

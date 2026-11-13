@@ -64,14 +64,17 @@ impl Route {
 }
 
 /// The models a support must keep clear of, each with the inverse of its placement.
-struct Obstacles<'a> {
+pub(crate) struct Obstacles<'a> {
     models: Vec<(&'a Model, Affine3)>,
-    tests: u32,
+    pub(crate) tests: u32,
 }
 
-impl Obstacles<'_> {
+impl<'a> Obstacles<'a> {
+    pub(crate) fn of(models: &'a [Model]) -> Obstacles<'a> {
+        Obstacles { models: models.iter().filter_map(|m| Some((m, m.transform.inverse()?))).collect(), tests: 0 }
+    }
     /// Whether segment `p q` keeps at least `r` from every model.
-    fn clear(&mut self, p: Vec3, q: Vec3, r: f64) -> bool {
+    pub(crate) fn clear(&mut self, p: Vec3, q: Vec3, r: f64) -> bool {
         self.tests = self.tests.saturating_add(1);
         let g = Vec3::new(r, r, r);
         let reach = Aabb3 { min: p.min(q) - g, max: p.max(q) + g };

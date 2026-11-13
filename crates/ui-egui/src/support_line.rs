@@ -5,11 +5,12 @@
 //! show live, green where they land, in the warning colour on the straight line where they land
 //! nowhere; Shift+wheel or the card changes the spacing. Enter (OK) runs `support.add_line`, one
 //! step; Esc, Cancel, undo, a mode change or an end going away puts the line away, the scene
-//! and the undo history untouched.
+//! and the undo history untouched. The spacing and tips per body are kept in the preferences.
 
 use egui::vec2;
 use resin_engine::geom::Vec3;
 use resin_engine::{DEFAULT_LINE_SPACING, DEFAULT_TIPS_PER_BODY, LinePoint, line_points};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::supports::Hover;
@@ -58,6 +59,41 @@ pub struct LineState {
 impl Default for LineState {
     fn default() -> Self {
         LineState { tool: None, spacing: DEFAULT_LINE_SPACING, per_body: DEFAULT_TIPS_PER_BODY }
+    }
+}
+
+/// The line's settings as the preferences keep them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LineSettings {
+    pub spacing: f64,
+    pub per_body: usize,
+}
+
+impl Default for LineSettings {
+    fn default() -> Self {
+        LineState::default().settings()
+    }
+}
+
+impl LineState {
+    pub fn settings(&self) -> LineSettings {
+        LineSettings { spacing: self.spacing, per_body: self.per_body }
+    }
+    /// Take the stored settings, each one out of range keeping its default; those, by name.
+    pub fn restore(&mut self, s: &LineSettings) -> Vec<&'static str> {
+        let mut bad = Vec::new();
+        if SPACING_RANGE.contains(&s.spacing) {
+            self.spacing = s.spacing;
+        } else {
+            bad.push("spacing");
+        }
+        if (1..=MAX_TIPS_PER_BODY).contains(&s.per_body) {
+            self.per_body = s.per_body;
+        } else {
+            bad.push("per_body");
+        }
+        bad
     }
 }
 

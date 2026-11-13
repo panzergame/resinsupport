@@ -73,6 +73,16 @@ pub fn support_primitives(r: &Route, p: &SupportPreset, mut f: impl FnMut(Owner,
     }
 }
 
+/// A brace's struts, `ratio` of the body's diameter, as `p` shapes the body. Their ends lie on
+/// the bodies' axes, inside the columns, so they are left open on screen.
+pub fn strut_primitives(struts: &[(Vec3, Vec3)], ratio: f64, p: &SupportPreset, mut f: impl FnMut(Primitive)) {
+    let r = p.body.diameter * ratio / 2.0;
+    let smooth = p.body.shape == BodyShape::Cylinder;
+    for &(a, b) in struts {
+        f(Primitive::Frustum { a, b, ra: r, rb: r, sides: p.body.segments, smooth, caps: (false, false) });
+    }
+}
+
 /// Turns support solids into closed triangle soups for the slicer.
 pub struct SupportTessellator {
     sphere: Vec<[[f32; 3]; 3]>,
@@ -89,6 +99,17 @@ impl Default for SupportTessellator {
 }
 
 impl SupportTessellator {
+    /// A brace's struts ([`strut_primitives`]), each closed, appended to `out`.
+    pub fn strut_triangles(&mut self, struts: &[(Vec3, Vec3)], ratio: f64, p: &SupportPreset, out: &mut Vec<[[f32; 3]; 3]>) {
+        let scratch = &mut self.scratch;
+        strut_primitives(struts, ratio, p, |prim| {
+            if let Primitive::Frustum { a, b, ra, rb, sides, smooth, .. } = prim {
+                scratch.clear();
+                frustum(a, b, ra, rb, sides, smooth, (true, true), scratch);
+                out.extend(scratch.chunks_exact(3).map(|t| [t[0].pos, t[1].pos, t[2].pos]));
+            }
+        });
+    }
     /// Route `r`'s solids sized by `p`, each closed (both caps on), appended to `out`.
     pub fn triangles(&mut self, r: &Route, p: &SupportPreset, out: &mut Vec<[[f32; 3]; 3]>) {
         let sphere = &self.sphere;

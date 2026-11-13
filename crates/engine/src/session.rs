@@ -3,11 +3,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use resin_geom::{Aabb3, Affine3, Item, Mesh, MeshIndex, Placement, RayHit, Rect, Vec3};
-use resin_io::{Project, ProjectModel, ProjectSupport};
+use resin_io::{Project, ProjectBrace, ProjectModel, ProjectSupport};
 use resin_render::Camera;
 use serde_json::Value;
 
-use crate::{CommandSpec, EngineError, PrintConfig, Result, SupportPreset, SupportSettings, cmd};
+use crate::{Brace, BraceParams, CommandSpec, EngineError, PrintConfig, Result, SupportPreset, SupportSettings, cmd};
 
 /// How far from the origin a model may be moved or grown, in millimetres: well past any build
 /// plate, and still exact enough in the f32 the mesh is stored in.
@@ -146,17 +146,22 @@ pub struct Scene {
     // makes a command an undo step and invalidates pick caches.
     models: Vec<Model>,
     supports: Vec<Support>,
+    /// Struts between two supports' bodies, neither a branch.
+    braces: Vec<Brace>,
     /// Selected supports, by id; only ids in `supports`.
     pub selected: BTreeSet<u64>,
     /// Selected parts of supports: (support id, part); only ids in `supports`.
     pub selected_parts: BTreeSet<(u64, SupportPart)>,
     /// Selected models, by id; only ids in `models`.
     pub selected_models: BTreeSet<u64>,
+    /// Selected braces, by id; only ids in `braces`.
+    pub selected_braces: BTreeSet<u64>,
     /// Where lifted models' lowest points sit. Here rather than beside the support settings:
     /// changing it moves models, so undoing that must put it back with them.
     lift_height: f64,
     next_id: u64,
     next_support_id: u64,
+    next_brace_id: u64,
     revision: u64,
 }
 
@@ -165,12 +170,15 @@ impl Default for Scene {
         Scene {
             models: Vec::new(),
             supports: Vec::new(),
+            braces: Vec::new(),
             selected: BTreeSet::new(),
             selected_parts: BTreeSet::new(),
             selected_models: BTreeSet::new(),
+            selected_braces: BTreeSet::new(),
             lift_height: DEFAULT_LIFT_HEIGHT,
             next_id: 0,
             next_support_id: 0,
+            next_brace_id: 0,
             revision: 0,
         }
     }
@@ -182,6 +190,9 @@ impl Scene {
     }
     pub fn supports(&self) -> &[Support] {
         &self.supports
+    }
+    pub fn braces(&self) -> &[Brace] {
+        &self.braces
     }
     pub fn bounds(&self) -> Aabb3 {
         self.models.iter().fold(Aabb3::EMPTY, |b, m| b.union(&m.bounds))
@@ -362,6 +373,10 @@ impl Scene {
             return Ok(());
         }
         (s.model, s.tip, s.normal, s.local_tip, s.local_normal) = (model, tip, normal, local_tip, local_normal);
+        // A branch's tip leaves the body as it was; a support's own tip moves its head.
+        if s.parent.is_none() {
+            self.drop_braces_of(&[id]);
+        }
         self.revision += 1;
         Ok(())
     }
@@ -376,11 +391,16 @@ impl Scene {
             return Ok(());
         }
         self.revision += 1;
+        let mut edited = Vec::new();
         for (id, c) in corners {
-            if let Some(s) = self.supports.iter_mut().find(|s| s.id == id) {
+            if let Some(s) = self.supports.iter_mut().find(|s| s.id == id)
+                && s.corners != c
+            {
                 s.corners = c;
+                edited.push(id);
             }
         }
+        self.drop_braces_of(&edited);
         Ok(())
     }
     /// Remove these models and their supports, as [`Scene::remove_supports`]; whether any model went.
@@ -407,9 +427,93 @@ impl Scene {
             self.revision += 1;
         }
     }
-    /// What a project file keeps: each model's mesh, name and placement, and each support's tip
-    /// and normal on its model and placed corners. Not the lift (a model setting), ids or the
-    /// selection.
+    /// Make `pairs` the braces among supports `among`: every brace joining two of them goes, and
+    /// each pair is braced with its settings; braces to other supports stay. Returns the new
+    /// braces' ids in the order given, and how many braces went. Asking for the braces already
+    /// there keeps them and makes no change. All or nothing, as [`Scene::add_braces`].
+    pub(crate) fn rebuild_braces(&mut self, among: &BTreeSet<u64>, pairs: &[(u64, u64, BraceParams)]) -> Result<(Vec<u64>, usize)> {
+        let inside = |b: &Brace| among.contains(&b.a) && among.contains(&b.b);
+        let mut old: Vec<(u64, u64, BraceParams)> = self.braces.iter().filter(|b| inside(b)).map(|b| (b.a, b.b, b.params)).collect();
+        let mut new: Vec<(u64, u64, BraceParams)> = pairs.iter().map(|&(a, b, p)| (a.min(b), a.max(b), p)).collect();
+        old.sort_by_key(|&(a, b, _)| (a, b));
+        new.sort_by_key(|&(a, b, _)| (a, b));
+        // The same braces again must not bump: it would make an empty undo step.
+        if old == new {
+            return self.add_braces(pairs).map(|ids| (ids, 0));
+        }
+        let (kept, gone): (Vec<Brace>, Vec<Brace>) = self.braces.iter().partition(|b| !inside(b));
+        let before = std::mem::replace(&mut self.braces, kept);
+        match self.add_braces(pairs) {
+            Ok(ids) => {
+                self.prune_selection();
+                self.revision += 1;
+                Ok((ids, gone.len()))
+            }
+            Err(e) => {
+                self.braces = before;
+                Err(e)
+            }
+        }
+    }
+    /// Brace each pair of supports `(a, b)` with its settings, replacing a brace the pair already
+    /// has. Returns the braces' ids in the order given; a pair braced already as asked keeps its
+    /// brace and makes no change. All or nothing: a support that is unknown or a branch, a pair
+    /// of one support, or settings out of range change nothing.
+    pub(crate) fn add_braces(&mut self, pairs: &[(u64, u64, BraceParams)]) -> Result<Vec<u64>> {
+        for (a, b, params) in pairs {
+            for id in [a, b] {
+                if !self.supports.iter().any(|s| s.id == *id && s.parent.is_none()) {
+                    return Err(EngineError::BadParams(format!("support {id} is not a support with a body")));
+                }
+            }
+            if a == b {
+                return Err(EngineError::BadParams(format!("support {a} cannot be braced to itself")));
+            }
+            params.validate().map_err(EngineError::BadParams)?;
+        }
+        let mut ids = Vec::with_capacity(pairs.len());
+        let mut changed = false;
+        for &(a, b, params) in pairs {
+            let (a, b) = (a.min(b), a.max(b));
+            if let Some(old) = self.braces.iter().find(|x| (x.a, x.b) == (a, b)) {
+                if old.params == params {
+                    ids.push(old.id);
+                    continue;
+                }
+                let gone = old.id;
+                self.braces.retain(|x| x.id != gone);
+            }
+            self.next_brace_id += 1;
+            self.braces.push(Brace { id: self.next_brace_id, a, b, params });
+            ids.push(self.next_brace_id);
+            changed = true;
+        }
+        if changed {
+            self.prune_selection();
+            self.revision += 1;
+        }
+        Ok(ids)
+    }
+    /// Remove these braces; how many went.
+    pub(crate) fn remove_braces(&mut self, ids: &[u64]) -> usize {
+        let before = self.braces.len();
+        self.braces.retain(|b| !ids.contains(&b.id));
+        let removed = before - self.braces.len();
+        if removed > 0 {
+            self.prune_selection();
+            self.revision += 1;
+        }
+        removed
+    }
+    /// Remove the braces of supports `ids`, without the bump: the caller's change bumps.
+    fn drop_braces_of(&mut self, ids: &[u64]) {
+        self.braces.retain(|b| !ids.contains(&b.a) && !ids.contains(&b.b));
+        let braces = &self.braces;
+        self.selected_braces.retain(|id| braces.iter().any(|b| b.id == *id));
+    }
+    /// What a project file keeps: each model's mesh, name and placement, each support's tip and
+    /// normal on its model and placed corners, and the braces. Not the lift (a model setting), ids
+    /// or the selection.
     pub fn project(&self) -> Project {
         self.project_of(|_| true)
     }
@@ -433,7 +537,24 @@ impl Scene {
             kept_supports.push(s.id);
             supports.push(ProjectSupport { model, tip: s.local_tip, normal: s.local_normal, corners: s.corners.clone(), parent });
         }
-        Project { models, supports }
+        let index = |id: u64| kept_supports.iter().position(|k| *k == id);
+        let braces = self
+            .braces
+            .iter()
+            .filter_map(|b| {
+                let p = b.params;
+                Some(ProjectBrace {
+                    a: index(b.a)?,
+                    b: index(b.b)?,
+                    pattern: p.pattern,
+                    angle: p.angle,
+                    diameter_ratio: p.diameter_ratio,
+                    head_gap: p.head_gap,
+                    foot_gap: p.foot_gap,
+                })
+            })
+            .collect();
+        Project { models, supports, braces }
     }
     /// Become the project `p`: everything in the scene goes, its models and
     /// supports come in with new ids, unlifted, exactly where they were saved. The lift height
@@ -442,6 +563,7 @@ impl Scene {
     pub(crate) fn adopt(&mut self, p: Project) -> Result<()> {
         self.models.clear();
         self.supports.clear();
+        self.braces.clear();
         self.prune_selection();
         self.revision += 1;
         self.append(p).map(|_| ())
@@ -495,6 +617,15 @@ impl Scene {
             });
             support_ids.push(self.next_support_id);
         }
+        let mut braces = Vec::with_capacity(p.braces.len());
+        for pb in p.braces {
+            let bad = || EngineError::Failed("a brace in the file joins no two supports".into());
+            let params =
+                BraceParams { pattern: pb.pattern, angle: pb.angle, diameter_ratio: pb.diameter_ratio, head_gap: pb.head_gap, foot_gap: pb.foot_gap };
+            params.validate().map_err(|e| EngineError::Failed(format!("a brace in the file: {e}")))?;
+            braces.push((*support_ids.get(pb.a).ok_or_else(bad)?, *support_ids.get(pb.b).ok_or_else(bad)?, params));
+        }
+        self.add_braces(&braces).map_err(|e| EngineError::Failed(format!("a brace in the file: {e}")))?;
         Ok(ids)
     }
     /// Become `older` (an undo or redo step). Ids and the revision only ever grow: a model id is
@@ -503,6 +634,7 @@ impl Scene {
     pub(crate) fn restore(&mut self, mut older: Scene) -> Scene {
         older.next_id = older.next_id.max(self.next_id);
         older.next_support_id = older.next_support_id.max(self.next_support_id);
+        older.next_brace_id = older.next_brace_id.max(self.next_brace_id);
         older.revision = older.revision.max(self.revision) + 1;
         std::mem::replace(self, older)
     }
@@ -533,6 +665,8 @@ impl Scene {
                 }
             }
         }
+        let gone_ids: Vec<u64> = self.supports.iter().filter(|s| gone(s)).map(|s| s.id).collect();
+        self.drop_braces_of(&gone_ids);
         self.supports.retain(|s| !gone(s));
         // A parent always comes before its branches: one pass in order finds the orphans, which
         // only a broken scene has.
@@ -544,11 +678,15 @@ impl Scene {
             }
             keep
         });
+        let kept = &self.supports;
+        self.braces.retain(|b| kept.iter().any(|s| s.id == b.a) && kept.iter().any(|s| s.id == b.b));
     }
     fn prune_selection(&mut self) {
         let supports = &self.supports;
         self.selected.retain(|id| supports.iter().any(|s| s.id == *id));
         self.selected_parts.retain(|(id, _)| supports.iter().any(|s| s.id == *id));
+        let braces = &self.braces;
+        self.selected_braces.retain(|id| braces.iter().any(|b| b.id == *id));
         let models = &self.models;
         self.selected_models.retain(|id| models.iter().any(|m| m.id == *id));
     }

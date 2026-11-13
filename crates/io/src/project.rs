@@ -5,13 +5,16 @@
 //!
 //! A project is a ZIP with nothing in front of it:
 //! - `container.json`: `{"format": "resinsupport-container/1"}`, the package layout;
-//! - `document.json`: `{"format": "resinsupport/1", "models": […], "supports": […]}`, Deflated;
+//! - `document.json`: `{"format": "resinsupport/2", "models": […], "supports": […], "braces": […]}`,
+//!   Deflated (`resinsupport/1`, read too, has no braces);
 //! - `blobs/<lowercase SHA-256>.mesh`: each distinct mesh once, stored, hashed over its bytes.
 //!
 //! A mesh blob is `RSMESH01`, a little-endian `u64` triangle count, then nine little-endian `f32`
 //! per triangle: the model's own triangle soup, exactly. Supports name their model by its index
 //! in `models` and keep their tip and normal in the model's own coordinates; placed corners are in
-//! the scene. A branch names the support it joins by its index in `supports`, always an earlier one. A file of a newer format than this build knows is refused, never guessed at.
+//! the scene. A branch names the support it joins by its index in `supports`, always an earlier one.
+//! A brace names its two supports by their index in `supports`, neither a branch. A file of a
+//! newer format than this build knows is refused, never guessed at.
 //!
 //! Files are hostile: entries, sizes and counts are bounded before anything is allocated, names
 //! that could reach outside the package are refused, ZIP CRCs and blob hashes are checked, and
@@ -32,7 +35,7 @@ use crate::stl::MAX_TRIANGLES;
 pub const EXTENSION: &str = "rsup";
 const CONTAINER_FORMAT: &str = "resinsupport-container/1";
 const FORMAT_NAME: &str = "resinsupport/";
-const FORMAT_VERSION: u64 = 1;
+const FORMAT_VERSION: u64 = 2;
 const MESH_MAGIC: &[u8; 8] = b"RSMESH01";
 const MESH_HEADER: usize = 16;
 const TRIANGLE_BYTES: usize = 36;
@@ -48,6 +51,7 @@ pub const MAX_FILE_BYTES: u64 = MAX_EXPANDED;
 pub struct Project {
     pub models: Vec<ProjectModel>,
     pub supports: Vec<ProjectSupport>,
+    pub braces: Vec<ProjectBrace>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -73,12 +77,54 @@ pub struct ProjectSupport {
     pub parent: Option<usize>,
 }
 
+/// How a brace's struts run. Here rather than in the engine because the project file names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BracePattern {
+    /// One strut per bay, alternating.
+    ZigZag,
+    /// Both diagonals in each bay.
+    Cross,
+}
+
+impl BracePattern {
+    pub const ALL: [BracePattern; 2] = [BracePattern::ZigZag, BracePattern::Cross];
+    pub fn id(self) -> &'static str {
+        match self {
+            BracePattern::ZigZag => "zigzag",
+            BracePattern::Cross => "cross",
+        }
+    }
+    pub fn parse(s: &str) -> Option<BracePattern> {
+        BracePattern::ALL.into_iter().find(|p| p.id() == s)
+    }
+}
+
+/// Struts between two supports, with the settings they were made with.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectBrace {
+    /// Indices into [`Project::supports`], neither a branch.
+    pub a: usize,
+    pub b: usize,
+    pub pattern: BracePattern,
+    /// Degrees from horizontal.
+    pub angle: f64,
+    /// Of the body's diameter.
+    pub diameter_ratio: f64,
+    /// Millimetres.
+    pub head_gap: f64,
+    pub foot_gap: f64,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     format: String,
     models: Vec<ModelEntry>,
     supports: Vec<SupportEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    braces: Vec<ProjectBrace>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -225,7 +271,10 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
         check_support(s, i, project.models.len())?;
         supports.push(SupportEntry { model: s.model, tip: s.tip, normal: s.normal, corners: s.corners.clone(), parent: s.parent });
     }
-    let document = Document { format: format!("{FORMAT_NAME}{FORMAT_VERSION}"), models, supports };
+    for b in &project.braces {
+        check_brace(b, &project.supports)?;
+    }
+    let document = Document { format: format!("{FORMAT_NAME}{FORMAT_VERSION}"), models, supports, braces: project.braces.clone() };
     writer.part("document.json", &serde_json::to_vec(&document).map_err(invalid)?, true)?;
     writer.part("container.json", &serde_json::to_vec(&serde_json::json!({ "format": CONTAINER_FORMAT })).map_err(invalid)?, false)?;
     writer.finish()
@@ -243,6 +292,17 @@ fn check_support(s: &ProjectSupport, index: usize, models: usize) -> Result<(), 
     let corners_ok = s.corners.as_ref().is_none_or(|c| c.iter().all(|p| p.is_finite()));
     if !s.tip.is_finite() || !s.normal.is_finite() || !corners_ok {
         return Err(invalid("a support has a non-finite point"));
+    }
+    Ok(())
+}
+
+fn check_brace(b: &ProjectBrace, supports: &[ProjectSupport]) -> Result<(), IoError> {
+    let root = |i: usize| supports.get(i).is_some_and(|s| s.parent.is_none());
+    if b.a == b.b || !root(b.a) || !root(b.b) {
+        return Err(invalid(format!("a brace joins supports {} and {}, which are not two supports with bodies", b.a, b.b)));
+    }
+    if ![b.angle, b.diameter_ratio, b.head_gap, b.foot_gap].iter().all(|v| v.is_finite()) {
+        return Err(invalid("a brace has a non-finite setting"));
     }
     Ok(())
 }
@@ -332,7 +392,7 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, IoError> {
     let value: serde_json::Value = serde_json::from_slice(&document).map_err(invalid)?;
     let format = value.get("format").and_then(serde_json::Value::as_str).ok_or_else(|| invalid("the document has no format"))?;
     match format.strip_prefix(FORMAT_NAME).and_then(|v| v.parse::<u64>().ok()) {
-        Some(FORMAT_VERSION) => {}
+        Some(1..=FORMAT_VERSION) => {}
         Some(v) if v > FORMAT_VERSION => {
             return Err(invalid(format!("made by a newer ResinSupport ({format}); this one reads {FORMAT_NAME}{FORMAT_VERSION}")));
         }
@@ -373,7 +433,10 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, IoError> {
     for (i, s) in supports.iter().enumerate() {
         check_support(s, i, models.len())?;
     }
-    Ok(Project { models, supports })
+    for b in &document.braces {
+        check_brace(b, &supports)?;
+    }
+    Ok(Project { models, supports, braces: document.braces })
 }
 
 /// Read a project file from disk.
@@ -419,7 +482,9 @@ mod tests {
                     corners: Some(vec![Vec3::new(41.0, -2.0, 4.0), Vec3::new(45.0, -2.0, 2.0)]),
                     parent: Some(0),
                 },
+                ProjectSupport { model: 0, tip: Vec3::new(1.0, 1.0, 0.0), normal: Vec3::new(0.0, 0.0, -1.0), corners: None, parent: None },
             ],
+            braces: vec![ProjectBrace { a: 0, b: 2, pattern: BracePattern::Cross, angle: 50.0, diameter_ratio: 0.4, head_gap: 1.5, foot_gap: 0.5 }],
         }
     }
 
@@ -488,12 +553,21 @@ mod tests {
     #[test]
     fn newer_formats_are_refused_with_a_reason() {
         let mut d = document();
-        d["format"] = "resinsupport/2".into();
+        d["format"] = "resinsupport/3".into();
         assert!(refused(&with_document(&d)).contains("newer"));
         let bytes = write_project(&sample()).unwrap();
         let mut list: Vec<(String, Vec<u8>)> = parts(&bytes).into_iter().filter(|(n, _)| n != "container.json").collect();
         list.push(("container.json".into(), br#"{"format":"resinsupport-container/9"}"#.to_vec()));
         assert!(refused(&package(&list.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect::<Vec<_>>())).contains("newer"));
+    }
+
+    #[test]
+    fn a_first_format_project_reads_with_no_braces() {
+        let mut d = document();
+        d["format"] = "resinsupport/1".into();
+        d.as_object_mut().unwrap().remove("braces");
+        let back = read_project(&with_document(&d)).unwrap();
+        assert_eq!((back.supports.len(), back.braces.len()), (3, 0));
     }
 
     #[test]
@@ -515,6 +589,17 @@ mod tests {
             d["supports"][1]["parent"] = parent;
             refused(&with_document(&d));
         }
+        // A brace to itself, to a branch, to no support, or with a non-finite setting.
+        for (key, value) in
+            [("b", serde_json::json!(0)), ("b", serde_json::json!(1)), ("a", serde_json::json!(9)), ("angle", serde_json::json!(null))]
+        {
+            let mut d = document();
+            d["braces"][0][key] = value;
+            refused(&with_document(&d));
+        }
+        let mut d = document();
+        d["braces"][0]["pattern"] = "spiral".into();
+        refused(&with_document(&d));
         let mut d = document();
         d["surprise"] = 1.into();
         refused(&with_document(&d));
@@ -580,6 +665,9 @@ mod tests {
             p.supports[1].parent = Some(parent);
             assert!(write_project(&p).is_err());
         }
+        let mut p = sample();
+        p.braces[0].b = 1;
+        assert!(write_project(&p).is_err(), "a brace to a branch");
         let mut p = sample();
         p.models[0].mesh = Arc::new(Mesh::new(vec![[[f32::INFINITY, 0.0, 0.0], [0.0; 3], [0.0; 3]]]));
         assert!(write_project(&p).is_err());

@@ -121,7 +121,9 @@ impl Cmd {
             Cmd::DeleteModels => state(Some("key.delete"), need_pick, false),
             Cmd::Clear => state(None, need_models.then_some("reason.empty_scene"), false),
             Cmd::PlaceTips => state(None, need_models.then_some("reason.import_first"), true),
-            Cmd::DeleteTips => state(Some("key.delete"), scene.selected.is_empty().then_some("reason.select_tips"), false),
+            Cmd::DeleteTips => {
+                state(Some("key.delete"), (scene.selected.is_empty() && scene.selected_braces.is_empty()).then_some("reason.select_tips"), false)
+            }
             Cmd::Fit => state(Some("F"), None, false),
             Cmd::Home => state(None, None, false),
             Cmd::Perspective => state(Some("P"), None, app.session.camera.fov > 0.0),

@@ -95,6 +95,11 @@ preference_settings! {
     /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
     /// page, like `support_settings`.
     lift_height: f64 = resin_engine::DEFAULT_LIFT_HEIGHT;
+    /// The brace card's settings (H): tool data, on no page, like `support_settings`. A value
+    /// out of range keeps its default ([`crate::support_brace::BraceState::restore`]).
+    brace_tool: crate::support_brace::BraceSettings = crate::support_brace::BraceSettings::default();
+    /// The tip line's spacing and tips per body (L): tool data, as `brace_tool`.
+    line_tool: crate::support_line::LineSettings = crate::support_line::LineSettings::default();
 }
 
 const DOUBLE_CLICK: [(&str, &str); 3] = [("home", "prefs.double_click.home"), ("fit", "prefs.double_click.fit"), ("off", "prefs.double_click.off")];
@@ -515,7 +520,7 @@ mod tests {
     #[test]
     fn every_setting_has_a_page_and_restore_defaults_restores_it() {
         // Tool data has no page, so no page's Restore defaults wipes it.
-        const TOOL_DATA: &[&str] = &["support_settings", "print_config", "lift_height"];
+        const TOOL_DATA: &[&str] = &["support_settings", "print_config", "lift_height", "brace_tool", "line_tool"];
         for (field, page) in FIELD_PAGES {
             assert!(page.is_some_and(|p| p < PAGES.len()) || (page.is_none() && TOOL_DATA.contains(field)), "{field}");
         }
@@ -543,6 +548,48 @@ mod tests {
         )
         .unwrap();
         *s.support_settings()
+    }
+
+    /// The brace and tip line tools' settings come back at the next start; a stored value out of
+    /// range or unknown keeps its default alone, and the status bar names it.
+    #[test]
+    fn the_tools_settings_come_back_at_the_next_start() {
+        let mut app = crate::ResinApp::build(Prefs::default(), &[]);
+        app.brace.params.angle = 60.0;
+        app.brace.params.pattern = resin_engine::BracePattern::Cross;
+        app.brace.pairing = resin_engine::BracePairing::All;
+        app.brace.max_distance = 25.0;
+        app.line.spacing = 3.5;
+        app.line.per_body = 5;
+        app.keep_settings();
+        let saved: serde_json::Value = serde_json::from_str(&to_json(&app.prefs).unwrap()).unwrap();
+        let (stored, problems) = lenient(&saved);
+        assert!(problems.is_empty(), "{problems:?}");
+        let again = crate::ResinApp::build(stored, &[]);
+        assert_eq!((again.brace.settings(), again.line.settings()), (app.brace.settings(), app.line.settings()));
+        assert!(again.status.is_none());
+
+        let mut bad = saved.clone();
+        bad["brace_tool"]["angle"] = 1000.into();
+        bad["brace_tool"]["pairing"] = "spiral".into();
+        bad["line_tool"]["per_body"] = 0.into();
+        let (stored, problems) = lenient(&bad);
+        assert!(problems.is_empty(), "read as written; the tools check their ranges: {problems:?}");
+        let again = crate::ResinApp::build(stored, &[]);
+        let d = crate::support_brace::BraceState::default();
+        assert_eq!((again.brace.params.angle, again.brace.pairing), (d.params.angle, d.pairing));
+        assert_eq!(again.brace.max_distance, 25.0, "the others kept");
+        assert_eq!((again.line.spacing, again.line.per_body), (3.5, crate::support_line::LineState::default().per_body));
+        let status = again.status.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(status.contains("brace_tool.angle") && status.contains("brace_tool.pairing") && status.contains("line_tool.per_body"), "{status}");
+
+        // A value of the wrong type falls back with its whole tool.
+        let mut broken = saved;
+        broken["line_tool"] = "x".into();
+        let (stored, problems) = lenient(&broken);
+        assert_eq!(problems, vec!["line_tool".to_string()]);
+        assert_eq!(stored.line_tool, crate::support_line::LineSettings::default());
+        assert_eq!(stored.brace_tool, app.brace.settings());
     }
 
     #[test]

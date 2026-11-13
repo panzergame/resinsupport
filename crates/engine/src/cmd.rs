@@ -95,26 +95,29 @@ pub fn commands() -> &'static [CommandSpec] {
             .params("height: mm, 0 to 500: where every lifted model's lowest point sits"),
         CommandSpec::new("support.add", "Add Support", support::add)
             .params("model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down), parent?: integer (a branch: a straight tip to that support's head, sharing its body)"),
+        CommandSpec::new("support.add_braces", "Add Braces", support::add_braces).params(
+            "ids?: [integer] (default the selected supports and those with selected parts; a branch stands for the support whose body it shares), pattern?: zigzag | cross (default zigzag), pairing?: chain | tree | all (default tree), max_distance?: mm, 1 to 100 (default 10; farther pairs are not braced), angle?: degrees from horizontal, 15 to 80 (default 45; measured in the plane of the two bodies, section by section between their knees, and made only steeper so whole bays fill each section), diameter_ratio?: 0.1 to 1 of the body's diameter (default 0.5), head_gap?: mm below the lower head, foot_gap?: mm above the base cones, each 0 to 100 (default 2 and 1); struts that would come within the body clearance of a model are left out and a pair with none left is skipped; every brace already joining two of the supports is replaced, so running it again with another pairing or setting rebuilds them, and braces to other supports stay. Returns the new braces' `ids`, how many pairs were `skipped` and how many braces were `replaced`",
+        ),
         CommandSpec::new("support.add_line", "Add Support Line", support::add_line).params(
             "from: integer, to: integer (another support) | { model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down) } (a new support there, made last), spacing: mm (the gaps are equal and at most this, at most 1000 tips), per_body?: integer (default 3); the points between the two tips are cast onto the surface along the normal blended from theirs, those landing nowhere skipped (and ending a run); ends sharing a body get every new tip as a branch of it, otherwise each run of `per_body` tips is a new support (its middle tip) and its branches. Returns the new `ids` and how many points were `skipped`",
         ),
         CommandSpec::new("support.configure", "Support Settings", support_settings::configure).params(
             "preset?: light | medium | heavy (default the active one), active?: light | medium | heavy, tip?: { contact_shape: cone | sphere, contact_diameter, penetration, length, upper_diameter mm, max_angle degrees }, body?: { shape: cylinder | prism, diameter mm, max_angle degrees, segments }, base?: { diameter, height } mm, raft?: { enabled, thickness mm, margin mm, chamfer_angle degrees }; each partial, the result validated as a whole",
         ),
-        CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer] (default the selection); a body goes with its last tip, and a deleted support's first remaining branch takes its body"),
+        CommandSpec::new("support.delete", "Delete Supports", support::delete).params("ids?: [integer], braces?: [integer] (with neither, the selected supports and braces); a body goes with its last tip, a deleted support's first remaining branch takes its body, and a brace goes with either of its supports"),
         CommandSpec::new("support.list", "List Supports", support::list),
         CommandSpec::new("support.move_tip", "Move Support Tip", support::move_tip).params(
-            "support: integer, model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down); placed corners and branches stay, the tip stretches to its head",
+            "support: integer, model: integer, point: [x, y, z] on its surface, normal?: [x, y, z] outward (default down); placed corners and branches stay, the tip stretches to its head; the support's braces are removed (not a branch's: its body stays)",
         ),
         CommandSpec::new("support.place_joints", "Move Support Joints", support::place_joints).params(
-            "joints: [{ support: integer, joint: integer, position: [x, y, z] mm, Z from 0 }] in the scene; a support whose route was worked out keeps that route as placed corners first",
+            "joints: [{ support: integer, joint: integer, position: [x, y, z] mm, Z from 0 }] in the scene; a support whose route was worked out keeps that route as placed corners first; a moved support's braces are removed",
         ),
         CommandSpec::new("support.reset_preset", "Restore Support Preset", support_settings::reset_preset)
             .params("preset?: light | medium | heavy (default the active one)"),
         CommandSpec::new("support.reset_route", "Reset Support Path", support::reset_route)
-            .params("ids?: [integer] (default the selected supports and those with selected parts)"),
+            .params("ids?: [integer] (default the selected supports and those with selected parts); a reset support's braces are removed"),
         CommandSpec::new("support.select", "Select Supports", support::select).params(
-            "ids?: [integer], parts?: [{ support: integer, joint: integer } | { support: integer, segment: integer }] (one or both; empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace), over both",
+            "ids?: [integer], parts?: [{ support: integer, joint: integer } | { support: integer, segment: integer }], braces?: [integer] (at least one; empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace), over all three",
         ),
         CommandSpec::new("support.settings", "List Support Settings", support_settings::settings),
         CommandSpec::new("view.fit", "Fit All", view::fit).params("aspect?: number (width / height)"),

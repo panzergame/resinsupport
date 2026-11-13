@@ -12,7 +12,9 @@ use crate::gpu::{Cap, Clip, ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
-use crate::{EditMode, ResinApp, box_select, gizmo, i18n, layer_preview, layer_view, navigation, objects, support_line, supports, transform};
+use crate::{
+    EditMode, ResinApp, box_select, gizmo, i18n, layer_preview, layer_view, navigation, objects, support_brace, support_line, supports, transform,
+};
 
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let rect = ui.available_rect_before_wrap();
@@ -64,6 +66,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
         EditMode::Slice => app.supports.clear(),
     }
     support_line::refresh(app);
+    support_brace::refresh(app);
     box_select::track(app, ui, &proj);
 
     let (frame, step) = frame(app, ui.ctx(), rect, tokens);
@@ -110,6 +113,8 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     overlay.lines.extend(branch);
     let line = support_line::guide(app).map(|(a, b, _)| Line { a, b, color: linear(tokens.support_preview) });
     overlay.lines.extend(line);
+    let struts: Vec<Line> = support_brace::preview_struts(app).map(|(a, b)| Line { a, b, color: linear(tokens.support_preview) }).collect();
+    overlay.lines.extend(struts.iter().copied());
     let preset = *app.session.support_settings().current();
     if app.routes.update(&app.session.scene, &preset) {
         ctx.request_repaint();
@@ -127,7 +132,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let mut bounds = solid;
     bounds.add(overlay.center + Vec3::new(-r, -r, 0.0));
     bounds.add(overlay.center + Vec3::new(r, r, overlay.step * 10.0));
-    for l in plate.iter().chain(&typed_axis).chain(&branch) {
+    for l in plate.iter().chain(&typed_axis).chain(&branch).chain(&struts) {
         bounds.add(l.a);
         bounds.add(l.b);
     }

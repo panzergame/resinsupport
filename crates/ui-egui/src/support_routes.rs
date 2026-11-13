@@ -2,13 +2,14 @@
 //! derived from the scene and the preset in use. They are worked out again when either changes,
 //! a bounded amount of search per frame: a gizmo drag changes the scene every frame, and
 //! re-routing hundreds of supports in one frame would stall the window. Routes not yet redone
-//! are drawn where they were, the oldest redone first.
+//! are drawn where they were, the oldest redone first. Braces' struts are worked out once every
+//! route is, within the same budget.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere};
-use resin_engine::{Owner, Primitive, Route, Scene, SupportPart, SupportPreset, route, support_primitives};
+use resin_engine::{Owner, Primitive, Route, Scene, SupportPart, SupportPreset, brace_solids, route, strut_primitives, support_primitives};
 
 /// How far round a joint a press picks it, as a multiple of the body's radius: the joint is drawn
 /// no wider than the body, and a press must not need to land on its sliver beside the columns.
@@ -102,7 +103,10 @@ pub enum Piece {
     Joint(u32),
 }
 
-type MeshKey = (u64, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, Option<u64>);
+type MeshKey = (u64, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
+
+/// A brace's struts.
+pub type Struts = Vec<(Vec3, Vec3)>;
 
 #[derive(Default)]
 pub struct RouteCache {
@@ -110,6 +114,9 @@ pub struct RouteCache {
     /// Each support's route, and the generation of the key it was made under.
     routes: HashMap<u64, (Route, u64)>,
     todo: VecDeque<u64>,
+    /// Each brace's struts, and the generation of the key they were made under.
+    braces: HashMap<u64, (Struts, u64)>,
+    brace_todo: VecDeque<u64>,
     generation: u64,
     /// Counts route changes: the solids are stale once it moves.
     changed: u64,
@@ -136,6 +143,12 @@ impl RouteCache {
                 supports.iter().map(|s| (s.corners.is_none() && s.parent.is_none(), self.routes.get(&s.id).map_or(0, |(_, g)| *g), s.id)).collect();
             ids.sort_unstable();
             self.todo = ids.into_iter().map(|(.., id)| id).collect();
+            let before = self.braces.len();
+            self.braces.retain(|id, _| scene.braces().iter().any(|b| b.id == *id));
+            if self.braces.len() != before {
+                self.changed += 1;
+            }
+            self.brace_todo = scene.braces().iter().map(|b| b.id).collect();
         }
         let mut budget = Budget::new();
         while budget.left() {
@@ -148,7 +161,26 @@ impl RouteCache {
             }
             self.routes.insert(id, (r, self.generation));
         }
-        !self.todo.is_empty()
+        // After every route: a brace runs between two of them.
+        while self.todo.is_empty() && budget.left() {
+            let Some(id) = self.brace_todo.pop_front() else { break };
+            let Some(b) = scene.braces().iter().find(|b| b.id == id) else { continue };
+            let (struts, tests) = match (self.route(b.a), self.route(b.b)) {
+                (Some(ra), Some(rb)) => brace_solids(scene, ra, rb, &b.params, preset),
+                _ => (Vec::new(), 0),
+            };
+            budget.spend(tests);
+            if self.braces.get(&id).is_none_or(|(old, _)| *old != struts) {
+                self.changed += 1;
+            }
+            self.braces.insert(id, (struts, self.generation));
+        }
+        !self.todo.is_empty() || !self.brace_todo.is_empty()
+    }
+
+    /// Brace `id`'s struts, as last worked out.
+    pub fn struts(&self, id: u64) -> Option<&Struts> {
+        self.braces.get(&id).map(|(s, _)| s)
     }
 
     /// How many supports have no path to the plate, as last routed: a branch has none when its
@@ -186,9 +218,10 @@ impl RouteCache {
     /// support `hidden`'s tip left out, rebuilt only when a route, the selection or `hidden`
     /// changed.
     pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: bool, hidden: Option<u64>) -> Arc<SupportMesh> {
-        let none = (BTreeSet::new(), BTreeSet::new());
-        let (selected, parts) = if selection { (&scene.selected, &scene.selected_parts) } else { (&none.0, &none.1) };
-        let key = (self.changed, selection, selected.clone(), parts.clone(), hidden);
+        let none = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let (selected, parts, braces) =
+            if selection { (&scene.selected, &scene.selected_parts, &scene.selected_braces) } else { (&none.0, &none.1, &none.2) };
+        let key = (self.changed, selection, selected.clone(), parts.clone(), braces.clone(), hidden);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
@@ -214,6 +247,16 @@ impl RouteCache {
             for (i, c) in joints(r) {
                 handles.push(Handle { center: c, radius, selected: look(SupportPart::Joint(i)) == Look::Selected });
             }
+        }
+        for b in scene.braces() {
+            let Some((struts, _)) = self.braces.get(&b.id) else { continue };
+            let look = if braces.contains(&b.id) { Look::Selected } else { Look::Plain };
+            let Some(g) = groups.get_mut(look.index()) else { continue };
+            strut_primitives(struts, b.params.diameter_ratio, preset, |prim| {
+                if let Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } = prim {
+                    frustum(a, b, ra, rb, sides, smooth, caps, &mut g.vertices);
+                }
+            });
         }
         let mut out = SupportMesh { handles, ..Default::default() };
         for (look, g) in Look::ALL.into_iter().zip(groups) {
@@ -264,6 +307,20 @@ impl RouteCache {
                 joints.chain(whole).chain(segments)
             })
             .min_by(|a, b| a.2.total_cmp(&b.2))
+    }
+
+    /// The nearest brace strut along the ray: its brace and the distance. Picked a body's width
+    /// at least, so a thin strut is no harder to hit than a column.
+    pub fn brace_hit(&self, scene: &Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3) -> Option<(u64, f64)> {
+        scene
+            .braces()
+            .iter()
+            .filter_map(|b| {
+                let r = (preset.body.diameter * b.params.diameter_ratio).max(preset.body.diameter) / 2.0;
+                let struts = &self.braces.get(&b.id)?.0;
+                struts.iter().filter_map(|(p, q)| ray_capsule(origin, dir, *p, *q, r)).min_by(f64::total_cmp).map(|t| (b.id, t))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     /// Each support in the scene with its route, as last worked out.
@@ -365,10 +422,26 @@ mod tests {
         let side = Vec3::new(head.x, head.y - 50.0, head.z / 2.0);
         assert_eq!(cache.piece_hit(&s.scene, &preset, side, Vec3::Y).map(|h| (h.0, h.1)), Some((3, Piece::Segment(0))));
         assert_eq!(cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y).map(|h| (h.0, h.1)), Some((3, Piece::Whole)));
-        // A deleted support's route goes.
-        s.execute("support.delete", &json!({ "ids": [2] })).unwrap();
+        // A brace between supports 4 and 5: its struts are drawn, picked as the brace and selected in their look.
+        let brace = s.execute("support.add_braces", &json!({ "ids": [4, 5], "angle": 15 })).unwrap()["ids"][0].as_u64().unwrap();
         while cache.update(&s.scene, &preset) {}
-        assert_eq!(cache.routes.len(), 4);
+        let (p, q) = cache.struts(brace).unwrap()[0];
+        let mid = (p + q) / 2.0;
+        assert_eq!(cache.brace_hit(&s.scene, &preset, mid - Vec3::Y * 50.0, Vec3::Y).map(|h| h.0), Some(brace));
+        s.execute("support.select", &json!({ "braces": [brace] })).unwrap();
+        let mesh = cache.mesh(&s.scene, &preset, true, None);
+        let mut struts = Vec::new();
+        strut_primitives(cache.struts(brace).unwrap(), 0.5, &preset, |prim| {
+            if let Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } = prim {
+                frustum(a, b, ra, rb, sides, smooth, caps, &mut struts);
+            }
+        });
+        assert_eq!(mesh.ranges[1].len(), struts.len(), "the brace alone is selected");
+        // A deleted support's route goes, and its brace with it.
+        s.execute("support.delete", &json!({ "ids": [2, 4] })).unwrap();
+        while cache.update(&s.scene, &preset) {}
+        assert_eq!(cache.routes.len(), 3);
+        assert!(cache.struts(brace).is_none());
         std::fs::remove_file(path).ok();
     }
 }
