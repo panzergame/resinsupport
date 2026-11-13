@@ -48,6 +48,7 @@ enum Cmd {
     Perspective,
     SliceNow,
     CancelSlice,
+    ExportCtb,
     Preview3d,
     PreviewLayer,
 }
@@ -78,6 +79,7 @@ impl Cmd {
             Cmd::Perspective => "ribbon.perspective",
             Cmd::SliceNow => "ribbon.slice_now",
             Cmd::CancelSlice => "ribbon.cancel_slice",
+            Cmd::ExportCtb => "ribbon.export_ctb",
             Cmd::Preview3d => "ribbon.preview_3d",
             Cmd::PreviewLayer => "ribbon.preview_layer",
         }
@@ -96,6 +98,7 @@ impl Cmd {
             Cmd::Perspective => "perspective",
             Cmd::SliceNow => "play",
             Cmd::CancelSlice => "stop",
+            Cmd::ExportCtb => "export",
             Cmd::Preview3d => "box",
             Cmd::PreviewLayer => "section",
         }
@@ -124,6 +127,10 @@ impl Cmd {
             Cmd::Perspective => state(Some("P"), None, app.session.camera.fov > 0.0),
             Cmd::SliceNow => state(None, None, false),
             Cmd::CancelSlice => state(None, (!app.slicer.is_running()).then_some("reason.not_slicing"), false),
+            #[cfg(not(target_arch = "wasm32"))]
+            Cmd::ExportCtb => state(Some("Ctrl+E"), need_models.then_some("reason.import_first"), false),
+            #[cfg(target_arch = "wasm32")]
+            Cmd::ExportCtb => state(None, Some("reason.export_desktop"), false),
             Cmd::Preview3d => state(None, None, !layer_preview::active(app) || !app.preview.flat),
             Cmd::PreviewLayer => {
                 let active = layer_preview::active(app);
@@ -155,6 +162,10 @@ impl Cmd {
             Cmd::Perspective => app.toggle_projection(),
             Cmd::SliceNow => app.slice_now(),
             Cmd::CancelSlice => app.cancel_slice(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Cmd::ExportCtb => app.export_dialog(),
+            #[cfg(target_arch = "wasm32")]
+            Cmd::ExportCtb => {}
             Cmd::Preview3d => app.preview.flat = false,
             Cmd::PreviewLayer => app.preview.flat = true,
         }
@@ -179,7 +190,7 @@ fn groups(mode: EditMode) -> &'static [Group] {
         ],
         EditMode::Support => &[Group { name: "group.supports", cmds: &[Cmd::PlaceTips, Cmd::DeleteTips], views: false }, VIEW],
         EditMode::Slice => &[
-            Group { name: "group.slice", cmds: &[Cmd::SliceNow, Cmd::CancelSlice], views: false },
+            Group { name: "group.slice", cmds: &[Cmd::SliceNow, Cmd::CancelSlice, Cmd::ExportCtb], views: false },
             Group { name: "group.preview", cmds: &[Cmd::Preview3d, Cmd::PreviewLayer], views: false },
             VIEW,
         ],
@@ -298,6 +309,10 @@ fn file_menu(app: &mut ResinApp, ui: &mut Ui) {
         }
         if ui.add(egui::Button::new(i18n::tr("menu.save_as")).shortcut_text(ui.ctx().format_shortcut(&crate::SAVE_AS))).clicked() {
             app.save_project(true);
+        }
+        let export = egui::Button::new(i18n::tr("menu.export_ctb")).shortcut_text(ui.ctx().format_shortcut(&crate::EXPORT_CTB));
+        if ui.add_enabled(!app.session.scene.models().is_empty(), export).clicked() {
+            app.export_dialog();
         }
         ui.separator();
         if ui.add(egui::Button::new(i18n::tr("menu.import")).shortcut_text(ui.ctx().format_shortcut(&crate::IMPORT))).clicked() {

@@ -21,7 +21,8 @@ description: "Use when touching model import (STL today), project files (.rsup),
 
 ## Printer formats
 - From public documentation or a GPLv3-compatible open-source implementation, never from a proprietary slicer's code or output (`skills/resinsupport-ground-rules/SKILL.md`). Name the document or source file you followed in the format file's header.
-- The first export will be layer images in a zip (`ROADMAP.md`).
+- Printer formats are written from a `SlicedJob` to bytes, never to a path: the caller writes them through `io::write_atomic`. Each has a bounded reader beside its writer, which its round-trip and hostile-input tests use (`crates/io/src/ctb.rs`).
+- Values that change from run to run (a time stamp, a random key) are parameters, so tests see the same bytes every time.
 
 ## The browser
 A web build imports from bytes, not a path; keep format code free of `std::fs` so it can (`skills/resinsupport-performance/SKILL.md`).

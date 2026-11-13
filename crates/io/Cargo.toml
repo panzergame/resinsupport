@@ -1,6 +1,6 @@
 [package]
 name = "resin-io"
-description = "Model file import (STL) and project files"
+description = "Model file import (STL), project files and printer files (CTB)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 resin-geom = { workspace = true }
+resin-slice = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

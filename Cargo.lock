@@ -2725,6 +2725,7 @@ name = "resin-io"
 version = "0.1.0"
 dependencies = [
  "resin-geom",
+ "resin-slice",
  "serde",
  "serde_json",
  "sha2",

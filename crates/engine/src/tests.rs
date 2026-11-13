@@ -518,6 +518,8 @@ fn hostile_params_never_panic() {
         json!({ "layers": { "bottom_count": 200, "transition_count": 200 }, "printer": { "build_height": 1 }, "estimates": { "bottle_cost": -0.0 } }),
         json!({ "slicing": { "anti_aliasing": 3 }, "estimates": { "resin_density": 1e308, "bottle_volume": "1" }, "printer": { "name": "\u{0}" } }),
         json!({ "printer": { "name": "x".repeat(10_000), "display_x": 1, "resolution_x": 32768 }, "from_the_future": {} }),
+        json!({ "path": "/", "encryption_key": -1 }),
+        json!({ "path": "plate.CTB.stl", "encryption_key": u64::MAX }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -943,6 +945,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "edit.copy" => Some(json!({ "ids": [b] })),
         "edit.paste" => Some(json!({})),
         "edit.redo" | "edit.undo" => None,
+        "file.export_ctb" => Some(json!({ "path": f.project.with_file_name("plate.ctb"), "encryption_key": 0 })),
         "file.import_stl" => Some(json!({ "path": f.path, "fit": false, "arrange": true })),
         "file.open" => None,
         "file.save" => Some(json!({ "path": f.project.with_file_name("saved.rsup") })),
@@ -1574,6 +1577,38 @@ fn supports_reach_the_plate_in_the_slice() {
     assert!(!s.job_is_current(), "a scene change makes the job stale");
     let off = s.execute("print.slice", &json!({})).unwrap();
     assert!(off["clipped"].as_u64().unwrap() >= 1);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn exporting_writes_the_job_as_ctb() {
+    let dir = temp_dir("export_ctb");
+    let mut f = fixture(&dir);
+    let s = &mut f.session;
+    let out = dir.join("plate.ctb");
+    assert!(matches!(s.execute("file.export_ctb", &json!({ "path": dir.join("plate.rsup") })), Err(EngineError::BadParams(_))));
+    assert!(matches!(s.execute("file.export_ctb", &json!({ "path": out, "encryption_key": 1u64 << 32 })), Err(EngineError::BadParams(_))));
+    assert!(!out.exists(), "bad parameters write nothing");
+    // Stale: sliced first.
+    assert!(!s.job_is_current());
+    let exported = s.execute("file.export_ctb", &json!({ "path": out })).unwrap();
+    assert!(s.job_is_current());
+    let sliced = s.execute("print.slice", &json!({})).unwrap();
+    assert_eq!(exported["layers"], sliced["layers"]);
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(exported["bytes"].as_u64(), Some(bytes.len() as u64));
+    let file = resin_io::read_ctb(&bytes).unwrap();
+    assert_eq!(Some(file.layers.len() as u64), sliced["layers"].as_u64());
+    assert_eq!(file.header.encryption_key, resin_io::ctb::DEFAULT_KEY);
+    assert_eq!(file.machine_name, s.print_config().printer.name);
+    assert!(file.large_preview.is_some() && file.small_preview.is_some());
+    // Current: written from the kept job, key as asked.
+    s.execute("file.export_ctb", &json!({ "path": out, "encryption_key": 0 })).unwrap();
+    assert_eq!(resin_io::read_ctb(&std::fs::read(&out).unwrap()).unwrap().header.encryption_key, 0);
+    // An empty scene has no layers to write.
+    s.execute("scene.clear", &json!({})).unwrap();
+    assert!(s.execute("file.export_ctb", &json!({ "path": dir.join("empty.ctb") })).is_err());
+    assert!(!dir.join("empty.ctb").exists());
     std::fs::remove_dir_all(dir).ok();
 }
 

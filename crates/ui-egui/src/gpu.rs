@@ -224,6 +224,102 @@ impl egui_wgpu::CallbackTrait for LayerViewCallback {
     }
 }
 
+/// Draw `frame` once off screen at `width × height` and read it back as RGB: the scene for a
+/// file's preview. None when the renderer is missing, the window's format is not 8-bit RGBA or
+/// BGRA, or the GPU fails; the caller then draws a plain preview.
+pub fn render_offscreen(rs: &egui_wgpu::RenderState, frame: &ViewFrame, width: u32, height: u32) -> Option<resin_engine::io::ctb::Preview> {
+    let format = rs.target_format;
+    let bgra = match format {
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => true,
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => false,
+        _ => return None,
+    };
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let (device, queue) = (&rs.device, &rs.queue);
+    let mut resources = rs.renderer.write();
+    let renderer = resources.callback_resources.get_mut::<Renderer>()?;
+    renderer.prepare(device, queue, frame);
+    let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+    let texture = |label: &str, format: wgpu::TextureFormat, samples: u32, usage: wgpu::TextureUsages| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: samples,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let samples = u32::from(MSAA_SAMPLES);
+    let depth_format = egui_wgpu::depth_format_from_bits(DEPTH_BITS, 0).unwrap_or(wgpu::TextureFormat::Depth24Plus);
+    let msaa = texture("preview_msaa", format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let resolved = texture("preview", format, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+    let depth = texture("preview_depth", depth_format, samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
+    let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+    let (msaa_view, resolved_view, depth_view) = (view(&msaa), view(&resolved), view(&depth));
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("preview") });
+    {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("preview"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &msaa_view,
+                depth_slice: None,
+                resolve_target: Some(&resolved_view),
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Discard },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        renderer.paint(&mut pass.forget_lifetime(), frame);
+    }
+    // Rows of a texture copy are padded to 256 bytes.
+    let row = width * 4;
+    let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("preview_readback"),
+        size: u64::from(padded) * u64::from(height),
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: &resolved, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(height) },
+        },
+        size,
+    );
+    drop(resources);
+    queue.submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+    rx.recv().ok()?.ok()?;
+    let data = slice.get_mapped_range().ok()?;
+    let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+    for y in 0..height as usize {
+        let line = data.get(y * padded as usize..y * padded as usize + row as usize)?;
+        for px in line.chunks_exact(4) {
+            let [a, b, c] = [px[0], px[1], px[2]];
+            rgb.extend_from_slice(&if bgra { [c, b, a] } else { [a, b, c] });
+        }
+    }
+    Some(resin_engine::io::ctb::Preview { width, height, rgb })
+}
+
 struct GpuMesh {
     chunks: Vec<(wgpu::Buffer, u32)>,
 }

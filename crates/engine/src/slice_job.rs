@@ -3,6 +3,7 @@
 //! matches them.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 
 use resin_geom::Vec3;
 use resin_slice::{SliceInput, SlicedJob, Solid, SolidKind, Stamp};
@@ -14,7 +15,8 @@ use crate::{PrintConfig, Scene, Session, SupportPreset, route};
 /// A sliced job and what was left out of it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Job {
-    pub sliced: SlicedJob,
+    /// Shared, so a file can be written from it on another thread without copying its layers.
+    pub sliced: Arc<SlicedJob>,
     /// Supports with no path to the plate: not printed.
     pub unreachable_supports: usize,
 }
@@ -98,7 +100,7 @@ impl Session {
         if sliced.stamp != self.slice_stamp() {
             return false;
         }
-        self.job = Some(Job { sliced, unreachable_supports });
+        self.job = Some(Job { sliced: Arc::new(sliced), unreachable_supports });
         true
     }
 

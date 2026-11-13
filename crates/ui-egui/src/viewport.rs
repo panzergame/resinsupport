@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::geom::Vec3;
-use resin_engine::render::{Line, Overlay};
+use resin_engine::render::{Line, Overlay, StandardView};
 
 use crate::gpu::{Cap, Clip, ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
@@ -160,6 +160,55 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         cap,
     };
     (frame, overlay.step)
+}
+
+/// The scene for a printer file's preview: seen from the iso view, fitted to the models and
+/// supports, every model in its plain colour, without the grid, the plate's outline, the
+/// selection or any handle.
+pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) -> ViewFrame {
+    let preset = *app.session.support_settings().current();
+    app.routes.update(&app.session.scene, &preset);
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset, false, None);
+    let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
+    let spheres: Vec<Sphere> =
+        support_mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect();
+    let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
+    for s in &spheres {
+        let r = f64::from(s.radius);
+        solid.add(s.center - Vec3::new(r, r, r));
+        solid.add(s.center + Vec3::new(r, r, r));
+    }
+    let mut cam = app.session.camera;
+    cam.set_view(StandardView::Iso);
+    cam.fit_aspect(&solid, aspect);
+    let (right, up, back) = cam.basis();
+    let light = (right * -0.45 + up * 0.65 + back * 0.6).normalized().unwrap_or(back);
+    let model = linear(tokens.model);
+    let models = app
+        .session
+        .scene
+        .models()
+        .iter()
+        .map(|m| ModelDraw { id: m.id, mesh: Arc::clone(&m.mesh), transform: m.transform, color: model, overhang: false })
+        .collect();
+    ViewFrame {
+        view_proj: cam.view_proj_bounds(aspect, &solid, &solid).to_f32(),
+        light,
+        back,
+        bg_top: linear(tokens.viewport_top),
+        bg_bottom: linear(tokens.viewport_bottom),
+        grid_center: solid.center(),
+        grid_radius: 0.0,
+        lines: Vec::new(),
+        spheres,
+        handles: Vec::new(),
+        models,
+        supports: Some(support_mesh),
+        support_colors: colors,
+        overhang: linear(tokens.overhang),
+        clip: None,
+        cap: None,
+    }
 }
 
 /// What is kept of the solids: in Slice edition with a job, up to the shown layer's top, and from

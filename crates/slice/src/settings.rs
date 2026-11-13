@@ -47,6 +47,23 @@ impl PrinterProfile {
         (self.display_x / f64::from(self.resolution_x), self.display_y / f64::from(self.resolution_y))
     }
 
+    /// From plate millimetres to pixel coordinates with `aa` sub-samples per pixel side, as
+    /// `(scale, offset)` per axis, `px = mm · scale + offset`: the plate's centre is the image's,
+    /// row 0 its +Y edge, then the mirrors.
+    pub fn image_map(&self, aa: u32) -> ([f64; 2], [f64; 2]) {
+        let size = [f64::from(self.resolution_x) * f64::from(aa), f64::from(self.resolution_y) * f64::from(aa)];
+        let (kx, ky) = (size[0] / self.display_x, size[1] / self.display_y);
+        let (mut sx, mut sy) = (kx, -ky);
+        let (mut ox, mut oy) = (self.display_x / 2.0 * kx, self.display_y / 2.0 * ky);
+        if self.mirror_x {
+            (sx, ox) = (-sx, size[0] - ox);
+        }
+        if self.mirror_y {
+            (sy, oy) = (-sy, size[1] - oy);
+        }
+        ([sx, sy], [ox, oy])
+    }
+
     fn number(&self, key: &str) -> Option<f64> {
         Some(match key {
             "resolution_x" => self.resolution_x.into(),

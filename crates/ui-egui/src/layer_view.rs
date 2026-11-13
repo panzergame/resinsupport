@@ -2,9 +2,12 @@
 //! plate's aspect ratio inside its outline. The mouse mapping's pan and zoom move it (it has no
 //! orbit), F fits it, and the status bar reads the pixel under the pointer.
 
+use std::sync::Arc;
+
 use egui::{Pos2, Rect, Stroke, pos2, vec2};
 
 use crate::gpu::{LayerFrame, LayerViewCallback};
+use crate::layer_image::LayerImage;
 use crate::layer_preview::{self, PixelProbe, View2d};
 use crate::theme::{Tokens, linear};
 use crate::{ResinApp, navigation};
@@ -44,19 +47,7 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, rect: Rect, resp: &egui::Resp
         ui.ctx().request_repaint();
     }
     let v = *v;
-
-    let frame = LayerFrame {
-        image: image.clone(),
-        view_proj: view_proj(&v, rect),
-        bg_top: linear(t.viewport_top),
-        bg_bottom: linear(t.viewport_bottom),
-        grid: linear(t.layer_grid),
-        dim,
-    };
-    let painter = ui.painter_at(rect);
-    painter.add(egui_wgpu::Callback::new_paint_callback(rect, LayerViewCallback(frame)));
-    let outline = Rect::from_two_pos(to_screen(&v, rect, [0.0, 0.0]), to_screen(&v, rect, [size.0, size.1]));
-    painter.rect_stroke(outline, 0.0, Stroke::new(1.0, t.grid_major), egui::StrokeKind::Outside);
+    paint(ui, rect, &image, &v, dim, t);
 
     if let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p) && resp.contains_pointer()) {
         let mm = to_image(&v, rect, p);
@@ -69,6 +60,29 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, rect: Rect, resp: &egui::Resp
             }
         }
     }
+}
+
+/// `image` framed by `v` in `rect`, inside the plate's outline.
+pub fn paint(ui: &egui::Ui, rect: Rect, image: &Arc<LayerImage>, v: &View2d, dim: bool, t: &Tokens) {
+    let size = (image.plate.display_x, image.plate.display_y);
+    let frame = LayerFrame {
+        image: Arc::clone(image),
+        view_proj: view_proj(v, rect),
+        bg_top: linear(t.viewport_top),
+        bg_bottom: linear(t.viewport_bottom),
+        grid: linear(t.layer_grid),
+        dim,
+    };
+    let painter = ui.painter_at(rect);
+    painter.add(egui_wgpu::Callback::new_paint_callback(rect, LayerViewCallback(frame)));
+    let outline = Rect::from_two_pos(to_screen(v, rect, [0.0, 0.0]), to_screen(v, rect, [size.0, size.1]));
+    painter.rect_stroke(outline, 0.0, Stroke::new(1.0, t.grid_major), egui::StrokeKind::Outside);
+}
+
+/// The whole of `image` fitted in `rect`.
+pub fn fitted(rect: Rect, image: &LayerImage) -> View2d {
+    let size = (image.plate.display_x, image.plate.display_y);
+    View2d { center: [size.0 / 2.0, size.1 / 2.0], scale: fit_scale(rect, size) }
 }
 
 /// Points per millimetre that fit a `size` mm image in `rect`.

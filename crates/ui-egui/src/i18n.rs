@@ -57,6 +57,7 @@ pub const COMPLETE: &[&str] = &["en"];
 pub const MESSAGE_NAMESPACES: &[&str] = &[
     "appbar",
     "cmd",
+    "export",
     "group",
     "key",
     "menu",

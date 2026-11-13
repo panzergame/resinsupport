@@ -3,6 +3,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod box_select;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod export;
 pub mod gizmo;
 pub mod gpu;
 pub mod i18n;
@@ -124,6 +126,11 @@ pub struct ResinApp {
     /// A project waiting for its confirmation (the scene has unsaved changes, and opening can't
     /// be undone), and the STLs to import into it once open.
     pub(crate) pending_open: Option<(std::path::PathBuf, Vec<std::path::PathBuf>)>,
+    /// The window's GPU, for drawing a file's previews off screen; none in tests.
+    pub(crate) render_state: Option<egui_wgpu::RenderState>,
+    /// A CTB export under way: the window shows nothing else until it is done.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) export: Option<export::Export>,
 }
 
 impl ResinApp {
@@ -136,6 +143,7 @@ impl ResinApp {
         let (prefs, problems) = cc.storage.map(prefs::load).unwrap_or_default();
         let mut app = ResinApp::build(prefs, &problems);
         app.max_texture = rs.device.limits().max_texture_dimension_2d;
+        app.render_state = Some(rs.clone());
         Ok(app)
     }
 
@@ -181,6 +189,9 @@ impl ResinApp {
             prefs_writer: writer,
             title: String::new(),
             pending_open: None,
+            render_state: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            export: None,
         };
         app.keep_settings();
         app
@@ -379,6 +390,21 @@ impl ResinApp {
 
     fn aspect(&self) -> f64 {
         self.viewport_rect.map_or(1.0, |r| f64::from(r.aspect_ratio()))
+    }
+
+    /// Ask where to export the scene as CTB, then export it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn export_dialog(&mut self) {
+        let Some(first) = self.session.scene.models().first() else { return };
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter(i18n::tr("menu.ctb_filter"), &["ctb", "CTB"])
+            .set_title(i18n::tr("menu.export_title"))
+            .set_file_name(format!("{}.{}", first.name, resin_engine::io::ctb::EXTENSION));
+        if let Some(dir) = self.session.file().and_then(|p| std::path::Path::new(p).parent()) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else { return };
+        export::start(self, export::with_ctb_extension(path));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -651,6 +677,9 @@ impl ResinApp {
             if ctx.input_mut(|i| i.consume_shortcut(&OPEN)) {
                 self.open_dialog();
             }
+            if ctx.input_mut(|i| i.consume_shortcut(&EXPORT_CTB)) {
+                self.export_dialog();
+            }
             // Ctrl+Shift+S first: Ctrl+S would match it too, egui ignoring an extra Shift.
             if ctx.input_mut(|i| i.consume_shortcut(&SAVE_AS)) {
                 self.save_project(true);
@@ -854,6 +883,8 @@ const SELECT_ALL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Mod
 const REDO_SHIFT_Z: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }, egui::Key::Z);
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) const EXPORT_CTB: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::E);
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const IMPORT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::I);
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const OPEN: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
@@ -894,6 +925,17 @@ impl eframe::App for ResinApp {
         // Browsers drop bytes without a path; those wait for an import-from-bytes command.
         let dropped: Vec<_> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.export.is_some() {
+            self.drive_slicer(&ctx);
+            export::drive(self, &ctx);
+            if self.export.is_some() {
+                // Files dropped meanwhile are imported once the export is done.
+                self.pending.extend(dropped);
+                export::screen(self, ui, &tokens);
+                return;
+            }
+        }
         self.import_all(dropped);
         // Fitting the view needs the window's shape, so these wait for a laid-out viewport.
         if self.viewport_rect.is_some() {

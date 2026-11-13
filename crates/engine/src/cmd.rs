@@ -52,6 +52,9 @@ pub fn commands() -> &'static [CommandSpec] {
         ),
         CommandSpec::new("edit.redo", "Redo", edit::redo).noundo(),
         CommandSpec::new("edit.undo", "Undo", edit::undo).noundo(),
+        CommandSpec::new("file.export_ctb", "Export CTB…", file::export_ctb).params(
+            "path: a .ctb file, encryption_key?: integer 0 to 4294967295 (default 0x67; 0 writes the layers unciphered); slices first, as `print.slice` does, when the kept job no longer matches the scene and settings, then writes the job as a Chitubox CTB v2 file with plain previews (the job seen from above). Returns path, bytes, layers",
+        ),
         CommandSpec::new("file.import_stl", "Import STL…", model::import_stl)
             .params("path: string, fit?: bool (default true), lifted?: bool (default false): its lowest point at the lift height, arrange?: bool (default false): arranged on the plate around the other models as `model.arrange` does, and the answer says `on_plate`"),
         CommandSpec::new("file.open", "Open Project", file::open).noundo().params(

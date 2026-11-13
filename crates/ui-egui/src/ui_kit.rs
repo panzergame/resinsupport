@@ -48,6 +48,9 @@ pub enum Buttons {
     CloseOnly,
     /// A confirmation: the action (primary, a catalog id, [`Action::Ok`]) and Cancel.
     Confirm { ok: &'static str },
+    /// A report: Close alone (primary, [`Action::Ok`]); Enter is Close too, Esc and the header's
+    /// close button Cancel.
+    Close,
 }
 
 pub struct Card<'a> {
@@ -105,7 +108,7 @@ impl Card<'_> {
             }
         });
         // Read after the body: an Enter that ends typing in a field has already set its value.
-        let enter_ok = matches!(self.buttons, Buttons::OkCancel { ok_enabled: true });
+        let enter_ok = matches!(self.buttons, Buttons::OkCancel { ok_enabled: true } | Buttons::Close);
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Enter) && enter_ok {
                 action = Action::Ok;
@@ -168,7 +171,7 @@ fn footer(ui: &mut Ui, t: &Tokens, buttons: Buttons) -> Action {
     let mut action = Action::None;
     let (row, ok_enabled): (Vec<(&'static str, Action, bool)>, bool) = match buttons {
         Buttons::OkCancel { ok_enabled } => (vec![("ui.ok", Action::Ok, true), ("ui.cancel", Action::Cancel, false)], ok_enabled),
-        Buttons::ResetClose => (vec![("ui.close", Action::Ok, true)], true),
+        Buttons::ResetClose | Buttons::Close => (vec![("ui.close", Action::Ok, true)], true),
         Buttons::Confirm { ok } => (vec![(ok, Action::Ok, true), ("ui.cancel", Action::Cancel, false)], true),
         Buttons::None | Buttons::CloseOnly => (Vec::new(), true),
     };

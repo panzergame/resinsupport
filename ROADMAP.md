@@ -47,7 +47,11 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - Print settings, later: two-stage lift and retract, waits before cure, after cure and after lift (CTB v4 and up); elephant-foot compensation and minimum width (PrusaSlicer `elefant_foot_compensation`, mslicer `elephant_foot_fixer.rs`); hollowing, Z bleed correction (PrusaSlicer `hollowing_*`, `zcorrection_layers`)
 
 ## 6. Export
-- Layer images in a zip first, then printer formats from public documentation or GPLv3-compatible implementations
+- [x] CTB v2 writer and bounded reader (`io::ctb`): the layer RLE, cipher and previews ported from mslicer, the layout from UVtools' field definitions; printer test files from hand-built jobs (`CTB_OUT_DIR=<dir> cargo test -p resin-io ctb_printer_files -- --ignored`)
+- [x] Cross-check: UVtools 7.1.2 (`UVtoolsCmd print-properties`, `extract`, `compare`) reads the three printer test files as CTB v2, with the header, settings, layers and previews as written
+- [x] Saturn 2 (firmware 4.5.0) accepts CTB v2, checked on the printer with the three test files: each is listed with its preview; `f-k67.ctb` shows the F at the plate's +X +Y corner, readable, so the default profile needs no mirror; `cube-k67.ctb` prints
+- [x] `file.export_ctb`; Export CTB… in the File menu and Slice edition's ribbon (Ctrl+E): previews drawn off screen by the renderer, the window showing only the layer being written until the file is done
+- Later: CTB v3, v4 and v5; `.goo`; layer images in a zip; per-layer settings; importing CTB files into the scene
 
 ## Languages
 - French, then others: one catalog each (`skills/resinsupport-ui-text/SKILL.md`)

@@ -43,6 +43,17 @@ impl Progress {
     pub fn get(&self) -> (usize, usize) {
         (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed))
     }
+
+    /// Start over with `total` steps to do.
+    pub fn begin(&self, total: usize) {
+        self.total.store(total, Ordering::Relaxed);
+        self.done.store(0, Ordering::Relaxed);
+    }
+
+    /// One more step done.
+    pub fn advance(&self) {
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Set from any thread to stop a slice early.
@@ -114,8 +125,7 @@ pub fn slice_with(
     let fit = (profile.build_height / h + 1e-6).floor();
     let count = (top.min(profile.build_height) / h - 0.5 - 1e-9).ceil().clamp(0.0, fit) as usize;
 
-    progress.total.store(count, Ordering::Relaxed);
-    progress.done.store(0, Ordering::Relaxed);
+    progress.begin(count);
     let slots: Vec<OnceLock<(Vec<crate::Run>, u64)>> = (0..count).map(|_| OnceLock::new()).collect();
     let layer = |i: usize| {
         if cancel.is_cancelled() {
@@ -130,7 +140,7 @@ pub fn slice_with(
         if let Some(slot) = slots.get(i) {
             let _ = slot.set(out);
         }
-        progress.done.fetch_add(1, Ordering::Relaxed);
+        progress.advance();
     };
     for_each_layer(count, &layer);
     if cancel.is_cancelled() {
@@ -172,15 +182,7 @@ struct Placement {
 impl Placement {
     fn new(p: &PrinterProfile, aa: u32) -> Placement {
         let size = (f64::from(p.resolution_x) * f64::from(aa), f64::from(p.resolution_y) * f64::from(aa));
-        let (kx, ky) = (size.0 / p.display_x, size.1 / p.display_y);
-        let (mut sx, mut sy) = (kx, -ky);
-        let (mut ox, mut oy) = (p.display_x / 2.0 * kx, p.display_y / 2.0 * ky);
-        if p.mirror_x {
-            (sx, ox) = (-sx, size.0 - ox);
-        }
-        if p.mirror_y {
-            (sy, oy) = (-sy, size.1 - oy);
-        }
+        let ([sx, sy], [ox, oy]) = p.image_map(aa);
         Placement { scale: (sx, sy), offset: (ox, oy), size, handedness: (sx * sy).signum() }
     }
 
