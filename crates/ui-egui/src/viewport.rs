@@ -17,8 +17,8 @@ use crate::{
 };
 
 /// The see-through lens round the pointer while X is held: its radius, in tip contact radii at
-/// the depth under the pointer, and how opaque the supports are at its centre (they fade back to
-/// opaque at its edge).
+/// the depth under the pointer, and how opaque the supports are over its inner half (they fade
+/// back to opaque at its edge).
 const LENS_TIPS: f64 = 20.0;
 const LENS_ALPHA: f32 = 0.0;
 

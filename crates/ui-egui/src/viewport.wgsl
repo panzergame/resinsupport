@@ -35,10 +35,11 @@ fn in_lens(pos: vec4<f32>) -> bool {
     return frame.lens.z > 0.0 && distance(pos.xy, frame.lens.xy) < frame.lens.z;
 }
 
-// How opaque the supports are at `pos` inside the lens: `frame.lens.w` at the centre, rising with
-// the square of the distance to fully opaque at the edge, so the lens has no seam.
+// How opaque the supports are at `pos` inside the lens: `frame.lens.w` over its inner half, then
+// rising with the square of the distance past it to fully opaque at the edge, so the lens has no
+// seam.
 fn lens_alpha(pos: vec4<f32>) -> f32 {
-    let t = distance(pos.xy, frame.lens.xy) / frame.lens.z;
+    let t = max(2.0 * distance(pos.xy, frame.lens.xy) / frame.lens.z - 1.0, 0.0);
     return mix(frame.lens.w, 1.0, t * t);
 }
 
