@@ -279,6 +279,28 @@ pub(crate) fn picking_press(app: &ResinApp, ui: &egui::Ui, resp: &egui::Response
     (!navigates).then_some((at, mods))
 }
 
+/// The view's angle below the plate's plane where the supports' bodies start to fade, and how
+/// opaque they must be to be picked.
+const BODY_FADE_START: f64 = std::f64::consts::FRAC_PI_6;
+const BODY_PICK_ALPHA: f32 = 0.5;
+
+/// How opaque the supports' bodies, bases and braces are in Support edition: opaque down to
+/// `BODY_FADE_START` below the plate, then fading with the square of the angle left to straight
+/// up, where they are gone. They stand between a view from below and the surface tips go on.
+pub(crate) fn body_alpha(app: &ResinApp) -> f32 {
+    if app.mode != crate::EditMode::Support || !app.prefs.fade_bodies_from_below {
+        return 1.0;
+    }
+    body_alpha_at(app.session.camera.back().z)
+}
+
+/// `body_alpha` for an eye in unit direction `back` from the target, by its Z.
+fn body_alpha_at(back_z: f64) -> f32 {
+    let below = (-back_z).clamp(-1.0, 1.0).asin();
+    let t = ((below - BODY_FADE_START) / (std::f64::consts::FRAC_PI_2 - BODY_FADE_START)).clamp(0.0, 1.0);
+    ((1.0 - t) * (1.0 - t)) as f32
+}
+
 /// The radius a tip is picked in: its widest part.
 pub(crate) fn tip_radius(app: &ResinApp) -> f64 {
     let tip = app.session.support_settings().current().tip;
@@ -324,12 +346,14 @@ fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
     }
     let radius = tip_radius(app);
     let tip = scene.support_hit(o, d, radius).map(|(id, t)| (Hover::Support(id), t));
-    let piece = app.routes.piece_hit(scene, preset, o, d).map(|(id, piece, t)| match piece {
+    // Bodies faded this far take no pick: a press goes through them to the surface.
+    let bodies = body_alpha(app) >= BODY_PICK_ALPHA;
+    let piece = app.routes.piece_hit(scene, preset, o, d, bodies).map(|(id, piece, t)| match piece {
         Piece::Whole => (Hover::Support(id), t),
         Piece::Segment(i) => (Hover::Part(id, SupportPart::Segment(i)), t),
         Piece::Joint(i) => (Hover::Part(id, SupportPart::Joint(i)), t),
     });
-    let brace = app.routes.brace_hit(scene, preset, o, d).map(|(id, t)| (Hover::Brace(id), t));
+    let brace = app.routes.brace_hit(scene, preset, o, d).filter(|_| bodies).map(|(id, t)| (Hover::Brace(id), t));
     let support = [tip, piece, brace].into_iter().flatten().min_by(|a, b| a.1.total_cmp(&b.1));
     match (surface, support) {
         (Some((_, h)), Some((hover, t))) if t <= h.t + radius => Some(hover),
@@ -524,6 +548,51 @@ mod tests {
         frame(&mut app, vec![x(false)], 0.4);
         assert!(!app.supports.see_through && app.supports.lens.is_none());
         assert!(matches!(app.supports.hover, Some(Hover::Support(_))), "{:?}", app.supports.hover);
+    }
+
+    /// Looking up at the supports, their bodies fade, from 30° below the plate to gone straight up,
+    /// and a press on one reaches the surface behind it; its tip is still picked. With the
+    /// preference off, the body is picked as before.
+    #[test]
+    fn bodies_seen_from_below_fade_and_take_no_pick() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-6;
+        assert!(near(body_alpha_at(1.0), 1.0) && near(body_alpha_at(0.0), 1.0), "from above and level");
+        assert!(near(body_alpha_at(-0.5), 1.0), "30° below");
+        assert!(near(body_alpha_at(-60f64.to_radians().sin()), 0.25), "halfway: a quarter");
+        assert!(near(body_alpha_at(-1.0), 0.0), "straight up");
+
+        let dir = std::env::temp_dir().join(format!("resin-ui-fade-bodies-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plate.stl");
+        // A floating square plate, facing down.
+        let text = "solid p\nfacet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 20 10\nendloop\nendfacet\n\
+                    facet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 20 20 10\nvertex 20 0 10\nendloop\nendfacet\nendsolid p\n";
+        std::fs::write(&path, text).unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let m = app.run("file.import_stl", json!({ "path": path, "fit": false })).unwrap()["id"].as_u64().unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        let id = app.run("support.add", json!({ "model": m, "point": [10, 10, 10], "normal": [0, 0, -1] })).unwrap()["id"].as_u64().unwrap();
+        let preset = *app.session.support_settings().current();
+        while app.routes.update(&app.session.scene, &preset) {}
+        app.mode = crate::EditMode::Support;
+        app.run("view.standard", json!({ "view": "bottom" })).unwrap();
+        app.run("view.fit", json!({ "aspect": 800.0 / 600.0 })).unwrap();
+        // 60° below the plate: the bodies a quarter opaque.
+        app.session.camera.pitch = -60f64.to_radians();
+        assert!(near(body_alpha(&app), 0.25));
+        let proj = Proj { cam: app.session.camera, rect: egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0)) };
+        let column = proj.to_screen(Vec3::new(10.0, 10.0, 7.0)).unwrap();
+        let tip = proj.to_screen(Vec3::new(10.0, 10.0, 10.0)).unwrap();
+
+        assert!(matches!(pick(&app, &proj, column), Some(Hover::Surface { .. })), "{:?}", pick(&app, &proj, column));
+        assert_eq!(pick(&app, &proj, tip), Some(Hover::Support(id)));
+        // Not in Object edition, nor with the preference off.
+        app.mode = crate::EditMode::Object;
+        assert_eq!(body_alpha(&app), 1.0);
+        app.mode = crate::EditMode::Support;
+        app.prefs.fade_bodies_from_below = false;
+        assert_eq!(body_alpha(&app), 1.0);
+        assert_eq!(pick(&app, &proj, column), Some(Hover::Part(id, SupportPart::Segment(0))));
     }
 
     /// A press on a selected support's contact handle hides its tip; the next press on the model

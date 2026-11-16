@@ -92,6 +92,9 @@ preference_settings! {
     /// Imported models are arranged on the plate around the others (off: they stay where the
     /// file puts them, as before arranging).
     arrange_on_import: bool = true, GENERAL => check("prefs.arrange_on_import", "prefs.arrange_on_import.help");
+    /// In Support edition, the supports' bodies fade as the view looks up at them (off: always
+    /// opaque, as before).
+    fade_bodies_from_below: bool = true, GENERAL => check("prefs.fade_bodies_from_below", "prefs.fade_bodies_from_below.help");
     /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
     /// page, like `support_settings`.
     lift_height: f64 = resin_engine::DEFAULT_LIFT_HEIGHT;

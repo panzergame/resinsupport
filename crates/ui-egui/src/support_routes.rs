@@ -88,7 +88,11 @@ pub struct SupportMesh {
     pub vertices: Vec<ShadedVertex>,
     /// Per [`Look`], the range of `vertices` drawn in it.
     pub ranges: [std::ops::Range<u32>; 3],
-    pub joints: Vec<(Vec3, f32, Look)>,
+    /// Per [`Look`], the start of its range holding the tips: the rest, bodies, bases and braces,
+    /// fades when the view looks up at them.
+    pub tips: [std::ops::Range<u32>; 3],
+    /// The round solids: centre, radius, look, and whether it is a tip's contact.
+    pub joints: Vec<(Vec3, f32, Look, bool)>,
     pub handles: Vec<Handle>,
     pub bounds: Aabb3,
 }
@@ -227,7 +231,7 @@ impl RouteCache {
         {
             return Arc::clone(mesh);
         }
-        let mut groups: [SupportMesh; 3] = Default::default();
+        let mut groups: [Group; 3] = Default::default();
         let mut handles = Vec::new();
         let grounded = self.grounded(scene);
         for s in scene.supports() {
@@ -254,16 +258,19 @@ impl RouteCache {
             let Some(g) = groups.get_mut(look.index()) else { continue };
             strut_primitives(struts, b.params.diameter_ratio, preset, |prim| {
                 if let Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } = prim {
-                    frustum(a, b, ra, rb, sides, smooth, caps, &mut g.vertices);
+                    frustum(a, b, ra, rb, sides, smooth, caps, &mut g.body);
                 }
             });
         }
         let mut out = SupportMesh { handles, ..Default::default() };
         for (look, g) in Look::ALL.into_iter().zip(groups) {
             let start = out.vertices.len() as u32;
-            out.vertices.extend(g.vertices);
-            if let Some(range) = out.ranges.get_mut(look.index()) {
+            out.vertices.extend(g.tip);
+            let tips_end = out.vertices.len() as u32;
+            out.vertices.extend(g.body);
+            if let (Some(range), Some(tips)) = (out.ranges.get_mut(look.index()), out.tips.get_mut(look.index())) {
                 *range = start..out.vertices.len() as u32;
+                *tips = start..tips_end;
             }
             out.joints.extend(g.joints);
         }
@@ -287,23 +294,24 @@ impl RouteCache {
     }
 
     /// The nearest support solid along the ray: its support, the piece and the distance. The
-    /// tip and the base stand for the whole support.
-    pub fn piece_hit(&self, scene: &Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3) -> Option<(u64, Piece, f64)> {
+    /// tip and the base stand for the whole support. Without `bodies`, the tips alone.
+    pub fn piece_hit(&self, scene: &Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3, bodies: bool) -> Option<(u64, Piece, f64)> {
         let body = preset.body.diameter / 2.0;
         let tip = preset.tip.upper_diameter.max(preset.tip.contact_diameter) / 2.0;
         let base = preset.base.diameter / 2.0;
         self.routed(scene)
             .flat_map(|(id, r)| {
-                let foot = r.body.last().filter(|_| r.foot).map(|&f| (f, f + Vec3::Z * preset.base.height));
+                let foot = r.body.last().filter(|_| r.foot && bodies).map(|&f| (f, f + Vec3::Z * preset.base.height));
                 let whole = std::iter::once((r.contact, r.head, tip)).chain(foot.map(|(a, b)| (a, b, base)));
                 let whole = whole.filter_map(move |(a, b, rad)| ray_capsule(origin, dir, a, b, rad).map(|t| (id, Piece::Whole, t)));
-                let segments = r.body.windows(2).zip(0u32..).filter_map(move |(w, i)| match w {
+                let segments = r.body.windows(2).zip(0u32..).filter(move |_| bodies).filter_map(move |(w, i)| match w {
                     [a, b] => ray_capsule(origin, dir, *a, *b, body).map(|t| (id, Piece::Segment(i), t)),
                     _ => None,
                 });
                 // First, so a joint wins a tie with the column ending in it.
-                let joints =
-                    joints(r).filter_map(move |(i, c)| ray_sphere(origin, dir, c, body * JOINT_PICK_SCALE).map(|t| (id, Piece::Joint(i), t)));
+                let joints = joints(r)
+                    .filter(move |_| bodies)
+                    .filter_map(move |(i, c)| ray_sphere(origin, dir, c, body * JOINT_PICK_SCALE).map(|t| (id, Piece::Joint(i), t)));
                 joints.chain(whole).chain(segments)
             })
             .min_by(|a, b| a.2.total_cmp(&b.2))
@@ -335,10 +343,18 @@ fn joints(r: &Route) -> impl Iterator<Item = (u32, Vec3)> + '_ {
     r.body.split_last().map(|(_, corners)| corners).unwrap_or_default().iter().zip(0u32..).map(|(&c, i)| (i, c))
 }
 
+/// One look's solids while the mesh is built.
+#[derive(Default)]
+struct Group {
+    tip: Vec<ShadedVertex>,
+    body: Vec<ShadedVertex>,
+    joints: Vec<(Vec3, f32, Look, bool)>,
+}
+
 /// One support's solids ([`support_primitives`]), each into the group of its look: the tip and
 /// its round contact in `tip` (none: left out), the base in `whole`, the body's columns and the joint at each bend
 /// in `look` of their part.
-fn solids(r: &Route, p: &SupportPreset, tip: Option<Look>, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [SupportMesh; 3]) {
+fn solids(r: &Route, p: &SupportPreset, tip: Option<Look>, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [Group; 3]) {
     support_primitives(r, p, |owner, prim| {
         let l = match owner {
             Owner::Tip => match tip {
@@ -349,9 +365,12 @@ fn solids(r: &Route, p: &SupportPreset, tip: Option<Look>, whole: Look, look: im
             Owner::Part(part) => look(part),
         };
         let Some(g) = groups.get_mut(l.index()) else { return };
+        let is_tip = owner == Owner::Tip;
         match prim {
-            Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } => frustum(a, b, ra, rb, sides, smooth, caps, &mut g.vertices),
-            Primitive::Sphere { center, radius } => g.joints.push((center, radius as f32, l)),
+            Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } => {
+                frustum(a, b, ra, rb, sides, smooth, caps, if is_tip { &mut g.tip } else { &mut g.body })
+            }
+            Primitive::Sphere { center, radius } => g.joints.push((center, radius as f32, l, is_tip)),
         }
     });
 }
@@ -402,6 +421,8 @@ mod tests {
             }
         });
         assert_eq!(mesh.ranges[1].len(), tip.len());
+        assert_eq!(mesh.tips[1], mesh.ranges[1], "the selected range holds a tip alone");
+        assert!(mesh.tips[0].len() < mesh.ranges[0].len() && mesh.tips[0].start == mesh.ranges[0].start, "tips first, then the bodies");
         assert!(mesh.handles.iter().all(|h| !h.selected));
         assert!(mesh.joints.iter().all(|j| j.2 != Look::Selected), "the head's joint stays plain");
         // A selected segment and joint: the segment's column moves into the selected range, the
@@ -418,10 +439,15 @@ mod tests {
         // it is.
         let other = mesh.handles[1].center;
         assert_eq!(cache.joint_hit(&s.scene, &preset, other + Vec3::Z * 50.0, -Vec3::Z), None);
-        assert_eq!(cache.piece_hit(&s.scene, &preset, other - Vec3::Y * 50.0, Vec3::Y).map(|h| (h.0, h.1)), Some((2, Piece::Joint(0))));
+        assert_eq!(cache.piece_hit(&s.scene, &preset, other - Vec3::Y * 50.0, Vec3::Y, true).map(|h| (h.0, h.1)), Some((2, Piece::Joint(0))));
         let side = Vec3::new(head.x, head.y - 50.0, head.z / 2.0);
-        assert_eq!(cache.piece_hit(&s.scene, &preset, side, Vec3::Y).map(|h| (h.0, h.1)), Some((3, Piece::Segment(0))));
-        assert_eq!(cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y).map(|h| (h.0, h.1)), Some((3, Piece::Whole)));
+        assert_eq!(cache.piece_hit(&s.scene, &preset, side, Vec3::Y, true).map(|h| (h.0, h.1)), Some((3, Piece::Segment(0))));
+        assert_eq!(cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y, true).map(|h| (h.0, h.1)), Some((3, Piece::Whole)));
+        // Without the bodies, neither the column nor the base is met; the tip still is.
+        assert_eq!(cache.piece_hit(&s.scene, &preset, side, Vec3::Y, false), None);
+        assert_eq!(cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y, false), None);
+        let contact = cache.route(3).unwrap().contact;
+        assert_eq!(cache.piece_hit(&s.scene, &preset, contact - Vec3::Z * 50.0, Vec3::Z, false).map(|h| (h.0, h.1)), Some((3, Piece::Whole)));
         // A brace between supports 4 and 5: its struts are drawn, picked as the brace and selected in their look.
         let brace = s.execute("support.add_braces", &json!({ "ids": [4, 5], "angle": 15 })).unwrap()["ids"][0].as_u64().unwrap();
         while cache.update(&s.scene, &preset) {}

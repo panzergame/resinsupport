@@ -164,7 +164,8 @@ pub struct ViewFrame {
     pub grid_radius: f64,
     pub lines: Vec<Line>,
     pub spheres: Vec<Sphere>,
-    /// The supports' round joints: cut by the lens, as the supports are.
+    /// The supports' round joints: cut by the lens, as the supports are, and as opaque as their
+    /// colour's alpha.
     pub joints: Vec<Sphere>,
     /// Joint handles: drawn after everything, faded where the scene hides them.
     pub handles: Vec<Sphere>,
@@ -172,6 +173,9 @@ pub struct ViewFrame {
     /// The supports' solids, already in the scene, and the colour of each [`Look`].
     pub supports: Option<Arc<SupportMesh>>,
     pub support_colors: [[f32; 4]; 3],
+    /// How opaque the supports' bodies, bases and braces are: below 1, drawn see-through after
+    /// everything opaque, as in the lens. Their round joints carry it in their colour's alpha.
+    pub body_alpha: f32,
     pub lens: Option<Lens>,
     /// The tint of the models' faces looking down, for those drawn with [`ModelDraw::overhang`].
     pub overhang: [f32; 4],
@@ -367,13 +371,13 @@ pub struct Renderer {
     sphere_mesh: (wgpu::Buffer, u32),
     sphere_buffer: Option<(wgpu::Buffer, u64)>,
     sphere_count: u32,
-    /// The supports and their joints: opaque outside the lens, then blended inside it. The blended
-    /// pass writes depth: near the edge, where they are almost opaque, a far support drawn after a
-    /// near one must not show over it.
+    /// The supports and their joints: what is opaque, then what the lens or a faded body makes
+    /// see-through, blended. The blended pass writes depth: where they are almost opaque, a far
+    /// support drawn after a near one must not show over it.
     support: wgpu::RenderPipeline,
-    support_lens: wgpu::RenderPipeline,
+    support_faded: wgpu::RenderPipeline,
     joint: wgpu::RenderPipeline,
-    joint_lens: wgpu::RenderPipeline,
+    joint_faded: wgpu::RenderPipeline,
     joint_buffer: Option<(wgpu::Buffer, u64)>,
     joint_count: u32,
     /// Handles where the scene hides them, then where it doesn't.
@@ -607,11 +611,11 @@ impl Renderer {
             wgpu::CompareFunction::Less,
             None,
         );
-        let support_lens = pipeline(
-            "viewport_support_lens",
+        let support_faded = pipeline(
+            "viewport_support_faded",
             &pipeline_layout,
             "mesh_vs",
-            "support_lens_fs",
+            "support_faded_fs",
             &model_layouts,
             wgpu::PrimitiveTopology::TriangleList,
             true,
@@ -629,11 +633,11 @@ impl Renderer {
             wgpu::CompareFunction::Less,
             None,
         );
-        let joint_lens = pipeline(
-            "viewport_joint_lens",
+        let joint_faded = pipeline(
+            "viewport_joint_faded",
             &pipeline_layout,
             "sphere_vs",
-            "joint_lens_fs",
+            "joint_faded_fs",
             &sphere_layouts,
             wgpu::PrimitiveTopology::TriangleList,
             true,
@@ -714,9 +718,9 @@ impl Renderer {
             sphere_buffer: None,
             sphere_count: 0,
             support,
-            support_lens,
+            support_faded,
             joint,
-            joint_lens,
+            joint_faded,
             joint_buffer: None,
             joint_count: 0,
             handle_hidden,
@@ -865,7 +869,9 @@ impl Renderer {
             self.meshes.entry(m.id).or_insert_with(|| upload_mesh(device, &m.mesh));
         }
         let mut instances: Vec<ModelInstance> = f.models.iter().map(ModelInstance::new).collect();
-        instances.extend(f.support_colors.map(|[r, g, b, _]| ModelInstance::placed(&Affine3::IDENTITY, [r, g, b, 0.0])));
+        // Per look, its tips then its bodies: the alpha is how opaque they are.
+        instances.extend(f.support_colors.map(|[r, g, b, _]| ModelInstance::placed(&Affine3::IDENTITY, [r, g, b, 1.0])));
+        instances.extend(f.support_colors.map(|[r, g, b, _]| ModelInstance::placed(&Affine3::IDENTITY, [r, g, b, f.body_alpha])));
         write_growing(device, queue, &mut self.model_instances, "viewport_model_instances", bytemuck::cast_slice(&instances));
 
         let fresh = match (&f.supports, &self.supports_uploaded) {
@@ -943,11 +949,10 @@ impl Renderer {
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..self.line_count, 0..1);
         }
-        // See-through after everything opaque, the grid too: its depth, written even where the
-        // supports are invisible, would otherwise cut the grid behind them.
-        if f.lens.is_some() {
-            self.draw_supports(pass, f, &self.support_lens);
-            self.draw_joints(pass, &self.joint_lens);
+        // See-through after everything opaque, the grid too, so what they stand in front of shows.
+        if f.lens.is_some() || f.body_alpha < 1.0 {
+            self.draw_supports(pass, f, &self.support_faded);
+            self.draw_joints(pass, &self.joint_faded);
         }
         if let Some((buffer, _)) = &self.handle_buffer
             && self.handle_count > 0
@@ -969,12 +974,17 @@ impl Renderer {
             return;
         };
         pass.set_pipeline(pipeline);
+        pass.set_vertex_buffer(0, buffer.slice(..));
         for look in Look::ALL {
-            let Some(range) = mesh.ranges.get(look.index()).filter(|r| !r.is_empty()) else { continue };
-            let at = (f.models.len() + look.index()) as u64 * INSTANCE_STRIDE;
-            pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
-            pass.set_vertex_buffer(0, buffer.slice(..));
-            pass.draw(range.clone(), 0..1);
+            let (Some(all), Some(tips)) = (mesh.ranges.get(look.index()), mesh.tips.get(look.index())) else { continue };
+            for (range, instance) in [(tips.clone(), look.index()), (tips.end..all.end, Look::ALL.len() + look.index())] {
+                if range.is_empty() {
+                    continue;
+                }
+                let at = (f.models.len() + instance) as u64 * INSTANCE_STRIDE;
+                pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
+                pass.draw(range, 0..1);
+            }
         }
     }
 

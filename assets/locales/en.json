@@ -139,6 +139,8 @@
   "prefs.double_click.fit": "Fit all",
   "prefs.double_click.home": "Home view",
   "prefs.double_click.off": "Nothing",
+  "prefs.fade_bodies_from_below": "Fade supports seen from below",
+  "prefs.fade_bodies_from_below.help": "In Support edition, the supports' bodies and bases fade as the view looks up at them, and a click goes through them to the surface; off, they stay opaque",
   "prefs.language": "Language",
   "prefs.language.system": "System ({language})",
   "prefs.lift_on_import": "Lift imported models",

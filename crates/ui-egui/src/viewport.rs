@@ -128,7 +128,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice, app.supports.moving);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, tokens);
-    let joints = joint_spheres(&support_mesh, &colors);
+    let joints = joint_spheres(&support_mesh, &colors, supports::body_alpha(app));
     let handles = joint_handles(app, &support_mesh, tokens);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
     for s in spheres.iter().chain(&joints).chain(&handles) {
@@ -168,6 +168,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         models: model_draws(app, tokens),
         supports: Some(support_mesh),
         support_colors: colors,
+        body_alpha: supports::body_alpha(app),
         lens: app.supports.lens.and_then(|p| {
             let ppp = ctx.pixels_per_point();
             Some(Lens { center: [p.x * ppp, p.y * ppp], radius: lens_radius(app, rect, p)? * ppp, alpha: LENS_ALPHA })
@@ -187,7 +188,7 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
     app.routes.update(&app.session.scene, &preset);
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, false, None);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
-    let joints = joint_spheres(&support_mesh, &colors);
+    let joints = joint_spheres(&support_mesh, &colors, 1.0);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
     for s in &joints {
         let r = f64::from(s.radius);
@@ -222,6 +223,7 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
         models,
         supports: Some(support_mesh),
         support_colors: colors,
+        body_alpha: 1.0,
         lens: None,
         overhang: linear(tokens.overhang),
         clip: None,
@@ -282,9 +284,15 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
         .collect()
 }
 
-/// The supports' round joints in their look's colour.
-fn joint_spheres(mesh: &SupportMesh, colors: &[[f32; 4]; 3]) -> Vec<Sphere> {
-    mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect()
+/// The supports' round joints in their look's colour, the bodies' as opaque as `body_alpha`.
+fn joint_spheres(mesh: &SupportMesh, colors: &[[f32; 4]; 3], body_alpha: f32) -> Vec<Sphere> {
+    mesh.joints
+        .iter()
+        .filter_map(|&(center, radius, look, tip)| {
+            let [r, g, b, _] = *colors.get(look.index())?;
+            Some(Sphere { center, radius, color: [r, g, b, if tip { 1.0 } else { body_alpha }] })
+        })
+        .collect()
 }
 
 /// The lens's radius in points: `LENS_TIPS` contact radii at the depth under `p`, so it covers as

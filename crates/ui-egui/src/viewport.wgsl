@@ -42,6 +42,17 @@ fn lens_alpha(pos: vec4<f32>) -> f32 {
     return mix(frame.lens.w, 1.0, t * t);
 }
 
+// How opaque a support's fragment is: its part's opacity `a` (a faded body), lowered in the lens.
+fn support_alpha(a: f32, pos: vec4<f32>) -> f32 {
+    if in_lens(pos) {
+        return min(a, lens_alpha(pos));
+    }
+    return a;
+}
+
+// Fainter see-through fragments are left out: unseen, they must not write depth either.
+const FADED_OUT: f32 = 0.02;
+
 fn decode_srgb(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
     let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
@@ -122,7 +133,8 @@ const OVERHANG_FULL: f32 = 0.95;
 // Faces this close to the plate rest on it and need no support, mm.
 const ON_PLATE: f32 = 0.05;
 
-fn mesh_shade(in: MeshOut, front: bool) -> vec3<f32> {
+// `tint`: how much faces looking down are tinted.
+fn mesh_shade(in: MeshOut, front: bool, tint: f32) -> vec3<f32> {
     var n = normalize(in.normal);
     // Faces wound the wrong way (an inside-out STL) show as a darker red-tinted shade.
     var base = in.color.rgb;
@@ -131,7 +143,7 @@ fn mesh_shade(in: MeshOut, front: bool) -> vec3<f32> {
         base = mix(base, vec3<f32>(0.55, 0.12, 0.12), 0.7);
     }
     let down = smoothstep(OVERHANG_START, OVERHANG_FULL, -n.z) * step(ON_PLATE, in.world_z);
-    base = mix(base, frame.overhang.rgb, 0.85 * down * in.color.a);
+    base = mix(base, frame.overhang.rgb, 0.85 * down * tint);
     let key = max(dot(n, frame.light.xyz), 0.0);
     let fill = max(dot(n, frame.back.xyz), 0.0);
     return encode(base * (0.18 + 0.62 * key + 0.25 * fill));
@@ -142,25 +154,27 @@ fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     if clipped(in.world_z) {
         discard;
     }
-    return vec4<f32>(mesh_shade(in, front), 1.0);
+    return vec4<f32>(mesh_shade(in, front, in.color.a), 1.0);
 }
 
-// Supports: a hole where the lens is, which `support_lens_fs` fills see-through.
+// Supports, whose instance alpha is how opaque they are: a hole where they are see-through,
+// which `support_faded_fs` fills.
 @fragment
 fn support_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if clipped(in.world_z) || in_lens(in.pos) {
+    if clipped(in.world_z) || support_alpha(in.color.a, in.pos) < 1.0 {
         discard;
     }
-    return vec4<f32>(mesh_shade(in, front), 1.0);
+    return vec4<f32>(mesh_shade(in, front, 0.0), 1.0);
 }
 
 // Only the near side, so a see-through support doesn't show its far side through itself.
 @fragment
-fn support_lens_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front || clipped(in.world_z) || !in_lens(in.pos) {
+fn support_faded_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let a = support_alpha(in.color.a, in.pos);
+    if !front || clipped(in.world_z) || a >= 1.0 || a < FADED_OUT {
         discard;
     }
-    return vec4<f32>(mesh_shade(in, front), lens_alpha(in.pos));
+    return vec4<f32>(mesh_shade(in, front, 0.0), a);
 }
 
 // ---- support tips: a unit sphere, instanced ----
@@ -206,21 +220,22 @@ fn sphere_fs(in: SphereOut) -> @location(0) vec4<f32> {
     return vec4<f32>(sphere_shade(in), 1.0);
 }
 
-// The supports' joints, cut by the lens as the supports are.
+// The supports' joints, see-through as the supports are; the instance alpha is how opaque.
 @fragment
 fn joint_fs(in: SphereOut) -> @location(0) vec4<f32> {
-    if clipped(in.world_z) || in_lens(in.pos) {
+    if clipped(in.world_z) || support_alpha(in.color.a, in.pos) < 1.0 {
         discard;
     }
     return vec4<f32>(sphere_shade(in), 1.0);
 }
 
 @fragment
-fn joint_lens_fs(in: SphereOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front || clipped(in.world_z) || !in_lens(in.pos) {
+fn joint_faded_fs(in: SphereOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let a = support_alpha(in.color.a, in.pos);
+    if !front || clipped(in.world_z) || a >= 1.0 || a < FADED_OUT {
         discard;
     }
-    return vec4<f32>(sphere_shade(in), lens_alpha(in.pos));
+    return vec4<f32>(sphere_shade(in), a);
 }
 
 // Joint handles, drawn over everything: only the near side, so a handle without depth writes
