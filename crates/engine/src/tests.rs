@@ -1079,6 +1079,34 @@ fn copied_models_paste_with_their_supports_beside_the_others() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+/// Regression: a model raised by hand (so not lifted) pasted at Z = 0, burying its supports.
+/// A copy keeps the height it was copied at, with or without supports.
+#[test]
+fn a_raised_model_pastes_at_its_height() {
+    let dir = temp_dir("paste-raised");
+    let path = write_cube_stl(&dir);
+    let mut s = Session::new();
+    let bare = s.execute("file.import_stl", &json!({ "path": path, "arrange": true })).unwrap()["id"].as_u64().unwrap();
+    let held = s.execute("file.import_stl", &json!({ "path": path, "arrange": true })).unwrap()["id"].as_u64().unwrap();
+    s.execute("model.move", &json!({ "ids": [bare, held], "by": [0, 0, 7] })).unwrap();
+    let tip_at = s.scene.model(held).unwrap().bounds.min;
+    s.execute("support.add", &json!({ "model": held, "point": [tip_at.x + 5.0, tip_at.y + 5.0, tip_at.z] })).unwrap();
+
+    for id in [bare, held] {
+        assert!(!s.scene.model(id).unwrap().lifted);
+        s.execute("edit.copy", &json!({ "ids": [id] })).unwrap();
+        let copy = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+        let (m, orig) = (s.scene.model(copy).unwrap(), s.scene.model(id).unwrap());
+        assert!((m.bounds.min.z - orig.bounds.min.z).abs() < 1e-9, "kept its height: {:?} {:?}", m.bounds, orig.bounds);
+        assert!(!m.lifted);
+        for (t, o) in s.scene.supports().iter().filter(|t| t.model == copy).zip(s.scene.supports().iter().filter(|t| t.model == id)) {
+            assert!((t.tip.z - o.tip.z).abs() < 1e-9, "the tip kept its height: {:?} {:?}", t.tip, o.tip);
+        }
+    }
+    assert_eq!(s.scene.supports().iter().filter(|t| t.model != held).count(), 1, "the support came with the copy");
+    std::fs::remove_dir_all(dir).ok();
+}
+
 #[test]
 fn undo_and_redo_walk_the_history() {
     let dir = temp_dir("history");

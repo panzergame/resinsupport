@@ -39,7 +39,7 @@ pub(crate) fn import_stl(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let mut answer = json!({ "id": id, "name": name, "triangles": triangles, "dropped": read.dropped });
         if arrange {
-            let beside = s.scene.arrange(&[id], plate(s))?;
+            let beside = s.scene.arrange(&[id], plate(s), true)?;
             answer["on_plate"] = json!(beside.is_empty());
         }
         if fit {
@@ -62,7 +62,7 @@ pub(crate) fn arrange(s: &mut Session, p: &Value) -> Result<Value> {
         None => s.scene.models().iter().map(|m| m.id).collect(),
     };
     check_known(s, &ids)?;
-    let beside = s.scene.arrange(&ids, plate(s))?;
+    let beside = s.scene.arrange(&ids, plate(s), true)?;
     let mut answer = placed(s, &ids);
     answer["beside"] = json!(beside);
     Ok(answer)

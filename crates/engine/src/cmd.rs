@@ -48,7 +48,7 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("edit.copy", "Copy", edit::copy)
             .params("ids?: [integer] (default the selected models); they and their supports replace what was copied before"),
         CommandSpec::new("edit.paste", "Paste", edit::paste).params(
-            "none; adds copies of what was copied, with their supports, arranged on the plate around the other models as `model.arrange` does, and selects them; returns their `ids` and those that went `beside` the plate",
+            "none; adds copies of what was copied, with their supports, arranged on the plate around the other models as `model.arrange` does but at the height they were copied at, and selects them; returns their `ids` and those that went `beside` the plate",
         ),
         CommandSpec::new("edit.redo", "Redo", edit::redo).noundo(),
         CommandSpec::new("edit.undo", "Undo", edit::undo).noundo(),

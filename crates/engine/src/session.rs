@@ -280,11 +280,11 @@ impl Scene {
     }
     /// Arrange models `ids` on a `plate` (width, depth) centred on the origin, around the other
     /// models, which stay put ([`resin_geom::arrange`]): moved across, turned a quarter about Z
-    /// to lay their long side along the plate's or when only that fits, and put down on the
-    /// plate (a lifted one at the lift height). A model with supports is not turned: placed
-    /// corners would stay behind. Returns the ids that found no room on the plate and went beside
-    /// it. All or nothing, as [`Scene::place`].
-    pub(crate) fn arrange(&mut self, ids: &[u64], plate: (f64, f64)) -> Result<Vec<u64>> {
+    /// to lay their long side along the plate's or when only that fits, and, if `put_down`, put
+    /// down on the plate (a lifted one at the lift height); otherwise their Z stays. A model with
+    /// supports is not turned: placed corners would stay behind. Returns the ids that found no
+    /// room on the plate and went beside it. All or nothing, as [`Scene::place`].
+    pub(crate) fn arrange(&mut self, ids: &[u64], plate: (f64, f64), put_down: bool) -> Result<Vec<u64>> {
         let footprint = |b: &Aabb3| Rect { min: [b.min.x, b.min.y], max: [b.max.x, b.max.y] };
         let fixed: Vec<Rect> = self.models.iter().filter(|m| !ids.contains(&m.id)).map(|m| footprint(&m.bounds)).collect();
         let moving: Vec<&Model> = self.models.iter().filter(|m| ids.contains(&m.id)).collect();
@@ -316,7 +316,7 @@ impl Scene {
             let (c, at) = (b.centre(), spot.centre);
             // Rounding noise is no move: arranging an arranged scene must not make an undo step.
             let snap = |d: f64| if d.abs() < 1e-9 { 0.0 } else { d };
-            p.position += Vec3::new(snap(at[0] - c[0]), snap(at[1] - c[1]), if m.lifted { 0.0 } else { snap(-m.bounds.min.z) });
+            p.position += Vec3::new(snap(at[0] - c[0]), snap(at[1] - c[1]), if m.lifted || !put_down { 0.0 } else { snap(-m.bounds.min.z) });
             placements.push((m.id, p, None));
             if !spot.on_plate {
                 beside.push(m.id);

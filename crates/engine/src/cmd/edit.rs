@@ -46,13 +46,15 @@ pub(crate) fn copy(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "copied": copied }))
 }
 
-/// Add what was copied, arranged on the plate around the other models, and select it.
+/// Add what was copied, arranged on the plate around the other models at the height it was
+/// copied at, and select it.
 pub(crate) fn paste(s: &mut Session, _: &Value) -> Result<Value> {
     let clip = s.clipboard.clone().ok_or_else(|| EngineError::Failed("nothing to paste".into()))?;
     let ids = s.scene.append(clip.project)?;
     let lifted: Vec<_> = ids.iter().zip(&clip.lifted).filter_map(|(&id, &l)| s.scene.model(id).map(|m| (id, m.placement, Some(l)))).collect();
     s.scene.place(&lifted)?;
-    let beside = s.scene.arrange(&ids, plate(s))?;
+    // A copy is put beside, not down: its supports were made for the height it was copied at.
+    let beside = s.scene.arrange(&ids, plate(s), false)?;
     s.scene.selected_models = ids.iter().copied().collect();
     Ok(json!({ "ids": ids, "beside": beside }))
 }
