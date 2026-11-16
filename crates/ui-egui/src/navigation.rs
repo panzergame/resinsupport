@@ -173,7 +173,7 @@ pub fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Vec3> {
 }
 
 /// Toward the model's surface under the cursor, else the target's depth.
-fn zoom_point(app: &ResinApp, rect: Rect, p: Pos2) -> Vec3 {
+pub(crate) fn zoom_point(app: &ResinApp, rect: Rect, p: Pos2) -> Vec3 {
     let proj = Proj { cam: app.session.camera, rect };
     if let Some(q) = pick(app, &proj, p) {
         return q;

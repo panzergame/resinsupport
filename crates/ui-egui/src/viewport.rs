@@ -8,13 +8,19 @@ use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::geom::Vec3;
 use resin_engine::render::{Line, Overlay, StandardView};
 
-use crate::gpu::{Cap, Clip, ModelDraw, Sphere, ViewFrame, ViewportCallback};
+use crate::gpu::{Cap, Clip, Lens, ModelDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::SupportMesh;
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
 use crate::{
     EditMode, ResinApp, box_select, gizmo, i18n, layer_preview, layer_view, navigation, objects, support_brace, support_line, supports, transform,
 };
+
+/// The see-through lens round the pointer while X is held: its radius, in tip contact radii at
+/// the depth under the pointer, and how opaque the supports are at its centre (they fade back to
+/// opaque at its edge).
+const LENS_TIPS: f64 = 20.0;
+const LENS_ALPHA: f32 = 0.0;
 
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let rect = ui.available_rect_before_wrap();
@@ -121,10 +127,11 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     }
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice, app.supports.moving);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
-    let spheres = support_spheres(app, &support_mesh, &colors, tokens);
+    let spheres = support_spheres(app, tokens);
+    let joints = joint_spheres(&support_mesh, &colors);
     let handles = joint_handles(app, &support_mesh, tokens);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
-    for s in spheres.iter().chain(&handles) {
+    for s in spheres.iter().chain(&joints).chain(&handles) {
         let r = f64::from(s.radius);
         solid.add(s.center - Vec3::new(r, r, r));
         solid.add(s.center + Vec3::new(r, r, r));
@@ -156,10 +163,15 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         grid_radius: overlay.radius,
         lines: overlay.lines,
         spheres,
+        joints,
         handles,
         models: model_draws(app, tokens),
         supports: Some(support_mesh),
         support_colors: colors,
+        lens: app.supports.lens.and_then(|p| {
+            let ppp = ctx.pixels_per_point();
+            Some(Lens { center: [p.x * ppp, p.y * ppp], radius: lens_radius(app, rect, p)? * ppp, alpha: LENS_ALPHA })
+        }),
         overhang: linear(tokens.overhang),
         clip,
         cap,
@@ -175,10 +187,9 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
     app.routes.update(&app.session.scene, &preset);
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, false, None);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
-    let spheres: Vec<Sphere> =
-        support_mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect();
+    let joints = joint_spheres(&support_mesh, &colors);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
-    for s in &spheres {
+    for s in &joints {
         let r = f64::from(s.radius);
         solid.add(s.center - Vec3::new(r, r, r));
         solid.add(s.center + Vec3::new(r, r, r));
@@ -205,11 +216,13 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
         grid_center: solid.center(),
         grid_radius: 0.0,
         lines: Vec::new(),
-        spheres,
+        spheres: Vec::new(),
+        joints,
         handles: Vec::new(),
         models,
         supports: Some(support_mesh),
         support_colors: colors,
+        lens: None,
         overhang: linear(tokens.overhang),
         clip: None,
         cap: None,
@@ -269,11 +282,27 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
         .collect()
 }
 
-/// The supports' round joints in their look's colour, and where a tip would go under the
-/// pointer.
-fn support_spheres(app: &ResinApp, mesh: &SupportMesh, colors: &[[f32; 4]; 3], tokens: &Tokens) -> Vec<Sphere> {
-    let mut out: Vec<Sphere> =
-        mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect();
+/// The supports' round joints in their look's colour.
+fn joint_spheres(mesh: &SupportMesh, colors: &[[f32; 4]; 3]) -> Vec<Sphere> {
+    mesh.joints.iter().filter_map(|&(center, radius, look)| Some(Sphere { center, radius, color: *colors.get(look.index())? })).collect()
+}
+
+/// The lens's radius in points: `LENS_TIPS` contact radii at the depth under `p`, so it covers as
+/// much of the model at any zoom. Capped at the view's size, which it covers whole by then.
+fn lens_radius(app: &ResinApp, rect: Rect, p: Pos2) -> Option<f32> {
+    let proj = navigation::Proj { cam: app.session.camera, rect };
+    let at = match app.supports.hover {
+        Some(Hover::Surface { point, .. }) => point,
+        _ => navigation::zoom_point(app, rect, p),
+    };
+    let world = LENS_TIPS * app.session.support_settings().current().tip.contact_diameter / 2.0;
+    let (a, b) = (proj.to_screen(at)?, proj.to_screen(at + app.session.camera.up_dir() * world)?);
+    Some(a.distance(b).min(rect.size().length()))
+}
+
+/// Where a tip would go under the pointer, and a tip line's points.
+fn support_spheres(app: &ResinApp, tokens: &Tokens) -> Vec<Sphere> {
+    let mut out = Vec::new();
     if let Some(Hover::Surface { point, .. }) = app.supports.hover {
         let radius = app.session.support_settings().current().tip.contact_diameter / 2.0;
         out.push(Sphere { center: point, radius: radius as f32, color: linear(tokens.support_preview) });

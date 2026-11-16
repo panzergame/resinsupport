@@ -39,6 +39,9 @@ struct FrameUniform {
     edge: [f32; 4],
     /// Faces looking down are tinted toward this (linear RGB).
     overhang: [f32; 4],
+    /// The see-through lens: centre and radius in framebuffer pixels (radius 0: none), and how
+    /// opaque the supports are inside it.
+    lens: [f32; 4],
 }
 
 /// A corner of a layer quad: where it is (scene mm for the cap, image mm for the 2D view), its
@@ -73,6 +76,15 @@ const SPHERE_DETAIL: u32 = 2;
 /// The opacity of a joint handle where the scene is in front of it: there, so it can be grabbed,
 /// and faded, so it doesn't read as in front.
 const HIDDEN_HANDLE_ALPHA: f32 = 0.35;
+
+/// Round the pointer while the user sees through the supports: the supports and their joints are
+/// drawn see-through inside it, after everything opaque. In framebuffer pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Lens {
+    pub center: [f32; 2],
+    pub radius: f32,
+    pub alpha: f32,
+}
 
 /// A shaded sphere (a support tip), in linear RGBA.
 #[derive(Clone, Copy, Debug)]
@@ -152,12 +164,15 @@ pub struct ViewFrame {
     pub grid_radius: f64,
     pub lines: Vec<Line>,
     pub spheres: Vec<Sphere>,
+    /// The supports' round joints: cut by the lens, as the supports are.
+    pub joints: Vec<Sphere>,
     /// Joint handles: drawn after everything, faded where the scene hides them.
     pub handles: Vec<Sphere>,
     pub models: Vec<ModelDraw>,
     /// The supports' solids, already in the scene, and the colour of each [`Look`].
     pub supports: Option<Arc<SupportMesh>>,
     pub support_colors: [[f32; 4]; 3],
+    pub lens: Option<Lens>,
     /// The tint of the models' faces looking down, for those drawn with [`ModelDraw::overhang`].
     pub overhang: [f32; 4],
     /// In Slice edition with a job: what is kept of the solids, and the cap on the cut.
@@ -352,6 +367,15 @@ pub struct Renderer {
     sphere_mesh: (wgpu::Buffer, u32),
     sphere_buffer: Option<(wgpu::Buffer, u64)>,
     sphere_count: u32,
+    /// The supports and their joints: opaque outside the lens, then blended inside it. The blended
+    /// pass writes depth: near the edge, where they are almost opaque, a far support drawn after a
+    /// near one must not show over it.
+    support: wgpu::RenderPipeline,
+    support_lens: wgpu::RenderPipeline,
+    joint: wgpu::RenderPipeline,
+    joint_lens: wgpu::RenderPipeline,
+    joint_buffer: Option<(wgpu::Buffer, u64)>,
+    joint_count: u32,
     /// Handles where the scene hides them, then where it doesn't.
     handle_hidden: wgpu::RenderPipeline,
     handle_visible: wgpu::RenderPipeline,
@@ -572,6 +596,50 @@ impl Renderer {
             wgpu::CompareFunction::Less,
             None,
         );
+        let support = pipeline(
+            "viewport_support",
+            &pipeline_layout,
+            "mesh_vs",
+            "support_fs",
+            &model_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            wgpu::CompareFunction::Less,
+            None,
+        );
+        let support_lens = pipeline(
+            "viewport_support_lens",
+            &pipeline_layout,
+            "mesh_vs",
+            "support_lens_fs",
+            &model_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            wgpu::CompareFunction::Less,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        );
+        let joint = pipeline(
+            "viewport_joint",
+            &pipeline_layout,
+            "sphere_vs",
+            "joint_fs",
+            &sphere_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            wgpu::CompareFunction::Less,
+            None,
+        );
+        let joint_lens = pipeline(
+            "viewport_joint_lens",
+            &pipeline_layout,
+            "sphere_vs",
+            "joint_lens_fs",
+            &sphere_layouts,
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+            wgpu::CompareFunction::Less,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        );
         // Hidden first: once the visible pass writes its depth, the far test would pass on it too.
         let handle_hidden = pipeline(
             "viewport_handle_hidden",
@@ -645,6 +713,12 @@ impl Renderer {
             sphere_mesh,
             sphere_buffer: None,
             sphere_count: 0,
+            support,
+            support_lens,
+            joint,
+            joint_lens,
+            joint_buffer: None,
+            joint_count: 0,
             handle_hidden,
             handle_visible,
             handle_buffer: None,
@@ -732,6 +806,7 @@ impl Renderer {
             cap: [0.0; 4],
             edge: f.grid,
             overhang: [0.0; 4],
+            lens: [0.0; 4],
         };
         queue.write_buffer(&self.flat_uniform, 0, bytemuck::bytes_of(&u));
         self.upload_layer(device, queue, &f.image);
@@ -770,6 +845,7 @@ impl Renderer {
             cap: f.cap.as_ref().map_or([0.0; 4], |c| c.color),
             edge: f.cap.as_ref().map_or([0.0; 4], |c| c.edge),
             overhang: f.overhang,
+            lens: f.lens.map_or([0.0; 4], |l| [l.center[0], l.center[1], l.radius, l.alpha]),
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&u));
         self.cap_count = 0;
@@ -814,6 +890,9 @@ impl Renderer {
         let instances = sphere_instances(&f.spheres, None);
         write_growing(device, queue, &mut self.sphere_buffer, "viewport_spheres", bytemuck::cast_slice(&instances));
         self.sphere_count = instances.len() as u32;
+        let instances = sphere_instances(&f.joints, None);
+        write_growing(device, queue, &mut self.joint_buffer, "viewport_joints", bytemuck::cast_slice(&instances));
+        self.joint_count = instances.len() as u32;
         // The visible pass draws without blending, so the alpha only fades the hidden one.
         let instances = sphere_instances(&f.handles, Some(HIDDEN_HANDLE_ALPHA));
         write_growing(device, queue, &mut self.handle_buffer, "viewport_handles", bytemuck::cast_slice(&instances));
@@ -835,15 +914,7 @@ impl Renderer {
                     pass.draw(0..*count, 0..1);
                 }
             }
-            if let (Some(mesh), Some((buffer, _))) = (&self.supports_uploaded, &self.support_buffer) {
-                for look in Look::ALL {
-                    let Some(range) = mesh.ranges.get(look.index()).filter(|r| !r.is_empty()) else { continue };
-                    let at = (f.models.len() + look.index()) as u64 * INSTANCE_STRIDE;
-                    pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
-                    pass.set_vertex_buffer(0, buffer.slice(..));
-                    pass.draw(range.clone(), 0..1);
-                }
-            }
+            self.draw_supports(pass, f, &self.support);
         }
         if let (Some(layer), Some((quads, _))) = (&self.layer, &self.cap_quads)
             && self.cap_count > 0
@@ -864,12 +935,19 @@ impl Renderer {
             pass.set_vertex_buffer(1, buffer.slice(..));
             pass.draw(0..self.sphere_mesh.1, 0..self.sphere_count);
         }
+        self.draw_joints(pass, &self.joint);
         if let Some((buffer, _)) = &self.line_buffer
             && self.line_count > 0
         {
             pass.set_pipeline(&self.lines);
             pass.set_vertex_buffer(0, buffer.slice(..));
             pass.draw(0..self.line_count, 0..1);
+        }
+        // See-through after everything opaque, the grid too: its depth, written even where the
+        // supports are invisible, would otherwise cut the grid behind them.
+        if f.lens.is_some() {
+            self.draw_supports(pass, f, &self.support_lens);
+            self.draw_joints(pass, &self.joint_lens);
         }
         if let Some((buffer, _)) = &self.handle_buffer
             && self.handle_count > 0
@@ -881,6 +959,35 @@ impl Renderer {
                 pass.draw(0..self.sphere_mesh.1, 0..self.handle_count);
             }
         }
+    }
+}
+
+impl Renderer {
+    /// The supports' solids, each look in its colour, with `pipeline`.
+    fn draw_supports(&self, pass: &mut wgpu::RenderPass<'static>, f: &ViewFrame, pipeline: &wgpu::RenderPipeline) {
+        let (Some((instances, _)), Some(mesh), Some((buffer, _))) = (&self.model_instances, &self.supports_uploaded, &self.support_buffer) else {
+            return;
+        };
+        pass.set_pipeline(pipeline);
+        for look in Look::ALL {
+            let Some(range) = mesh.ranges.get(look.index()).filter(|r| !r.is_empty()) else { continue };
+            let at = (f.models.len() + look.index()) as u64 * INSTANCE_STRIDE;
+            pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.draw(range.clone(), 0..1);
+        }
+    }
+
+    /// The supports' round joints with `pipeline`.
+    fn draw_joints(&self, pass: &mut wgpu::RenderPass<'static>, pipeline: &wgpu::RenderPipeline) {
+        let Some((buffer, _)) = &self.joint_buffer else { return };
+        if self.joint_count == 0 {
+            return;
+        }
+        pass.set_pipeline(pipeline);
+        pass.set_vertex_buffer(0, self.sphere_mesh.0.slice(..));
+        pass.set_vertex_buffer(1, buffer.slice(..));
+        pass.draw(0..self.sphere_mesh.1, 0..self.joint_count);
     }
 }
 

@@ -15,6 +15,9 @@ struct Frame {
     edge: vec4<f32>,
     // Faces looking down are tinted toward this, on instances whose colour alpha asks for it.
     overhang: vec4<f32>,
+    // xy: the see-through lens's centre, z: its radius (0: none), in framebuffer pixels; w: how
+    // opaque the supports are inside it.
+    lens: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -25,6 +28,18 @@ struct Frame {
 // Above the shown layer, or under the lowest one shown.
 fn clipped(z: f32) -> bool {
     return frame.clip.z > 0.5 && (z > frame.clip.y || z < frame.clip.x);
+}
+
+// Inside the see-through lens; `pos` is a fragment's framebuffer position.
+fn in_lens(pos: vec4<f32>) -> bool {
+    return frame.lens.z > 0.0 && distance(pos.xy, frame.lens.xy) < frame.lens.z;
+}
+
+// How opaque the supports are at `pos` inside the lens: `frame.lens.w` at the centre, rising with
+// the square of the distance to fully opaque at the edge, so the lens has no seam.
+fn lens_alpha(pos: vec4<f32>) -> f32 {
+    let t = distance(pos.xy, frame.lens.xy) / frame.lens.z;
+    return mix(frame.lens.w, 1.0, t * t);
 }
 
 fn decode_srgb(c: vec3<f32>) -> vec3<f32> {
@@ -107,11 +122,7 @@ const OVERHANG_FULL: f32 = 0.95;
 // Faces this close to the plate rest on it and need no support, mm.
 const ON_PLATE: f32 = 0.05;
 
-@fragment
-fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if clipped(in.world_z) {
-        discard;
-    }
+fn mesh_shade(in: MeshOut, front: bool) -> vec3<f32> {
     var n = normalize(in.normal);
     // Faces wound the wrong way (an inside-out STL) show as a darker red-tinted shade.
     var base = in.color.rgb;
@@ -123,8 +134,33 @@ fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4
     base = mix(base, frame.overhang.rgb, 0.85 * down * in.color.a);
     let key = max(dot(n, frame.light.xyz), 0.0);
     let fill = max(dot(n, frame.back.xyz), 0.0);
-    let c = base * (0.18 + 0.62 * key + 0.25 * fill);
-    return vec4<f32>(encode(c), 1.0);
+    return encode(base * (0.18 + 0.62 * key + 0.25 * fill));
+}
+
+@fragment
+fn mesh_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if clipped(in.world_z) {
+        discard;
+    }
+    return vec4<f32>(mesh_shade(in, front), 1.0);
+}
+
+// Supports: a hole where the lens is, which `support_lens_fs` fills see-through.
+@fragment
+fn support_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if clipped(in.world_z) || in_lens(in.pos) {
+        discard;
+    }
+    return vec4<f32>(mesh_shade(in, front), 1.0);
+}
+
+// Only the near side, so a see-through support doesn't show its far side through itself.
+@fragment
+fn support_lens_fs(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if !front || clipped(in.world_z) || !in_lens(in.pos) {
+        discard;
+    }
+    return vec4<f32>(mesh_shade(in, front), lens_alpha(in.pos));
 }
 
 // ---- support tips: a unit sphere, instanced ----
@@ -170,11 +206,29 @@ fn sphere_fs(in: SphereOut) -> @location(0) vec4<f32> {
     return vec4<f32>(sphere_shade(in), 1.0);
 }
 
+// The supports' joints, cut by the lens as the supports are.
+@fragment
+fn joint_fs(in: SphereOut) -> @location(0) vec4<f32> {
+    if clipped(in.world_z) || in_lens(in.pos) {
+        discard;
+    }
+    return vec4<f32>(sphere_shade(in), 1.0);
+}
+
+@fragment
+fn joint_lens_fs(in: SphereOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if !front || clipped(in.world_z) || !in_lens(in.pos) {
+        discard;
+    }
+    return vec4<f32>(sphere_shade(in), lens_alpha(in.pos));
+}
+
 // Joint handles, drawn over everything: only the near side, so a handle without depth writes
 // doesn't show its far side through itself; the instance's alpha fades the part behind the scene.
+// Drawn over everything, they would cover the lens: none inside it.
 @fragment
 fn handle_fs(in: SphereOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    if !front {
+    if !front || in_lens(in.pos) {
         discard;
     }
     return vec4<f32>(sphere_shade(in), in.color.a);

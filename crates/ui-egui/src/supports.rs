@@ -9,6 +9,8 @@
 //! puts it back. Selected joints and segments carry the Move arrows, always there in Support
 //! edition: a drag places their joints (`support.place_joints`), and the support keeps that path
 //! from then on. While a tip line is out (`support_line`), a press only places its other end.
+//! While X is held, the supports are drawn see-through in a lens round the pointer and nothing
+//! but the models' surface is picked: a press always places a tip.
 //! Every change goes through the `support.*` commands.
 
 use egui::Pos2;
@@ -42,8 +44,13 @@ pub enum Hover {
 #[derive(Default)]
 pub struct SupportTool {
     pub hover: Option<Hover>,
-    /// The pointer, the view, the scene revision and the routes' changes the pick was made at.
-    key: Option<(Pos2, Camera, egui::Rect, u64, u64)>,
+    /// The pointer, the view, the scene revision, the routes' changes and `see_through` the pick
+    /// was made at.
+    key: Option<(Pos2, Camera, egui::Rect, u64, u64, bool)>,
+    /// X is held over the view: only the surface is picked.
+    pub see_through: bool,
+    /// The pointer while `see_through`: the supports are drawn see-through round it.
+    pub lens: Option<Pos2>,
     /// While the arrows are dragged: each joint they move and where it was when the drag began.
     drag: Option<Vec<(u64, u32, Vec3)>>,
     /// The last press on a tip: when (egui's clock) and on which support, the first of a double press.
@@ -63,6 +70,8 @@ impl SupportTool {
     pub fn clear(&mut self) {
         self.hover = None;
         self.key = None;
+        self.see_through = false;
+        self.lens = None;
     }
 }
 
@@ -127,9 +136,11 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
     // A held right button may still become a click: the preview stays until it orbits.
     let busy = ui.input(|i| i.pointer.primary_down() || i.pointer.middle_down() || i.pointer.is_decidedly_dragging() || i.key_down(egui::Key::Space));
     let pointer = resp.hover_pos().filter(|_| !busy && ui.is_enabled());
+    let see_through = ui.is_enabled() && !ui.ctx().text_edit_focused() && ui.input(|i| i.key_down(egui::Key::X));
+    app.supports.see_through = see_through;
     match pointer {
         Some(p) => {
-            let key = Some((p, proj.cam, proj.rect, app.session.scene.revision(), app.routes.changes()));
+            let key = Some((p, proj.cam, proj.rect, app.session.scene.revision(), app.routes.changes(), app.supports.see_through));
             if app.supports.key != key {
                 app.supports.hover = pick(app, proj, p);
                 app.supports.key = key;
@@ -137,6 +148,9 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
         }
         None => app.supports.clear(),
     }
+    // Not filtered as the pick is: the lens stays through the press that places a tip.
+    app.supports.see_through = see_through;
+    app.supports.lens = resp.hover_pos().filter(|_| see_through);
     if matches!(app.supports.hover, Some(Hover::Support(_) | Hover::Part(..) | Hover::TipHandle(_) | Hover::Brace(_))) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -168,6 +182,7 @@ pub fn handle(app: &mut ResinApp, ui: &egui::Ui, proj: &Proj, resp: &egui::Respo
     // tested against the tip, not only the pick: once the support is selected, its head's handle
     // is drawn over the tip.
     if let Some((t, id)) = app.supports.last_tip_press.take()
+        && !app.supports.see_through
         && now - t <= delay
         && on_tip(app, proj, at, id)
     {
@@ -295,8 +310,9 @@ fn pick(app: &ResinApp, proj: &Proj, p: Pos2) -> Option<Hover> {
         let normal = scene.model(model).and_then(|m| m.face_normal(h.triangle)).unwrap_or(-d);
         Hover::Surface { model, point: h.point, normal }
     };
-    // Its own hidden tip must not stand in the way; nor may a tip under a line's other end.
-    if app.supports.moving.is_some() || crate::support_line::placing(app) {
+    // Its own hidden tip must not stand in the way; nor may a tip under a line's other end, nor
+    // any support while seeing through them.
+    if app.supports.moving.is_some() || crate::support_line::placing(app) || app.supports.see_through {
         return surface.map(on_surface);
     }
     let handle = tip_handles(app).into_iter().filter_map(|(id, c, r)| resin_engine::geom::ray_sphere(o, d, c, r).map(|t| (id, t)));
@@ -451,6 +467,63 @@ mod tests {
         let mut out = ctx.run_ui(raw, |ui| app.keys(ui.ctx()));
         out.textures_delta.clear();
         assert_eq!((app.supports.branching, app.session.undo_depth()), (None, depth));
+    }
+
+    /// While X is held, the lens follows the pointer and a support under it takes no pick: a press
+    /// on its tip places a tip on the model behind it. Let go, the support is picked again.
+    #[test]
+    fn holding_x_sees_through_supports_and_places_tips_behind_them() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-see-through-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plate.stl");
+        // A floating square plate, facing down.
+        let text = "solid p\nfacet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 20 10\nendloop\nendfacet\n\
+                    facet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 20 20 10\nvertex 20 0 10\nendloop\nendfacet\nendsolid p\n";
+        std::fs::write(&path, text).unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let m = app.run("file.import_stl", json!({ "path": path, "fit": false })).unwrap()["id"].as_u64().unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        let id = app.run("support.add", json!({ "model": m, "point": [5, 5, 10], "normal": [0, 0, -1] })).unwrap()["id"].as_u64().unwrap();
+        let preset = *app.session.support_settings().current();
+        while app.routes.update(&app.session.scene, &preset) {}
+        app.mode = crate::EditMode::Support;
+        app.run("view.standard", json!({ "view": "bottom" })).unwrap();
+        app.run("view.fit", json!({ "aspect": 800.0 / 600.0 })).unwrap();
+        let rect = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let proj = Proj { cam: app.session.camera, rect };
+        let ctx = egui::Context::default();
+        let tip = proj.to_screen(Vec3::new(5.0, 5.0, 10.0)).unwrap();
+        let x = |pressed: bool| egui::Event::Key { key: egui::Key::X, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        let button =
+            |pressed: bool| egui::Event::PointerButton { pos: tip, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let frame = |app: &mut ResinApp, events: Vec<egui::Event>, time: f64| {
+            let raw = egui::RawInput { screen_rect: Some(rect), time: Some(time), events, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                handle(app, ui, &proj, &resp);
+            });
+            out.textures_delta.clear();
+        };
+
+        // egui knows the pointer is over the view from the frame before: bring it there first.
+        frame(&mut app, vec![egui::Event::PointerMoved(tip)], 0.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(tip)], 0.1);
+        assert_eq!(app.supports.hover, Some(Hover::Support(id)));
+        assert_eq!(app.supports.lens, None);
+
+        frame(&mut app, vec![x(true)], 0.2);
+        assert!(matches!(app.supports.hover, Some(Hover::Surface { .. })), "{:?}", app.supports.hover);
+        assert_eq!(app.supports.lens, Some(tip));
+        let depth = app.session.undo_depth();
+        frame(&mut app, vec![button(true)], 0.3);
+        assert_eq!(app.supports.lens, Some(tip), "the press keeps the lens");
+        frame(&mut app, vec![button(false)], 0.35);
+        assert_eq!((app.session.scene.supports().len(), app.session.undo_depth()), (2, depth + 1), "a tip placed behind the support");
+        assert!(app.session.scene.selected.is_empty(), "nothing selected");
+
+        frame(&mut app, vec![x(false)], 0.4);
+        assert!(!app.supports.see_through && app.supports.lens.is_none());
+        assert!(matches!(app.supports.hover, Some(Hover::Support(_))), "{:?}", app.supports.hover);
     }
 
     /// A press on a selected support's contact handle hides its tip; the next press on the model
