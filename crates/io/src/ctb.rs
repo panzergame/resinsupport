@@ -16,7 +16,7 @@
 //! [`read_ctb`] treats its bytes as hostile: every offset is checked against the file, counts are
 //! capped before anything is allocated, and nothing panics.
 
-use resin_slice::{Cancel, Progress, Run, SlicedJob};
+use resin_slice::{Cancel, Progress, Run, SlicedJob, Travel};
 
 use crate::IoError;
 
@@ -250,6 +250,19 @@ pub fn is_ctb_path(path: &std::path::Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION))
 }
 
+/// v2 lifts in one phase: the whole lift at the speed that peels the layer off, as UVtools
+/// writes v2, unless the slow phase has no distance.
+fn v2_lift_speed(t: &Travel) -> f64 {
+    if t.lift_distance_slow > 0.0 { t.lift_speed_slow } else { t.lift_speed_fast }
+}
+
+/// v2 retracts in one phase, with one speed for every layer: the first phase's, as UVtools
+/// writes v2, unless the slow phase is the whole retract.
+fn v2_retract_speed(t: &Travel) -> f64 {
+    // The allowance takes a slow retract typed as the whole lift for the whole of it.
+    if t.retract_distance_fast() > 1e-9 { t.retract_speed_fast } else { t.retract_speed_slow }
+}
+
 /// `job` as a CTB v2 file.
 pub fn write_ctb(job: &SlicedJob, previews: &Previews, opts: &CtbOptions) -> Result<Vec<u8>, IoError> {
     write_ctb_with(job, previews, opts, &Progress::default(), &Cancel::default())
@@ -309,12 +322,13 @@ pub fn write_ctb_with(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, p
         slicer_info_offset: below_4g(slicer_at)?,
         slicer_info_size: SLICER_INFO_SIZE as u32,
     };
+    let (bottom, regular) = (m.bottom(), m.regular());
     let params = PrintParams {
-        bottom_lift_height: m.bottom_lift_height as f32,
-        bottom_lift_speed: m.bottom_lift_speed as f32,
-        lift_height: m.lift_height as f32,
-        lift_speed: m.lift_speed as f32,
-        retract_speed: m.retract_speed as f32,
+        bottom_lift_height: bottom.lift_distance() as f32,
+        bottom_lift_speed: v2_lift_speed(&bottom) as f32,
+        lift_height: regular.lift_distance() as f32,
+        lift_speed: v2_lift_speed(&regular) as f32,
+        retract_speed: v2_retract_speed(&regular) as f32,
         volume_ml: volume as f32,
         weight_g: (volume * s.estimates.resin_density) as f32,
         cost: cost as f32,
@@ -993,6 +1007,29 @@ mod tests {
     }
 
     #[test]
+    fn v2_moves_at_the_speed_of_the_phase_that_moves() {
+        let mut job = cube();
+        let m = &mut job.settings.motion;
+        (m.lift_speed_slow, m.lift_speed_fast, m.retract_speed_fast, m.retract_speed_slow) = (60.0, 240.0, 300.0, 90.0);
+        (m.bottom_lift_speed_slow, m.bottom_lift_speed_fast) = (30.0, 120.0);
+        let params = |job: &SlicedJob| {
+            let opts = CtbOptions { encryption_key: DEFAULT_KEY, modified_minutes: 0 };
+            let f = read_ctb(&write_ctb(job, &Previews::plain(job), &opts).unwrap()).unwrap();
+            (f.params.lift_speed, f.params.bottom_lift_speed, f.params.retract_speed)
+        };
+        // Both phases in use: the lift at its slow speed, the retract at its fast one.
+        assert_eq!(params(&job), (60.0, 30.0, 300.0));
+        // A lift in the fast phase only, and a retract slow all the way (0.7 + 0.1 mm of lift).
+        let m = &mut job.settings.motion;
+        (m.lift_distance_slow, m.lift_distance_fast, m.retract_distance_slow) = (0.0, 5.0, 5.0);
+        (m.bottom_lift_distance_slow, m.bottom_lift_distance_fast) = (0.0, 5.0);
+        assert_eq!(params(&job), (240.0, 120.0, 90.0));
+        let m = &mut job.settings.motion;
+        (m.lift_distance_slow, m.lift_distance_fast, m.retract_distance_slow) = (0.7, 0.1, 0.8);
+        assert_eq!(params(&job), (60.0, 120.0, 90.0));
+    }
+
+    #[test]
     fn a_job_reads_back() {
         let job = cube();
         let opts = CtbOptions { encryption_key: DEFAULT_KEY, modified_minutes: 29_000_000 };
@@ -1009,8 +1046,10 @@ mod tests {
         assert_eq!((h.light_pwm, h.bottom_light_pwm, h.encryption_key), (255, 255, DEFAULT_KEY));
         assert_eq!(h.print_time, job.stats.print_time_s.ceil() as u32);
         assert_eq!((h.print_params_size, h.slicer_info_size), (60, 76));
-        assert_eq!(f.params.lift_height, s.motion.lift_height as f32);
-        assert_eq!(f.params.retract_speed, s.motion.retract_speed as f32);
+        let (bottom, regular) = (s.motion.bottom(), s.motion.regular());
+        assert_eq!((f.params.lift_height, f.params.lift_speed), (regular.lift_distance() as f32, regular.lift_speed_slow as f32));
+        assert_eq!((f.params.bottom_lift_height, f.params.bottom_lift_speed), (bottom.lift_distance() as f32, bottom.lift_speed_slow as f32));
+        assert_eq!(f.params.retract_speed, regular.retract_speed_fast as f32);
         assert_eq!(f.params.volume_ml, job.stats.volume_ml as f32);
         assert_eq!((f.params.bottom_layer_count, f.params.marker), (s.layers.bottom_count, 0x1234));
         assert_eq!(f.slicer.machine_name_offset, h.slicer_info_offset + 76);

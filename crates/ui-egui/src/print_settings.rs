@@ -1,12 +1,13 @@
 //! The print settings card: the printer profile and how the resin is exposed and the plate moves,
-//! on four tabs (Printer, Bottom Layers, Regular Layers, Slicing), and Restore defaults. Every edit runs
+//! on four tabs (Printer, Bottom Layers, Regular Layers, Slicing), and Restore defaults. The
+//! plate's travel shows each phase's value side by side, fast then slow. Every edit runs
 //! `print.configure` at once; the configuration is not an undo step, and `ResinApp::run` keeps it
 //! in the preferences. Shown for as long as the Slice edit mode lasts, and only then: nothing
 //! else opens or closes it.
 
 use egui::{DragValue, pos2, vec2};
 use resin_engine::PrintConfig;
-use resin_engine::slice::{ANTI_ALIASING, GROUPS, MAX_NAME_CHARS, field};
+use resin_engine::slice::{ANTI_ALIASING, GROUPS, MAX_NAME_CHARS, Motion, field};
 use serde_json::{Value, json};
 
 use crate::theme::Tokens;
@@ -58,8 +59,14 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         ui_kit::segmented(ui, &t, &mut tab, &tabs);
         match tab {
             PRINTER => printer_rows(ui, &t, &mut c),
-            BOTTOM => rows(ui, &t, &mut c, BOTTOM_ROWS),
-            REGULAR => rows(ui, &t, &mut c, REGULAR_ROWS),
+            BOTTOM => {
+                rows(ui, &t, &mut c, BOTTOM_ROWS);
+                pairs(ui, &t, &mut c, BOTTOM_MOTION);
+            }
+            REGULAR => {
+                rows(ui, &t, &mut c, REGULAR_ROWS);
+                pairs(ui, &t, &mut c, REGULAR_MOTION);
+            }
             _ => slicing_rows(ui, &t, &mut c),
         }
         if ui_kit::button(ui, i18n::tr("ui.restore_defaults")).clicked() {
@@ -165,20 +172,145 @@ const BOTTOM_ROWS: &[Num] = &[
     num("printing.exposure.normal", "exposure", "bottom", " s", 2, 0.1),
     num("printing.exposure.light_off", "exposure", "bottom_light_off", " s", 2, 0.05).help("printing.exposure.light_off.help"),
     num("printing.exposure.power", "exposure", "bottom_power", "", 0, 1.0).help("printing.exposure.power.help"),
-    num("printing.motion.lift_height", "motion", "bottom_lift_height", " mm", 2, 0.1),
-    num("printing.motion.lift_speed", "motion", "bottom_lift_speed", " mm/min", 0, 5.0),
 ];
 
-/// Layer height and retract speed are one value for every layer: they sit here, and say so.
+/// Layer height is one value for every layer: it sits here, and says so.
 const REGULAR_ROWS: &[Num] = &[
     num("printing.layers.height", "layers", "height", " mm", 3, 0.001).help("printing.all_layers.help"),
     num("printing.exposure.normal", "exposure", "normal", " s", 2, 0.05),
     num("printing.exposure.light_off", "exposure", "light_off", " s", 2, 0.05).help("printing.exposure.light_off.help"),
     num("printing.exposure.power", "exposure", "power", "", 0, 1.0).help("printing.exposure.power.help"),
-    num("printing.motion.lift_height", "motion", "lift_height", " mm", 2, 0.1),
-    num("printing.motion.lift_speed", "motion", "lift_speed", " mm/min", 0, 5.0),
-    num("printing.motion.retract_speed", "motion", "retract_speed", " mm/min", 0, 5.0).help("printing.all_layers.help"),
 ];
+
+/// One phase's value in a [`Pair`]: a `motion` setting, or one worked out from the others and
+/// shown read-only.
+#[derive(Clone, Copy)]
+enum Phase {
+    Setting(&'static str),
+    Derived(fn(&Motion) -> f64),
+}
+
+/// A travel row: its fast phase's value and its slow phase's, under the Fast and Slow heading.
+struct Pair {
+    label: &'static str,
+    help: Option<&'static str>,
+    fast: Phase,
+    slow: Phase,
+    /// Below the setting's own maximum, from the others.
+    slow_max: Option<fn(&Motion) -> f64>,
+    suffix: &'static str,
+    decimals: usize,
+    speed: f64,
+}
+
+const fn pair(label: &'static str, fast: Phase, slow: Phase, suffix: &'static str, decimals: usize, speed: f64) -> Pair {
+    Pair { label, help: None, fast, slow, slow_max: None, suffix, decimals, speed }
+}
+
+impl Pair {
+    const fn help(self, help: &'static str) -> Pair {
+        Pair { help: Some(help), ..self }
+    }
+
+    const fn slow_max(self, max: fn(&Motion) -> f64) -> Pair {
+        Pair { slow_max: Some(max), ..self }
+    }
+
+    fn row(&self, ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
+        ui_kit::wide_row(ui, t, i18n::tr(self.label), |ui| {
+            let width = phase_width(ui);
+            self.phase(ui, width, c, self.fast, None);
+            self.phase(ui, width, c, self.slow, self.slow_max);
+        });
+    }
+
+    fn phase(&self, ui: &mut egui::Ui, width: f32, c: &mut PrintConfig, phase: Phase, max: Option<fn(&Motion) -> f64>) {
+        let help = |r: egui::Response| match self.help {
+            Some(help) => r.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help)),
+            None => r,
+        };
+        match phase {
+            Phase::Derived(get) => {
+                let mut v = get(&c.settings.motion);
+                let drag = DragValue::new(&mut v).suffix(self.suffix).fixed_decimals(self.decimals);
+                help(ui.add_enabled_ui(false, |ui| ui.add_sized([width, CONTROL_HEIGHT], drag)).inner);
+            }
+            Phase::Setting(key) => {
+                let Some(f) = field("motion", key) else { return };
+                let Some(mut v) = f.get(&c.printer, &c.settings) else { return };
+                let max = max.map_or(f.max, |m| m(&c.settings.motion).clamp(f.min, f.max));
+                let drag = DragValue::new(&mut v).range(f.min..=max).speed(self.speed).suffix(self.suffix).max_decimals(self.decimals);
+                if help(ui.add_sized([width, CONTROL_HEIGHT], drag)).changed() {
+                    f.set(&mut c.printer, &mut c.settings, v);
+                }
+            }
+        }
+    }
+}
+
+/// Each phase's share of a row's control column.
+fn phase_width(ui: &egui::Ui) -> f32 {
+    ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(0.0)
+}
+
+fn regular_retract_fast(m: &Motion) -> f64 {
+    m.regular().retract_distance_fast()
+}
+
+fn regular_lift(m: &Motion) -> f64 {
+    m.regular().lift_distance()
+}
+
+fn bottom_retract_fast(m: &Motion) -> f64 {
+    m.bottom().retract_distance_fast()
+}
+
+fn bottom_lift(m: &Motion) -> f64 {
+    m.bottom().lift_distance()
+}
+
+const BOTTOM_MOTION: &[Pair] = &[
+    pair("printing.motion.lift_distance", Phase::Setting("bottom_lift_distance_fast"), Phase::Setting("bottom_lift_distance_slow"), " mm", 2, 0.1)
+        .help("printing.motion.lift_distance.help"),
+    pair("printing.motion.lift_speed", Phase::Setting("bottom_lift_speed_fast"), Phase::Setting("bottom_lift_speed_slow"), " mm/min", 0, 5.0),
+    pair("printing.motion.retract_distance", Phase::Derived(bottom_retract_fast), Phase::Setting("bottom_retract_distance_slow"), " mm", 2, 0.1)
+        .help("printing.motion.retract_distance.help")
+        .slow_max(bottom_lift),
+    pair(
+        "printing.motion.retract_speed",
+        Phase::Setting("bottom_retract_speed_fast"),
+        Phase::Setting("bottom_retract_speed_slow"),
+        " mm/min",
+        0,
+        5.0,
+    ),
+];
+
+const REGULAR_MOTION: &[Pair] = &[
+    pair("printing.motion.lift_distance", Phase::Setting("lift_distance_fast"), Phase::Setting("lift_distance_slow"), " mm", 2, 0.1)
+        .help("printing.motion.lift_distance.help"),
+    pair("printing.motion.lift_speed", Phase::Setting("lift_speed_fast"), Phase::Setting("lift_speed_slow"), " mm/min", 0, 5.0),
+    pair("printing.motion.retract_distance", Phase::Derived(regular_retract_fast), Phase::Setting("retract_distance_slow"), " mm", 2, 0.1)
+        .help("printing.motion.retract_distance.help")
+        .slow_max(regular_lift),
+    pair("printing.motion.retract_speed", Phase::Setting("retract_speed_fast"), Phase::Setting("retract_speed_slow"), " mm/min", 0, 5.0),
+];
+
+/// The phases' heading, in the order a [`Pair`] shows them.
+const PHASES: [&str; 2] = ["printing.motion.fast", "printing.motion.slow"];
+
+fn pairs(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, pairs: &[Pair]) {
+    ui_kit::wide_row(ui, t, "", |ui| {
+        let width = phase_width(ui);
+        for id in PHASES {
+            let text = egui::RichText::new(i18n::tr(id)).size(FONT_CAPTION).color(t.form_dim);
+            ui.add_sized([width, CONTROL_HEIGHT], egui::Label::new(text));
+        }
+    });
+    for p in pairs {
+        p.row(ui, t, c);
+    }
+}
 
 /// After the anti-aliasing choice.
 const SLICING_ROWS: &[Num] = &[
@@ -317,6 +449,13 @@ mod tests {
     fn every_number_setting_is_on_exactly_one_tab() {
         let all = [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS];
         let mut shown: Vec<(&str, &str)> = all.iter().flat_map(|rows| rows.iter().map(|r| (r.group, r.key))).collect();
+        for p in [BOTTOM_MOTION, REGULAR_MOTION].into_iter().flatten() {
+            for phase in [p.fast, p.slow] {
+                if let Phase::Setting(key) = phase {
+                    shown.push(("motion", key));
+                }
+            }
+        }
         // The anti-aliasing choice, before the Slicing tab's numbers.
         shown.push(("slicing", "anti_aliasing"));
         shown.sort_unstable();
@@ -326,12 +465,32 @@ mod tests {
     }
 
     #[test]
+    fn each_tab_moves_its_own_layers_and_the_slow_retract_stays_within_the_lift() {
+        let m = PrintSettings::default().motion;
+        for (pairs, bottom, lift) in [(BOTTOM_MOTION, true, m.bottom().lift_distance()), (REGULAR_MOTION, false, m.regular().lift_distance())] {
+            for p in pairs {
+                for phase in [p.fast, p.slow] {
+                    if let Phase::Setting(key) = phase {
+                        assert_eq!(key.starts_with("bottom_"), bottom, "{key}");
+                    }
+                }
+            }
+            let retract = pairs.iter().find(|p| p.label == "printing.motion.retract_distance").unwrap();
+            assert!(matches!(retract.fast, Phase::Derived(_)));
+            assert_eq!(retract.slow_max.map(|max| max(&m)), Some(lift));
+        }
+    }
+
+    #[test]
     fn every_card_word_is_in_the_catalog() {
-        for id in TABS.into_iter().chain(ANTI_ALIASING_NAMES.map(|(_, id)| id)) {
+        for id in TABS.into_iter().chain(ANTI_ALIASING_NAMES.map(|(_, id)| id)).chain(PHASES) {
             assert!(i18n::has(id), "{id}");
         }
         for r in [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS].into_iter().flatten() {
             assert!(i18n::has(r.label) && r.help.is_none_or(i18n::has), "{}", r.label);
+        }
+        for p in [BOTTOM_MOTION, REGULAR_MOTION].into_iter().flatten() {
+            assert!(i18n::has(p.label) && p.help.is_none_or(i18n::has), "{}", p.label);
         }
         assert_eq!(ANTI_ALIASING_NAMES.map(|(v, _)| v.parse::<u8>().unwrap_or(0)), ANTI_ALIASING);
     }

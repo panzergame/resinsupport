@@ -12,6 +12,6 @@ mod slicer;
 pub use job::{JobStats, Layer, Run, SlicedJob, Stamp};
 pub use settings::{
     ANTI_ALIASING, Estimates, Exposure, ExposureKind, FIELDS, Field, GROUPS, LayerMotion, Layers, MAX_NAME_CHARS, MIN_PIXEL_PITCH, Motion,
-    PrintSettings, PrinterProfile, Slicing, field, validate,
+    PrintSettings, PrinterProfile, Slicing, Travel, field, validate,
 };
 pub use slicer::{Cancel, Progress, SliceError, SliceInput, Solid, SolidKind, slice, slice_with};

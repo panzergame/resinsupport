@@ -42,17 +42,18 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 ## 5. Slicing
 - [x] Print settings: crate `resin-slice` (printer profile, print settings, the sliced job's types), `print.configure`, `print.reset`, `print.settings`, a print settings card, kept in the preferences, never undo steps
 - [x] Slice edition and the slicer: a rasterizer ported from mslicer (nonzero fill, anti-aliasing, clipping), supports printed as drawn, `print.slice`, a background job with progress and cancel, the plate's outline
+- [x] Two-phase lift and retract (UVtools' model): lift distance and speed, slow then fast; retract speed fast then slow and the slow retract distance, the fast one the rest of the lift; for the bottom and the regular layers, each phase side by side on the card; print time per phase; single-phase settings stored before read as one phase each way
 - [x] Layer preview: the layer slider, the 3D view cut at the shown layer and capped with its image, the 2D layer view (tiles and mipmaps under the device's texture limit), the layer's card (exposure, lit area, lit regions)
 - Layer checks, later (UVtools `LayerIssueConfiguration`): islands, overhangs, resin traps, touching bounds, print height, empty layers; a cap under a raised bottom handle; decoding on the GPU where compute shaders exist (mslicer `slice_preview/decompress.rs`), once measured against the CPU decode
 - Printer profile, later: portrait orientation (PrusaSlicer `display_orientation`), gamma or exposure remap (PrusaSlicer `gamma_correction`, mslicer `ExposureRemap`), XY absolute and XYZ scale correction (PrusaSlicer `absolute_correction`, `relative_correction`)
-- Print settings, later: two-stage lift and retract, waits before cure, after cure and after lift (CTB v4 and up); elephant-foot compensation and minimum width (PrusaSlicer `elefant_foot_compensation`, mslicer `elephant_foot_fixer.rs`); hollowing, Z bleed correction (PrusaSlicer `hollowing_*`, `zcorrection_layers`)
+- Print settings, later: waits before cure, after cure and after lift (CTB v4 and up); elephant-foot compensation and minimum width (PrusaSlicer `elefant_foot_compensation`, mslicer `elephant_foot_fixer.rs`); hollowing, Z bleed correction (PrusaSlicer `hollowing_*`, `zcorrection_layers`)
 
 ## 6. Export
 - [x] CTB v2 writer and bounded reader (`io::ctb`): the layer RLE, cipher and previews ported from mslicer, the layout from UVtools' field definitions; printer test files from hand-built jobs (`CTB_OUT_DIR=<dir> cargo test -p resin-io ctb_printer_files -- --ignored`)
 - [x] Cross-check: UVtools 7.1.2 (`UVtoolsCmd print-properties`, `extract`, `compare`) reads the three printer test files as CTB v2, with the header, settings, layers and previews as written
 - [x] Saturn 2 (firmware 4.5.0) accepts CTB v2, checked on the printer with the three test files: each is listed with its preview; `f-k67.ctb` shows the F at the plate's +X +Y corner, readable, so the default profile needs no mirror; `cube-k67.ctb` prints
 - [x] `file.export_ctb`; Export CTB… in the File menu and Slice edition's ribbon (Ctrl+E): previews drawn off screen by the renderer, the window showing only the layer being written until the file is done
-- Later: CTB v3, v4 and v5; `.goo`; layer images in a zip; per-layer settings; importing CTB files into the scene
+- Later: CTB v3, v4 and v5 (v4 carries the second lift and retract phases and the bottom retract speeds, which v2 drops); `.goo`; layer images in a zip; per-layer settings; importing CTB files into the scene
 
 ## Languages
 - French, then others: one catalog each (`skills/resinsupport-ui-text/SKILL.md`)

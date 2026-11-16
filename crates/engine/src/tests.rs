@@ -514,7 +514,7 @@ fn hostile_params_never_panic() {
         json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
         json!({ "printer": { "name": 1, "resolution_x": 1e308, "display_x": -1, "mirror_x": "yes" }, "layers": [], "slicing": "aa" }),
         json!({ "printer": { "resolution_x": u64::MAX, "resolution_y": 0.5, "display_y": 1e-300 }, "exposure": { "power": 256, "normal": null } }),
-        json!({ "layers": { "height": 1e-300, "bottom_count": u64::MAX, "transition_count": -1 }, "motion": { "lift_speed": 1e308 } }),
+        json!({ "layers": { "height": 1e-300, "bottom_count": u64::MAX, "transition_count": -1 }, "motion": { "lift_speed_slow": 1e308 } }),
         json!({ "layers": { "bottom_count": 200, "transition_count": 200 }, "printer": { "build_height": 1 }, "estimates": { "bottle_cost": -0.0 } }),
         json!({ "slicing": { "anti_aliasing": 3 }, "estimates": { "resin_density": 1e308, "bottle_volume": "1" }, "printer": { "name": "\u{0}" } }),
         json!({ "printer": { "name": "x".repeat(10_000), "display_x": 1, "resolution_x": 32768 }, "from_the_future": {} }),
@@ -1403,6 +1403,59 @@ fn stored_print_config_falls_back_field_by_field() {
     assert_eq!(c2, PrintConfig::from_stored(&stored).0);
     assert_eq!(serde_json::from_value::<PrintConfig>(json!("junk")).unwrap(), PrintConfig::default());
     assert_eq!(PrintConfig::from_stored(&json!(3)).1, ["print_config"]);
+}
+
+#[test]
+fn a_shorter_lift_shortens_the_slow_retract_unless_it_is_given() {
+    let mut s = Session::new();
+    s.execute("print.configure", &json!({ "motion": { "lift_distance_fast": 3, "retract_distance_slow": 6, "bottom_retract_distance_slow": 4 } }))
+        .unwrap();
+    // 2 mm less lift: the slow retract fits the 6 mm left; the bottom's lift is unchanged.
+    s.execute("print.configure", &json!({ "motion": { "lift_distance_fast": 1 } })).unwrap();
+    let m = s.print_config().settings.motion;
+    assert_eq!((m.retract_distance_slow, m.regular().retract_distance_fast()), (6.0, 0.0));
+    assert_eq!(m.bottom_retract_distance_slow, 4.0);
+    s.execute("print.configure", &json!({ "motion": { "lift_distance_slow": 2, "bottom_lift_distance_slow": 1 } })).unwrap();
+    let m = s.print_config().settings.motion;
+    assert_eq!((m.retract_distance_slow, m.bottom_retract_distance_slow), (3.0, 1.0));
+
+    // Given outright, a slow retract longer than its lift is refused, and nothing changes.
+    let before = s.print_config().clone();
+    for (bad, names) in [
+        (json!({ "motion": { "retract_distance_slow": 3.5 } }), "motion.retract_distance_slow"),
+        (json!({ "motion": { "bottom_lift_distance_slow": 0.5, "bottom_retract_distance_slow": 1 } }), "motion.bottom_retract_distance_slow"),
+    ] {
+        match s.execute("print.configure", &bad) {
+            Err(EngineError::BadParams(why)) => assert!(why.contains(names), "{bad}: {why}"),
+            other => panic!("{bad}: {other:?}"),
+        }
+        assert_eq!(*s.print_config(), before, "{bad}");
+    }
+}
+
+#[test]
+fn stored_single_phase_motion_reads_as_one_phase_each_way() {
+    use crate::PrintConfig;
+    use resin_slice::PrintSettings;
+    let stored = json!({
+        "motion": { "lift_height": 6, "bottom_lift_height": 8, "lift_speed": 90, "bottom_lift_speed": 60, "retract_speed": 150 },
+    });
+    let (c, problems) = PrintConfig::from_stored(&stored);
+    assert!(problems.is_empty(), "{problems:?}");
+    let m = c.settings.motion;
+    for (t, lift, speed) in [(m.regular(), 6.0, 90.0), (m.bottom(), 8.0, 60.0)] {
+        assert_eq!((t.lift_distance_slow, t.lift_distance_fast, t.lift_speed_slow), (lift, 0.0, speed));
+        assert_eq!((t.retract_distance_fast(), t.retract_distance_slow, t.retract_speed_fast), (lift, 0.0, 150.0));
+    }
+    // A new key stored beside an old one wins; a bad old one is named as stored.
+    let (c, problems) = PrintConfig::from_stored(&json!({ "motion": { "lift_speed_slow": 45, "lift_speed": 90, "retract_speed": -1 } }));
+    assert_eq!((c.settings.motion.lift_speed_slow, problems), (45.0, vec!["motion.retract_speed".to_string()]));
+
+    // Motion that reads but does not fit together falls back on its own, the rest kept.
+    let crossed = json!({ "exposure": { "bottom": 20 }, "motion": { "lift_distance_slow": 1, "retract_distance_slow": 4 } });
+    let (c, problems) = PrintConfig::from_stored(&crossed);
+    assert_eq!(problems, ["motion"]);
+    assert_eq!((c.settings.motion, c.settings.exposure.bottom), (PrintSettings::default().motion, 20.0));
 }
 
 #[test]

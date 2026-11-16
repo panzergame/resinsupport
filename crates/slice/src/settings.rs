@@ -1,5 +1,7 @@
 // The print settings' defaults are mslicer's (GPL-3.0), `common/src/slice/config.rs` at 355aca2
-// (`SliceConfig::default`, `ExposureConfig::default`); see ATTRIBUTION.md.
+// (`SliceConfig::default`, `ExposureConfig::default`); see ATTRIBUTION.md. The two-phase lift and
+// retract follow UVtools' model (`UVtools.Core/FileFormats/FileFormat.cs`, `RetractHeight2`, at
+// 5fdcc53), written from its field definitions with no UVtools code.
 
 //! The printer profile and the print settings, their defaults and their ranges. The ranges and
 //! the cross-field rules are in one place, [`FIELDS`] and [`validate`]: the `print.*` commands
@@ -109,14 +111,98 @@ pub struct Exposure {
     pub bottom_power: u8,
 }
 
-/// Heights in mm, speeds in mm/min.
+/// How the plate moves after a layer, for the regular layers and the bottom ones: [`Travel`]'s
+/// values, flat so each is one setting.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Motion {
-    pub lift_height: f64,
-    pub bottom_lift_height: f64,
-    pub lift_speed: f64,
-    pub bottom_lift_speed: f64,
-    pub retract_speed: f64,
+    pub lift_distance_fast: f64,
+    pub lift_distance_slow: f64,
+    pub lift_speed_fast: f64,
+    pub lift_speed_slow: f64,
+    pub retract_distance_slow: f64,
+    pub retract_speed_fast: f64,
+    pub retract_speed_slow: f64,
+    pub bottom_lift_distance_fast: f64,
+    pub bottom_lift_distance_slow: f64,
+    pub bottom_lift_speed_fast: f64,
+    pub bottom_lift_speed_slow: f64,
+    pub bottom_retract_distance_slow: f64,
+    pub bottom_retract_speed_fast: f64,
+    pub bottom_retract_speed_slow: f64,
+}
+
+impl Motion {
+    /// The regular layers' travel.
+    pub fn regular(&self) -> Travel {
+        Travel {
+            lift_distance_fast: self.lift_distance_fast,
+            lift_distance_slow: self.lift_distance_slow,
+            lift_speed_fast: self.lift_speed_fast,
+            lift_speed_slow: self.lift_speed_slow,
+            retract_distance_slow: self.retract_distance_slow,
+            retract_speed_fast: self.retract_speed_fast,
+            retract_speed_slow: self.retract_speed_slow,
+        }
+    }
+
+    /// The bottom layers' travel.
+    pub fn bottom(&self) -> Travel {
+        Travel {
+            lift_distance_fast: self.bottom_lift_distance_fast,
+            lift_distance_slow: self.bottom_lift_distance_slow,
+            lift_speed_fast: self.bottom_lift_speed_fast,
+            lift_speed_slow: self.bottom_lift_speed_slow,
+            retract_distance_slow: self.bottom_retract_distance_slow,
+            retract_speed_fast: self.bottom_retract_speed_fast,
+            retract_speed_slow: self.bottom_retract_speed_slow,
+        }
+    }
+
+    /// Shorten the regular (`bottom` false) or bottom slow retract to the lift it comes back
+    /// from, as a shorter lift leaves it no more room.
+    pub fn fit_retract(&mut self, bottom: bool) {
+        if bottom {
+            self.bottom_retract_distance_slow = self.bottom_retract_distance_slow.min(self.bottom().lift_distance());
+        } else {
+            self.retract_distance_slow = self.retract_distance_slow.min(self.regular().lift_distance());
+        }
+    }
+}
+
+/// One layer's plate travel, in two phases each way: distances in mm, speeds in mm/min. The lift
+/// goes slow (peeling the layer off the film) then fast; the retract comes back the whole lift,
+/// fast then slow over its last `retract_distance_slow`, so its fast distance is what the slow one
+/// leaves ([`Travel::retract_distance_fast`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Travel {
+    pub lift_distance_fast: f64,
+    pub lift_distance_slow: f64,
+    pub lift_speed_fast: f64,
+    pub lift_speed_slow: f64,
+    pub retract_distance_slow: f64,
+    pub retract_speed_fast: f64,
+    pub retract_speed_slow: f64,
+}
+
+impl Travel {
+    /// How far the plate rises, both phases.
+    pub fn lift_distance(&self) -> f64 {
+        self.lift_distance_fast + self.lift_distance_slow
+    }
+
+    /// What the slow retract leaves of the lift.
+    pub fn retract_distance_fast(&self) -> f64 {
+        (self.lift_distance() - self.retract_distance_slow).max(0.0)
+    }
+
+    /// Seconds up and back down, the speeds being per minute.
+    pub fn seconds(&self) -> f64 {
+        let leg = |distance: f64, speed: f64| if speed > 0.0 { distance / speed * 60.0 } else { 0.0 };
+        leg(self.lift_distance_slow, self.lift_speed_slow)
+            + leg(self.lift_distance_fast, self.lift_speed_fast)
+            + leg(self.retract_distance_fast(), self.retract_speed_fast)
+            + leg(self.retract_distance_slow, self.retract_speed_slow)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -153,7 +239,23 @@ impl Default for PrintSettings {
             // mslicer's 0.5 mm of bottom layers and 0.2 mm of transition, at 0.05 mm.
             layers: Layers { height: 0.05, bottom_count: 10, transition_count: 4 },
             exposure: Exposure { normal: 3.0, bottom: 30.0, light_off: 1.0, bottom_light_off: 1.0, power: 255, bottom_power: 255 },
-            motion: Motion { lift_height: 5.0, bottom_lift_height: 5.0, lift_speed: 330.0, bottom_lift_speed: 330.0, retract_speed: 330.0 },
+            // mslicer's single-phase 5 mm at 330 mm/min both ways: the second phases are off.
+            motion: Motion {
+                lift_distance_fast: 0.0,
+                lift_distance_slow: 5.0,
+                lift_speed_fast: 330.0,
+                lift_speed_slow: 330.0,
+                retract_distance_slow: 0.0,
+                retract_speed_fast: 330.0,
+                retract_speed_slow: 330.0,
+                bottom_lift_distance_fast: 0.0,
+                bottom_lift_distance_slow: 5.0,
+                bottom_lift_speed_fast: 330.0,
+                bottom_lift_speed_slow: 330.0,
+                bottom_retract_distance_slow: 0.0,
+                bottom_retract_speed_fast: 330.0,
+                bottom_retract_speed_slow: 330.0,
+            },
             slicing: Slicing { anti_aliasing: 1 },
             estimates: Estimates { resin_density: 1.1, bottle_volume: 1000.0, bottle_cost: 0.0 },
         }
@@ -207,13 +309,21 @@ impl PrintSettings {
                 bottom + (normal - bottom) * t
             }
         };
-        let (e, m) = (&self.exposure, &self.motion);
+        let e = &self.exposure;
+        let (b, r) = (self.motion.bottom(), self.motion.regular());
         LayerMotion {
             exposure: step(e.bottom, e.normal),
             light_off: step(e.bottom_light_off, e.light_off),
-            lift_height: step(m.bottom_lift_height, m.lift_height),
-            lift_speed: step(m.bottom_lift_speed, m.lift_speed),
-            retract_speed: m.retract_speed,
+            // Stepping both ends alike keeps the slow retract within the lift.
+            travel: Travel {
+                lift_distance_fast: step(b.lift_distance_fast, r.lift_distance_fast),
+                lift_distance_slow: step(b.lift_distance_slow, r.lift_distance_slow),
+                lift_speed_fast: step(b.lift_speed_fast, r.lift_speed_fast),
+                lift_speed_slow: step(b.lift_speed_slow, r.lift_speed_slow),
+                retract_distance_slow: step(b.retract_distance_slow, r.retract_distance_slow),
+                retract_speed_fast: step(b.retract_speed_fast, r.retract_speed_fast),
+                retract_speed_slow: step(b.retract_speed_slow, r.retract_speed_slow),
+            },
         }
     }
 
@@ -229,11 +339,20 @@ impl PrintSettings {
             ("exposure", "bottom_light_off") => e.bottom_light_off,
             ("exposure", "power") => e.power.into(),
             ("exposure", "bottom_power") => e.bottom_power.into(),
-            ("motion", "lift_height") => m.lift_height,
-            ("motion", "bottom_lift_height") => m.bottom_lift_height,
-            ("motion", "lift_speed") => m.lift_speed,
-            ("motion", "bottom_lift_speed") => m.bottom_lift_speed,
-            ("motion", "retract_speed") => m.retract_speed,
+            ("motion", "lift_distance_fast") => m.lift_distance_fast,
+            ("motion", "lift_distance_slow") => m.lift_distance_slow,
+            ("motion", "lift_speed_fast") => m.lift_speed_fast,
+            ("motion", "lift_speed_slow") => m.lift_speed_slow,
+            ("motion", "retract_distance_slow") => m.retract_distance_slow,
+            ("motion", "retract_speed_fast") => m.retract_speed_fast,
+            ("motion", "retract_speed_slow") => m.retract_speed_slow,
+            ("motion", "bottom_lift_distance_fast") => m.bottom_lift_distance_fast,
+            ("motion", "bottom_lift_distance_slow") => m.bottom_lift_distance_slow,
+            ("motion", "bottom_lift_speed_fast") => m.bottom_lift_speed_fast,
+            ("motion", "bottom_lift_speed_slow") => m.bottom_lift_speed_slow,
+            ("motion", "bottom_retract_distance_slow") => m.bottom_retract_distance_slow,
+            ("motion", "bottom_retract_speed_fast") => m.bottom_retract_speed_fast,
+            ("motion", "bottom_retract_speed_slow") => m.bottom_retract_speed_slow,
             ("slicing", "anti_aliasing") => s.anti_aliasing.into(),
             ("estimates", "resin_density") => x.resin_density,
             ("estimates", "bottle_volume") => x.bottle_volume,
@@ -255,11 +374,20 @@ impl PrintSettings {
             ("exposure", "bottom_light_off") => e.bottom_light_off = x,
             ("exposure", "power") => e.power = x as u8,
             ("exposure", "bottom_power") => e.bottom_power = x as u8,
-            ("motion", "lift_height") => m.lift_height = x,
-            ("motion", "bottom_lift_height") => m.bottom_lift_height = x,
-            ("motion", "lift_speed") => m.lift_speed = x,
-            ("motion", "bottom_lift_speed") => m.bottom_lift_speed = x,
-            ("motion", "retract_speed") => m.retract_speed = x,
+            ("motion", "lift_distance_fast") => m.lift_distance_fast = x,
+            ("motion", "lift_distance_slow") => m.lift_distance_slow = x,
+            ("motion", "lift_speed_fast") => m.lift_speed_fast = x,
+            ("motion", "lift_speed_slow") => m.lift_speed_slow = x,
+            ("motion", "retract_distance_slow") => m.retract_distance_slow = x,
+            ("motion", "retract_speed_fast") => m.retract_speed_fast = x,
+            ("motion", "retract_speed_slow") => m.retract_speed_slow = x,
+            ("motion", "bottom_lift_distance_fast") => m.bottom_lift_distance_fast = x,
+            ("motion", "bottom_lift_distance_slow") => m.bottom_lift_distance_slow = x,
+            ("motion", "bottom_lift_speed_fast") => m.bottom_lift_speed_fast = x,
+            ("motion", "bottom_lift_speed_slow") => m.bottom_lift_speed_slow = x,
+            ("motion", "bottom_retract_distance_slow") => m.bottom_retract_distance_slow = x,
+            ("motion", "bottom_retract_speed_fast") => m.bottom_retract_speed_fast = x,
+            ("motion", "bottom_retract_speed_slow") => m.bottom_retract_speed_slow = x,
             ("slicing", "anti_aliasing") => self.slicing.anti_aliasing = x as u8,
             ("estimates", "resin_density") => self.estimates.resin_density = x,
             ("estimates", "bottle_volume") => self.estimates.bottle_volume = x,
@@ -278,22 +406,19 @@ pub enum ExposureKind {
     Normal,
 }
 
-/// One layer's exposure and motion: seconds, millimetres, mm/min.
+/// One layer's exposure (seconds) and plate travel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerMotion {
     pub exposure: f64,
     pub light_off: f64,
-    pub lift_height: f64,
-    pub lift_speed: f64,
-    pub retract_speed: f64,
+    pub travel: Travel,
 }
 
 impl LayerMotion {
     /// Seconds the layer takes: exposed, dark, lifted and lowered back (mslicer's
-    /// `ExposureConfig::print_time`), the speeds being per minute.
+    /// `ExposureConfig::print_time`, each phase of the travel at its own speed).
     pub fn seconds(&self) -> f64 {
-        let travel = |speed: f64| if speed > 0.0 { self.lift_height / speed * 60.0 } else { 0.0 };
-        self.exposure + self.light_off + travel(self.lift_speed) + travel(self.retract_speed)
+        self.exposure + self.light_off + self.travel.seconds()
     }
 }
 
@@ -348,11 +473,20 @@ pub const FIELDS: &[Field] = &[
     real("exposure", "bottom_light_off", 0.0, 120.0),
     int("exposure", "power", 1.0, 255.0),
     int("exposure", "bottom_power", 1.0, 255.0),
-    real("motion", "lift_height", 0.0, 50.0),
-    real("motion", "bottom_lift_height", 0.0, 50.0),
-    real("motion", "lift_speed", 1.0, 1000.0),
-    real("motion", "bottom_lift_speed", 1.0, 1000.0),
-    real("motion", "retract_speed", 1.0, 1000.0),
+    real("motion", "lift_distance_fast", 0.0, 50.0),
+    real("motion", "lift_distance_slow", 0.0, 50.0),
+    real("motion", "lift_speed_fast", 1.0, 1000.0),
+    real("motion", "lift_speed_slow", 1.0, 1000.0),
+    real("motion", "retract_distance_slow", 0.0, 50.0),
+    real("motion", "retract_speed_fast", 1.0, 1000.0),
+    real("motion", "retract_speed_slow", 1.0, 1000.0),
+    real("motion", "bottom_lift_distance_fast", 0.0, 50.0),
+    real("motion", "bottom_lift_distance_slow", 0.0, 50.0),
+    real("motion", "bottom_lift_speed_fast", 1.0, 1000.0),
+    real("motion", "bottom_lift_speed_slow", 1.0, 1000.0),
+    real("motion", "bottom_retract_distance_slow", 0.0, 50.0),
+    real("motion", "bottom_retract_speed_fast", 1.0, 1000.0),
+    real("motion", "bottom_retract_speed_slow", 1.0, 1000.0),
     int("slicing", "anti_aliasing", 1.0, 8.0),
     real("estimates", "resin_density", 0.0, ANY),
     real("estimates", "bottle_volume", 0.0, ANY),
@@ -400,8 +534,8 @@ impl Field {
 }
 
 /// Every field in its range, and the fields that depend on each other agreeing: the bottom and
-/// transition layers fit in the build height, and a pixel is at least [`MIN_PIXEL_PITCH`] wide.
-/// The error names the field (`layers.height`).
+/// transition layers fit in the build height, a pixel is at least [`MIN_PIXEL_PITCH`] wide, and
+/// a slow retract is no longer than its lift. The error names the field (`layers.height`).
 pub fn validate(printer: &PrinterProfile, settings: &PrintSettings) -> Result<(), String> {
     if printer.name.chars().count() > MAX_NAME_CHARS || printer.name.chars().any(char::is_control) {
         return Err(format!("`printer.name` must be at most {MAX_NAME_CHARS} characters, without control characters"));
@@ -423,6 +557,14 @@ pub fn validate(printer: &PrinterProfile, settings: &PrintSettings) -> Result<()
             "the bottom and transition layers ({}) must fit in the build height ({fit} layers)",
             l.bottom_count + l.transition_count
         ));
+    }
+    let m = &settings.motion;
+    for (key, travel) in [("retract_distance_slow", m.regular()), ("bottom_retract_distance_slow", m.bottom())] {
+        // The allowance keeps a slow retract typed as the whole lift (0.8 of 0.7 + 0.1) in.
+        if travel.retract_distance_slow > travel.lift_distance() + 1e-9 {
+            let lift = (travel.lift_distance() * 1000.0).round() / 1000.0;
+            return Err(format!("`motion.{key}` must be at most the lift distance ({lift} mm)"));
+        }
     }
     Ok(())
 }
@@ -540,6 +682,78 @@ mod tests {
         none.layers.transition_count = 2;
         assert!((none.exposure_for(0) - 21.0).abs() < 1e-4);
         assert_eq!(none.exposure_for(2), 3.0);
+    }
+
+    #[test]
+    fn travel_times_each_phase_and_the_retract_comes_back_the_whole_lift() {
+        let s = PrintSettings::default();
+        // The defaults are one phase each way: 5 mm up and down at 330 mm/min.
+        for t in [s.motion.regular(), s.motion.bottom()] {
+            assert_eq!((t.lift_distance(), t.retract_distance_fast()), (5.0, 5.0));
+            assert!((t.seconds() - 2.0 * 5.0 / 330.0 * 60.0).abs() < 1e-12);
+        }
+        let t = Travel {
+            lift_distance_fast: 4.0,
+            lift_distance_slow: 2.0,
+            lift_speed_fast: 240.0,
+            lift_speed_slow: 60.0,
+            retract_distance_slow: 1.5,
+            retract_speed_fast: 300.0,
+            retract_speed_slow: 90.0,
+        };
+        assert_eq!(t.retract_distance_fast(), 4.5);
+        // 2 s slow up, 1 s fast up, 0.9 s fast down, 1 s slow down.
+        assert!((t.seconds() - 4.9).abs() < 1e-12, "{}", t.seconds());
+
+        let mut m = s.motion;
+        m.lift_distance_fast = 3.0;
+        m.lift_distance_slow = 1.0;
+        m.retract_distance_slow = 3.0;
+        m.bottom_retract_distance_slow = 2.0;
+        m.fit_retract(false);
+        assert_eq!((m.retract_distance_slow, m.regular().retract_distance_fast()), (3.0, 1.0), "within the lift: kept");
+        m.lift_distance_fast = 1.5;
+        m.fit_retract(false);
+        assert_eq!((m.retract_distance_slow, m.regular().retract_distance_fast()), (2.5, 0.0));
+        assert_eq!(m.bottom_retract_distance_slow, 2.0, "the bottom's is its own");
+    }
+
+    #[test]
+    fn validate_keeps_each_slow_retract_within_its_lift() {
+        let p = PrinterProfile::default();
+        let mut s = PrintSettings::default();
+        s.motion.retract_distance_slow = 5.0;
+        s.motion.bottom_retract_distance_slow = 5.0;
+        assert_eq!(validate(&p, &s), Ok(()), "the whole lift");
+        let mut sum = s;
+        (sum.motion.lift_distance_slow, sum.motion.lift_distance_fast, sum.motion.retract_distance_slow) = (0.7, 0.1, 0.8);
+        assert_eq!(validate(&p, &sum), Ok(()), "0.7 + 0.1 is 0.8, rounding aside");
+        sum.motion.retract_distance_slow = 0.81;
+        assert!(validate(&p, &sum).unwrap_err().contains("(0.8 mm)"));
+        s.motion.lift_distance_slow = 4.0;
+        assert!(validate(&p, &s).unwrap_err().contains("motion.retract_distance_slow"));
+        s.motion.fit_retract(false);
+        assert_eq!(validate(&p, &s), Ok(()));
+        s.motion.bottom_lift_distance_fast = 0.0;
+        s.motion.bottom_lift_distance_slow = 2.0;
+        assert!(validate(&p, &s).unwrap_err().contains("motion.bottom_retract_distance_slow"));
+    }
+
+    #[test]
+    fn the_transition_steps_the_travel_from_bottom_to_regular() {
+        let mut s = PrintSettings::default();
+        s.layers.transition_count = 1;
+        s.motion.bottom_lift_distance_slow = 8.0;
+        s.motion.bottom_retract_distance_slow = 8.0;
+        s.motion.lift_distance_slow = 2.0;
+        s.motion.lift_distance_fast = 4.0;
+        s.motion.retract_speed_slow = 30.0;
+        let bottom = s.layers.bottom_count;
+        assert_eq!(s.layer_motion(bottom - 1).travel, s.motion.bottom());
+        let t = s.layer_motion(bottom).travel;
+        assert_eq!((t.lift_distance_slow, t.lift_distance_fast, t.retract_distance_slow), (5.0, 2.0, 4.0));
+        assert_eq!((t.retract_speed_slow, t.retract_distance_fast()), (180.0, 3.0));
+        assert_eq!(s.layer_motion(bottom + 1).travel, s.motion.regular());
     }
 
     #[test]

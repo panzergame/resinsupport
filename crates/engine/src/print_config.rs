@@ -24,6 +24,16 @@ pub struct PrintConfig {
     pub settings: PrintSettings,
 }
 
+/// Stored motion keys from before the two-phase lift and retract, and what each became: one phase
+/// each way, as they moved, so a tuned configuration prints as it did.
+const LEGACY_MOTION: &[(&str, &[&str])] = &[
+    ("lift_height", &["lift_distance_slow"]),
+    ("lift_speed", &["lift_speed_slow"]),
+    ("bottom_lift_height", &["bottom_lift_distance_slow"]),
+    ("bottom_lift_speed", &["bottom_lift_speed_slow"]),
+    ("retract_speed", &["retract_speed_fast", "bottom_retract_speed_fast"]),
+];
+
 /// Why one field was not set.
 enum FieldError {
     /// No such field: a typo in parameters, a field from another version in stored settings.
@@ -56,8 +66,9 @@ impl PrintConfig {
     }
 
     /// Merge `print.configure`'s parameters: partial `printer`, `layers`, `exposure`, `motion`,
-    /// `slicing`, `estimates`. All or nothing: the result is validated as a whole before it
-    /// replaces this configuration.
+    /// `slicing`, `estimates`. A slow retract the parameters leave out is shortened to fit a
+    /// shorter lift. All or nothing: the result is validated as a whole before it replaces this
+    /// configuration.
     pub(crate) fn configure(&mut self, p: &Value) -> Result<()> {
         let empty = serde_json::Map::new();
         let o = match p {
@@ -83,6 +94,12 @@ impl PrintConfig {
                 Some(_) => return Err(EngineError::BadParams(format!("`{group}` must be an object of settings"))),
             }
         }
+        let named = |key: &str| o.get("motion").and_then(Value::as_object).is_some_and(|m| m.contains_key(key));
+        for (key, bottom) in [("retract_distance_slow", false), ("bottom_retract_distance_slow", true)] {
+            if !named(key) {
+                next.settings.motion.fit_retract(bottom);
+            }
+        }
         next.validate()?;
         *self = next;
         Ok(())
@@ -95,8 +112,9 @@ impl PrintConfig {
 
     /// A configuration read leniently from storage, and what could not be read
     /// (`exposure.normal`, `printer` for a whole group), which fell back to defaults. Unknown
-    /// keys are ignored. Fields that read but don't fit together fall back a group at a time:
-    /// the layers, then the printer, then everything.
+    /// keys are ignored; the motion keys from before the two-phase lift and retract are read as
+    /// one phase each way. Fields that read but don't fit together fall back a group at a time:
+    /// the layers, the motion, then the printer, then everything.
     pub fn from_stored(v: &Value) -> (PrintConfig, Vec<String>) {
         let mut c = PrintConfig::default();
         let mut problems = Vec::new();
@@ -110,9 +128,18 @@ impl PrintConfig {
             match o.get(group) {
                 None => {}
                 Some(Value::Object(fields)) => {
-                    for (key, value) in fields.iter().take(64) {
-                        if let Err(FieldError::Bad(_)) = c.set(group, key, value) {
-                            problems.push(format!("{group}.{key}"));
+                    let legacy = |key: &str| LEGACY_MOTION.iter().find(|(old, _)| group == "motion" && *old == key).map(|(_, new)| *new);
+                    // The old keys first, so a new one stored beside them wins.
+                    for old_keys in [true, false] {
+                        for (key, value) in fields.iter().take(64) {
+                            let keys = match legacy(key) {
+                                Some(new) if old_keys => new.to_vec(),
+                                None if !old_keys => vec![key.as_str()],
+                                _ => continue,
+                            };
+                            if keys.iter().any(|k| matches!(c.set(group, k, value), Err(FieldError::Bad(_)))) {
+                                problems.push(format!("{group}.{key}"));
+                            }
                         }
                     }
                 }
@@ -126,6 +153,11 @@ impl PrintConfig {
         if layers.validate().is_ok() {
             problems.push("layers".into());
             return (layers, problems);
+        }
+        let motion = PrintConfig { settings: PrintSettings { motion: PrintSettings::default().motion, ..c.settings }, ..c.clone() };
+        if motion.validate().is_ok() {
+            problems.push("motion".into());
+            return (motion, problems);
         }
         let printer = PrintConfig { printer: PrinterProfile::default(), ..c };
         if printer.validate().is_ok() {
