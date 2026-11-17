@@ -100,7 +100,7 @@ pub struct SupportMesh {
 /// What a ray meets on a support, other than a joint's handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Piece {
-    /// The tip or the base: the support as a whole.
+    /// The tip: the support as a whole.
     Whole,
     Segment(u32),
     /// A joint that is not selected: picked where it shows, as the columns are.
@@ -294,7 +294,8 @@ impl RouteCache {
     }
 
     /// The nearest support solid along the ray: its support, the piece and the distance. The
-    /// tip and the base stand for the whole support. Without `bodies`, the tips alone.
+    /// tip stands for the whole support, the base for the segment above it. Without `bodies`,
+    /// the tips alone.
     pub fn piece_hit(&self, scene: &Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3, bodies: bool) -> Option<(u64, Piece, f64)> {
         let body = preset.body.diameter / 2.0;
         let tip = preset.tip.upper_diameter.max(preset.tip.contact_diameter) / 2.0;
@@ -302,8 +303,9 @@ impl RouteCache {
         self.routed(scene)
             .flat_map(|(id, r)| {
                 let foot = r.body.last().filter(|_| r.foot && bodies).map(|&f| (f, f + Vec3::Z * preset.base.height));
-                let whole = std::iter::once((r.contact, r.head, tip)).chain(foot.map(|(a, b)| (a, b, base)));
-                let whole = whole.filter_map(move |(a, b, rad)| ray_capsule(origin, dir, a, b, rad).map(|t| (id, Piece::Whole, t)));
+                let bottom = bottom_segment(r).map_or(Piece::Whole, Piece::Segment);
+                let whole = std::iter::once((r.contact, r.head, tip, Piece::Whole)).chain(foot.map(|(a, b)| (a, b, base, bottom)));
+                let whole = whole.filter_map(move |(a, b, rad, piece)| ray_capsule(origin, dir, a, b, rad).map(|t| (id, piece, t)));
                 let segments = r.body.windows(2).zip(0u32..).filter(move |_| bodies).filter_map(move |(w, i)| match w {
                     [a, b] => ray_capsule(origin, dir, *a, *b, body).map(|t| (id, Piece::Segment(i), t)),
                     _ => None,
@@ -343,6 +345,12 @@ fn joints(r: &Route) -> impl Iterator<Item = (u32, Vec3)> + '_ {
     r.body.split_last().map(|(_, corners)| corners).unwrap_or_default().iter().zip(0u32..).map(|(&c, i)| (i, c))
 }
 
+/// The segment ending on the foot, which the base belongs to: picked and selected with it, as
+/// moving that segment carries the base along. None for a route with no segment.
+fn bottom_segment(r: &Route) -> Option<u32> {
+    r.body.len().checked_sub(2).and_then(|i| u32::try_from(i).ok())
+}
+
 /// One look's solids while the mesh is built.
 #[derive(Default)]
 struct Group {
@@ -352,8 +360,8 @@ struct Group {
 }
 
 /// One support's solids ([`support_primitives`]), each into the group of its look: the tip and
-/// its round contact in `tip` (none: left out), the base in `whole`, the body's columns and the joint at each bend
-/// in `look` of their part.
+/// its round contact in `tip` (none: left out), the body's columns and the joint at each bend
+/// in `look` of their part, the base in that of the segment above it.
 fn solids(r: &Route, p: &SupportPreset, tip: Option<Look>, whole: Look, look: impl Fn(SupportPart) -> Look, groups: &mut [Group; 3]) {
     support_primitives(r, p, |owner, prim| {
         let l = match owner {
@@ -361,7 +369,7 @@ fn solids(r: &Route, p: &SupportPreset, tip: Option<Look>, whole: Look, look: im
                 Some(l) => l,
                 None => return,
             },
-            Owner::Base => whole,
+            Owner::Base => bottom_segment(r).map_or(whole, |i| look(SupportPart::Segment(i))),
             Owner::Part(part) => look(part),
         };
         let Some(g) = groups.get_mut(l.index()) else { return };
@@ -425,11 +433,18 @@ mod tests {
         assert!(mesh.tips[0].len() < mesh.ranges[0].len() && mesh.tips[0].start == mesh.ranges[0].start, "tips first, then the bodies");
         assert!(mesh.handles.iter().all(|h| !h.selected));
         assert!(mesh.joints.iter().all(|j| j.2 != Look::Selected), "the head's joint stays plain");
-        // A selected segment and joint: the segment's column moves into the selected range, the
-        // joint's handle is selected, and the rest of the support stays plain.
+        // A selected segment and joint: the segment's column and the base under it move into the
+        // selected range, the joint's handle is selected, and the rest of the support stays plain.
         s.execute("support.select", &json!({ "parts": [{ "support": 3, "segment": 0 }, { "support": 3, "joint": 0 }] })).unwrap();
         let mesh = cache.mesh(&s.scene, &preset, true, None);
-        assert!(!mesh.ranges[0].is_empty() && !mesh.ranges[1].is_empty());
+        let mut column = Vec::new();
+        support_primitives(cache.route(3).unwrap(), &preset, |owner, prim| {
+            if let (Owner::Part(SupportPart::Segment(0)) | Owner::Base, Primitive::Frustum { a, b, ra, rb, sides, smooth, caps }) = (owner, prim) {
+                frustum(a, b, ra, rb, sides, smooth, caps, &mut column);
+            }
+        });
+        assert_eq!(mesh.ranges[1].len(), column.len(), "the bottom segment and its base");
+        assert!(mesh.tips[1].is_empty());
         assert_eq!(mesh.handles.len(), 5, "one joint per straight support, where the tip meets the body");
         assert_eq!(mesh.handles.iter().filter(|h| h.selected).count(), 1);
         // A ray down onto support 3's head meets its handle; one from the side meets its body.
@@ -442,7 +457,11 @@ mod tests {
         assert_eq!(cache.piece_hit(&s.scene, &preset, other - Vec3::Y * 50.0, Vec3::Y, true).map(|h| (h.0, h.1)), Some((2, Piece::Joint(0))));
         let side = Vec3::new(head.x, head.y - 50.0, head.z / 2.0);
         assert_eq!(cache.piece_hit(&s.scene, &preset, side, Vec3::Y, true).map(|h| (h.0, h.1)), Some((3, Piece::Segment(0))));
-        assert_eq!(cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y, true).map(|h| (h.0, h.1)), Some((3, Piece::Whole)));
+        // The base is picked as the segment above it.
+        assert_eq!(
+            cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y, true).map(|h| (h.0, h.1)),
+            Some((3, Piece::Segment(0)))
+        );
         // Without the bodies, neither the column nor the base is met; the tip still is.
         assert_eq!(cache.piece_hit(&s.scene, &preset, side, Vec3::Y, false), None);
         assert_eq!(cache.piece_hit(&s.scene, &preset, Vec3::new(head.x, -50.0, 0.1), Vec3::Y, false), None);

@@ -1,6 +1,7 @@
 //! Placing support tips by hand, in Support mode: the pointer over a model shows where a tip
-//! would go, a left press places it, a left press on a placed tip or base selects the support, one
-//! on a body segment or a joint's handle selects that part, one on a brace's strut the brace
+//! would go, a left press places it, a left press on a placed tip selects the support, one
+//! on a body segment or a joint's handle selects that part (the base goes with the segment
+//! above it), one on a brace's strut the brace
 //! (Shift toggles), Delete removes the selected supports and braces; a drag from empty space selects with a box (`box_select`). A double press
 //! on a tip starts placing branches from that support's head: each press on a model's surface
 //! places a branch's tip (`support.add` with its `parent`) until Esc. A
@@ -29,9 +30,9 @@ use crate::support_routes::Piece;
 pub enum Hover {
     /// A model's surface, where a tip would go.
     Surface { model: u64, point: Vec3, normal: Vec3 },
-    /// A placed support's tip or base: the support as a whole.
+    /// A placed support's tip: the support as a whole.
     Support(u64),
-    /// A joint's handle or a body segment.
+    /// A joint's handle or a body segment, the base standing for the segment above it.
     Part(u64, SupportPart),
     /// A selected support's contact handle, which starts moving its tip.
     TipHandle(u64),
@@ -593,6 +594,8 @@ mod tests {
         app.prefs.fade_bodies_from_below = false;
         assert_eq!(body_alpha(&app), 1.0);
         assert_eq!(pick(&app, &proj, column), Some(Hover::Part(id, SupportPart::Segment(0))));
+        let base = proj.to_screen(Vec3::new(10.0, 10.0, 0.1)).unwrap();
+        assert_eq!(pick(&app, &proj, base), Some(Hover::Part(id, SupportPart::Segment(0))), "the base picks the segment above it");
     }
 
     /// A press on a selected support's contact handle hides its tip; the next press on the model
