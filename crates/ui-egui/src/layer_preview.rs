@@ -10,6 +10,7 @@ use resin_engine::Job;
 use resin_engine::slice::{ExposureKind, Stamp};
 
 use crate::layer_image::LayerImage;
+use crate::slice_runner::SliceRunner;
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
 use crate::ui_kit::{self, Buttons, Card};
@@ -126,9 +127,19 @@ impl LayerPreview {
         self.set_top(self.top.saturating_add_signed(by));
     }
 
-    /// The shown layer of `job` decoded, decoding it only when it changed: dragging through many
-    /// layers decodes one per frame, the one under the handle.
-    pub fn image(&mut self, job: &Job, limit: u32) -> Option<Arc<LayerImage>> {
+    /// The shown layer decoded, decoding it only when it changed: dragging through many layers
+    /// decodes one per frame, the one under the handle. The running job's layer replaces the kept
+    /// `job`'s as soon as it is sliced.
+    pub fn image(&mut self, job: &Job, slicer: &SliceRunner, limit: u32) -> Option<Arc<LayerImage>> {
+        if let Some(key) = slicer.layer_key(self.top) {
+            if self.image.as_ref().is_some_and(|i| i.key == key) {
+                return self.image.clone();
+            }
+            if let Some((layer, profile)) = slicer.layer(key.1) {
+                self.image = Some(Arc::new(LayerImage::decode(key, &layer, profile, limit)));
+                return self.image.clone();
+            }
+        }
         let key = (job.sliced.stamp, self.top);
         if self.image.as_ref().is_none_or(|i| i.key != key) {
             let layer = job.sliced.layers.get(self.top)?;
@@ -160,6 +171,13 @@ pub fn active(app: &ResinApp) -> bool {
 /// scene changed since.
 pub fn dimmed(app: &ResinApp) -> bool {
     !app.session.job_is_current() || app.slicer.is_running()
+}
+
+/// Whether a layer image is older than the scene and settings: it is not from what they are now,
+/// or another job is running.
+pub fn image_dimmed(app: &ResinApp, image: &LayerImage) -> bool {
+    let stamp = image.key.0;
+    stamp != app.session.slice_stamp() || app.slicer.running_stamp().is_some_and(|s| s != stamp)
 }
 
 /// Page Up and Page Down step one layer (Shift: ten), Home and End jump to the ends. Whether

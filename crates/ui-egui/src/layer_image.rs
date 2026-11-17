@@ -70,6 +70,8 @@ impl PlateMap {
 
 pub struct LayerImage {
     pub key: ImageKey,
+    /// The layer's top above the plate, mm.
+    pub z: f32,
     pub plate: PlateMap,
     /// `width · height` grey levels, row-major, row 0 the plate's +Y edge (before mirrors).
     pub pixels: Vec<u8>,
@@ -85,7 +87,7 @@ impl LayerImage {
         let mut pixels = Vec::new();
         layer.decode_into(plate.width, plate.height, &mut pixels);
         let tiles = tiles(plate.width, plate.height, limit).into_iter().map(|rect| Tile { rect, mips: mips(&pixels, plate.width, rect) }).collect();
-        LayerImage { key, plate, pixels, tiles, regions: layer.regions(plate.width) }
+        LayerImage { key, z: layer.z, plate, pixels, tiles, regions: layer.regions(plate.width) }
     }
 
     /// The grey level at pixel (`x`, `y`).

@@ -19,9 +19,9 @@ const MAX_POINTS_PER_PIXEL: f64 = 96.0;
 
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, rect: Rect, resp: &egui::Response, t: &Tokens) {
     app.preview.probe = None;
-    let dim = layer_preview::dimmed(app);
     let Some(job) = app.session.job() else { return };
-    let Some(image) = app.preview.image(job, app.max_texture) else { return };
+    let Some(image) = app.preview.image(job, &app.slicer, app.max_texture) else { return };
+    let dim = layer_preview::image_dimmed(app, &image);
     let plate = image.plate;
     let size = (plate.display_x, plate.display_y);
     let (kx, ky) = plate.pitch();

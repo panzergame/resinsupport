@@ -277,7 +277,7 @@ impl ResinApp {
 
     /// Slice the scene as it is now, cancelling a job already running.
     pub(crate) fn slice_now(&mut self) {
-        self.slicer.start(self.session.slice_source());
+        self.slicer.start(self.session.slice_source(), self.preview.top);
     }
 
     /// Cancel the running slice; nothing starts on its own until the scene or a setting changes.
@@ -316,6 +316,8 @@ impl ResinApp {
             }
         }
         if self.slicer.is_running() {
+            // The slider may have moved to a layer not sliced yet.
+            self.slicer.want(self.preview.top);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }

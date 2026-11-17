@@ -6,8 +6,8 @@
 //! nonzero rule, so overlapping solids print as their union and nothing needs merging first.
 //! No threads here: the caller says how layers are run ([`slice_with`]).
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError, RwLock};
 
 use crate::raster::{self, Segment, Segments1D};
 use crate::{JobStats, Layer, PrintSettings, PrinterProfile, SlicedJob, Stamp, validate};
@@ -35,11 +35,25 @@ pub struct SliceInput {
     pub stamp: Stamp,
 }
 
-/// Layers done out of layers to do, read from any thread while a slice runs.
+/// Layers done out of layers to do, read from any thread while a slice runs; and the layers done
+/// so far, so the one on screen can be shown before the whole job is in.
 #[derive(Debug, Default)]
 pub struct Progress {
     done: AtomicUsize,
     total: AtomicUsize,
+    /// The layer to slice next, plus one; 0 for none.
+    wanted: AtomicUsize,
+    /// Each layer once sliced. Emptied when the job is put together.
+    layers: RwLock<Vec<Mutex<Option<Sliced>>>>,
+}
+
+/// A layer as it comes out of the slicer, before the job's statistics are added up.
+#[derive(Debug)]
+struct Sliced {
+    layer: Layer,
+    open: u64,
+    /// The sum of its pixels' grey levels.
+    grey: u64,
 }
 
 impl Progress {
@@ -57,6 +71,39 @@ impl Progress {
     /// One more step done.
     pub fn advance(&self) {
         self.done.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Slice layer `i` next (the last one when `i` is past the end), unless it is already done or
+    /// being done. Called again, the newer layer wins.
+    pub fn want(&self, i: usize) {
+        self.wanted.store(i.saturating_add(1), Ordering::Relaxed);
+    }
+
+    fn take_wanted(&self) -> Option<usize> {
+        self.wanted.swap(0, Ordering::Relaxed).checked_sub(1)
+    }
+
+    /// Layer `i` of the slice running, once it is done; nothing once the job is put together.
+    pub fn layer(&self, i: usize) -> Option<Layer> {
+        let layers = self.layers.read().unwrap_or_else(PoisonError::into_inner);
+        let slot = layers.get(i)?.lock().unwrap_or_else(PoisonError::into_inner);
+        slot.as_ref().map(|s| s.layer.clone())
+    }
+
+    fn reset_layers(&self, count: usize) {
+        *self.layers.write().unwrap_or_else(PoisonError::into_inner) = (0..count).map(|_| Mutex::new(None)).collect();
+    }
+
+    fn put_layer(&self, i: usize, sliced: Sliced) {
+        let layers = self.layers.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = layers.get(i) {
+            *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(sliced);
+        }
+    }
+
+    fn take_layers(&self) -> Vec<Option<Sliced>> {
+        let layers = std::mem::take(&mut *self.layers.write().unwrap_or_else(PoisonError::into_inner));
+        layers.into_iter().map(|m| m.into_inner().unwrap_or_else(PoisonError::into_inner)).collect()
     }
 }
 
@@ -96,16 +143,18 @@ impl std::error::Error for SliceError {}
 
 /// Slice `input`, one layer after another on this thread.
 pub fn slice(input: &SliceInput, progress: &Progress, cancel: &Cancel) -> Result<SlicedJob, SliceError> {
-    slice_with(input, progress, cancel, &|count, layer| (0..count).for_each(layer))
+    slice_with(input, progress, cancel, &|_, work| while work() {})
 }
 
-/// Slice `input`, `for_each_layer(count, layer)` calling `layer(i)` once for each `i` below
-/// `count`, on whatever threads it likes and in any order.
+/// Slice `input`, `run(count, work)` calling `work()` until it returns false, from as many
+/// threads as it likes: each call slices one of the `count` layers, the one
+/// [`Progress::want`] asked for first. Layers are independent, so the order changes nothing in
+/// the job.
 pub fn slice_with(
     input: &SliceInput,
     progress: &Progress,
     cancel: &Cancel,
-    for_each_layer: &dyn Fn(usize, &(dyn Fn(usize) + Sync)),
+    run: &dyn Fn(usize, &(dyn Fn() -> bool + Sync)),
 ) -> Result<SlicedJob, SliceError> {
     let (profile, settings) = (&input.profile, &input.settings);
     validate(profile, settings).map_err(SliceError::BadInput)?;
@@ -136,8 +185,11 @@ pub fn slice_with(
     let count = (top.min(profile.build_height) / h - lowest - 1e-9).ceil().clamp(0.0, fit) as usize;
     let pixels = u64::from(res.0) * u64::from(res.1);
 
+    progress.reset_layers(count);
     progress.begin(count);
-    let slots: Vec<OnceLock<(Vec<crate::Run>, u64)>> = (0..count).map(|_| OnceLock::new()).collect();
+    let claimed: Vec<AtomicBool> = (0..count).map(|_| AtomicBool::new(false)).collect();
+    let next = AtomicUsize::new(0);
+    let claim = |i: usize| claimed.get(i).is_some_and(|c| !c.swap(true, Ordering::Relaxed));
     let layer = |i: usize| {
         if cancel.is_cancelled() {
             return;
@@ -165,13 +217,33 @@ pub fn slice_with(
         if let Some(table) = &gamma {
             runs = raster::regrey(&runs, table);
         }
-        let out = (runs, open);
-        if let Some(slot) = slots.get(i) {
-            let _ = slot.set(out);
-        }
+        let grey: u64 = runs.iter().map(|r| r.len * u64::from(r.grey)).sum();
+        let motion = settings.layer_motion(i as u32);
+        let layer = Layer {
+            runs,
+            z: ((i + 1) as f64 * h) as f32,
+            exposure: motion.exposure as f32,
+            light_off: motion.light_off as f32,
+            lit: (grey as f64 / 255.0).round() as u64,
+        };
+        progress.put_layer(i, Sliced { layer, open, grey });
         progress.advance();
     };
-    for_each_layer(count, &layer);
+    let work = || {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let wanted = progress.take_wanted().map(|w| w.min(count.saturating_sub(1))).filter(|&w| claim(w));
+        let Some(i) =
+            wanted.or_else(|| std::iter::repeat_with(|| next.fetch_add(1, Ordering::Relaxed)).take_while(|&i| i < count).find(|&i| claim(i)))
+        else {
+            return false;
+        };
+        layer(i);
+        true
+    };
+    run(count, &work);
+    let slots = progress.take_layers();
     if cancel.is_cancelled() {
         return Err(SliceError::Cancelled);
     }
@@ -180,20 +252,15 @@ pub fn slice_with(
     let mut stats = JobStats { clipped, ..JobStats::default() };
     let mut layers = Vec::with_capacity(count);
     for (i, slot) in slots.into_iter().enumerate() {
-        let (runs, open) = slot.into_inner().ok_or(SliceError::Incomplete)?;
-        let grey: u64 = runs.iter().map(|r| r.len * u64::from(r.grey)).sum();
+        let Sliced { layer, open, grey } = slot.ok_or(SliceError::Incomplete)?;
         let lit = grey as f64 / 255.0;
-        let motion = settings.layer_motion(i as u32);
         stats.volume_ml += lit * px * py * h / 1000.0;
-        stats.print_time_s += motion.seconds();
+        stats.print_time_s += settings.layer_motion(i as u32).seconds();
         stats.open_rows += open;
-        layers.push(Layer {
-            runs,
-            z: ((i + 1) as f64 * h) as f32,
-            exposure: motion.exposure as f32,
-            light_off: motion.light_off as f32,
-            lit: lit.round() as u64,
-        });
+        layers.push(layer);
+    }
+    if layers.len() != count {
+        return Err(SliceError::Incomplete);
     }
     Ok(SlicedJob { layers, profile: profile.clone(), settings: *settings, stats, stamp: input.stamp })
 }
@@ -488,12 +555,13 @@ mod tests {
         assert!(start.elapsed().as_secs_f64() < 1.0);
         // Cancelled midway, from the runner.
         let cancel = Cancel::default();
-        let r = slice_with(&i, &Progress::default(), &cancel, &|n, layer| {
-            for k in 0..n {
+        let r = slice_with(&i, &Progress::default(), &cancel, &|_, work| {
+            let mut k = 0;
+            while work() {
+                k += 1;
                 if k == 3 {
                     cancel.cancel();
                 }
-                layer(k);
             }
         });
         assert_eq!(r, Err(SliceError::Cancelled));
@@ -548,5 +616,44 @@ mod tests {
         let p = Progress::default();
         slice(&input(vec![cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 1.0])]), &p, &Cancel::default()).unwrap();
         assert_eq!(p.get(), (20, 20));
+        assert_eq!(p.layer(0), None, "the layers went into the job");
+    }
+
+    #[test]
+    fn the_wanted_layer_is_sliced_first_and_shown_before_the_job_is_in() {
+        let mut i = input(vec![cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 2.0]), cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 1.0])]);
+        i.settings.slicing.anti_aliasing_z = 4;
+        i.settings.slicing.blur_radius = 2;
+        i.settings.slicing.blur_passes = 1;
+        let plain = run(&i);
+        let p = Progress::default();
+        p.want(30);
+        let job = slice_with(&i, &p, &Cancel::default(), &|count, work| {
+            assert!(work());
+            assert_eq!(p.get(), (1, count));
+            assert_eq!(p.layer(30).as_ref(), Some(&plain.layers[30]));
+            assert_eq!(p.layer(0), None);
+            // Asked for while slicing: next.
+            p.want(25);
+            assert!(work());
+            assert!(p.layer(25).is_some() && p.layer(0).is_none());
+            // Already done: back to the order.
+            p.want(30);
+            assert!(work());
+            assert!(p.layer(0).is_some() && p.layer(1).is_none());
+            while work() {}
+        });
+        assert_eq!(job, Ok(plain.clone()), "the order changes nothing");
+        // Past the end: the last layer.
+        let p = Progress::default();
+        p.want(usize::MAX);
+        let last = plain.layers.len() - 1;
+        slice_with(&i, &p, &Cancel::default(), &|_, work| {
+            assert!(work());
+            assert!(p.layer(last).is_some());
+            assert!(p.layer(last - 1).is_none());
+            let _ = work();
+        })
+        .unwrap_err();
     }
 }

@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use resin_geom::Vec3;
-use resin_slice::{SliceInput, SlicedJob, Solid, SolidKind, Stamp};
+use resin_slice::{PrinterProfile, SliceInput, SlicedJob, Solid, SolidKind, Stamp};
 use serde::Serialize;
 
 use crate::support_solids::SupportTessellator;
@@ -34,6 +34,10 @@ pub struct SliceSource {
 impl SliceSource {
     pub fn stamp(&self) -> Stamp {
         self.stamp
+    }
+
+    pub fn profile(&self) -> &PrinterProfile {
+        &self.config.printer
     }
 
     /// The slicer's input: each model placed, each support that reaches the plate (a branch: through

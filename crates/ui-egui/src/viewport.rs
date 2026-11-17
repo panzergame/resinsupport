@@ -146,12 +146,12 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let (right, up, back) = cam.basis();
     // A key light from the viewer's upper left, so faces read apart; a fill from the eye.
     let light = (right * -0.45 + up * 0.65 + back * 0.6).normalized().unwrap_or(back);
-    let clip = clip_plane(app);
-    let dim = layer_preview::dimmed(app);
-    let cap = clip.and_then(|c| {
-        let job = app.session.job()?;
-        let image = app.preview.image(job, app.max_texture)?;
-        Some(Cap { image, z: c.above, color: linear(tokens.model), edge: linear(tokens.cap_edge), dim })
+    let image = clip_plane(app).and_then(|_| app.preview.image(app.session.job()?, &app.slicer, app.max_texture));
+    // A layer of the running job may have a new layer height: the cut follows its top.
+    let clip = clip_plane(app).map(|c| Clip { above: image.as_ref().map_or(c.above, |i| i.z), ..c });
+    let cap = image.zip(clip).map(|(image, c)| {
+        let dim = layer_preview::image_dimmed(app, &image);
+        Cap { image, z: c.above, color: linear(tokens.model), edge: linear(tokens.cap_edge), dim }
     });
     let frame = ViewFrame {
         view_proj: cam.view_proj_bounds(aspect, &bounds, &solid).to_f32(),
