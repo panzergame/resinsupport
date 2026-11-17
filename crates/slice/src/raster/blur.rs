@@ -15,6 +15,13 @@ use crate::{Cancel, Run};
 /// Unchanged when there is nothing to blur, when cancelled, or when the rows to blur do not fit
 /// in memory.
 pub(crate) fn blur(runs: &[Run], res: (u32, u32), radius: u32, passes: u8, cancel: &Cancel) -> Vec<Run> {
+    blur_with(runs, res, radius, passes, cancel, box_columns)
+}
+
+/// The step down the columns: `box_columns`, or in the benchmark the way it was done before.
+type Columns = fn(&[u8], &mut [u8], usize, &[Vec<(usize, usize)>], usize, &mut Vec<u32>, &Cancel) -> bool;
+
+fn blur_with(runs: &[Run], res: (u32, u32), radius: u32, passes: u8, cancel: &Cancel, columns: Columns) -> Vec<Run> {
     let (w, h) = (u64::from(res.0), u64::from(res.1));
     let reach = u64::from(radius) * u64::from(passes);
     if reach == 0 || w == 0 || h == 0 {
@@ -47,7 +54,7 @@ pub(crate) fn blur(runs: &[Run], res: (u32, u32), radius: u32, passes: u8, cance
                 }
             }
         }
-        if !box_columns(&other, &mut image, width, &spans, r, &mut sums, cancel) {
+        if !columns(&other, &mut image, width, &spans, r, &mut sums, cancel) {
             return runs.to_vec();
         }
     }
@@ -269,29 +276,57 @@ fn box_span(src: &[u8], dst: &mut [u8], a: usize, r: usize) {
 
 /// Down the columns of `src`, rows of `width`, over each row's active spans: the mean of the
 /// `2r + 1` rows around, dark past the band, into `dst`. False when cancelled.
+///
+/// `sums` holds each column's sum over the window, carried down from the row above where the
+/// column was active there too: one row comes in, one goes out. A column entering a span sums
+/// its window afresh; the spans are dilated `reach` rows each way, so that is once per stretch
+/// of at least `2 · reach + 1` rows.
 fn box_columns(src: &[u8], dst: &mut [u8], width: usize, spans: &[Vec<(usize, usize)>], r: usize, sums: &mut Vec<u32>, cancel: &Cancel) -> bool {
     let d = 2 * r as u32 + 1;
     let rows = spans.len();
+    sums.clear();
+    sums.resize(width, 0);
+    let line = |y: usize, a: usize, b: usize| src.get(y * width + a..y * width + b);
+    let mut above: &[(usize, usize)] = &[];
     for (y, (out, row)) in dst.chunks_exact_mut(width).zip(spans).enumerate() {
         if (y as u64).is_multiple_of(CANCEL_EVERY) && cancel.is_cancelled() {
             return false;
         }
+        let (incoming, outgoing) = ((y + r < rows).then_some(y + r), y.checked_sub(r + 1));
+        let mut k = 0;
         for &(a, b) in row {
-            sums.clear();
-            sums.resize(b - a, 0);
-            for near in y.saturating_sub(r)..(y + r + 1).min(rows) {
-                if let Some(line) = src.get(near * width + a..near * width + b) {
-                    for (s, &v) in sums.iter_mut().zip(line) {
-                        *s += u32::from(v);
+            let mut x = a;
+            while x < b {
+                while above.get(k).is_some_and(|&(_, e)| e <= x) {
+                    k += 1;
+                }
+                let (end, carried) = match above.get(k) {
+                    Some(&(c, e)) if c <= x => (e.min(b), true),
+                    next => (next.map_or(b, |&(c, _)| c.clamp(x, b)), false),
+                };
+                let Some(s) = sums.get_mut(x..end) else { break };
+                if carried {
+                    if let Some(v) = incoming.and_then(|y| line(y, x, end)) {
+                        s.iter_mut().zip(v).for_each(|(s, &v)| *s += u32::from(v));
+                    }
+                    if let Some(v) = outgoing.and_then(|y| line(y, x, end)) {
+                        s.iter_mut().zip(v).for_each(|(s, &v)| *s = s.saturating_sub(u32::from(v)));
+                    }
+                } else {
+                    s.fill(0);
+                    for near in y.saturating_sub(r)..(y + r + 1).min(rows) {
+                        if let Some(v) = line(near, x, end) {
+                            s.iter_mut().zip(v).for_each(|(s, &v)| *s += u32::from(v));
+                        }
                     }
                 }
+                x = end;
             }
-            if let Some(out) = out.get_mut(a..b) {
-                for (o, &s) in out.iter_mut().zip(sums.iter()) {
-                    *o = mean(s, d);
-                }
+            if let (Some(out), Some(s)) = (out.get_mut(a..b), sums.get(a..b)) {
+                out.iter_mut().zip(s).for_each(|(o, &s)| *o = mean(s, d));
             }
         }
+        above = row;
     }
     true
 }
@@ -419,6 +454,32 @@ mod tests {
         let covered: u64 = out.iter().map(|r| r.len).sum();
         push(&mut out, w * h - covered, 0);
         out
+    }
+
+    /// The step down the columns as it was before the running sums: every span's `2r + 1` rows
+    /// summed on each row. What the benchmark measures `box_columns` against.
+    fn box_columns_direct(
+        src: &[u8],
+        dst: &mut [u8],
+        width: usize,
+        spans: &[Vec<(usize, usize)>],
+        r: usize,
+        sums: &mut Vec<u32>,
+        _: &Cancel,
+    ) -> bool {
+        let d = 2 * r as u32 + 1;
+        let rows = spans.len();
+        for (y, (out, row)) in dst.chunks_exact_mut(width).zip(spans).enumerate() {
+            for &(a, b) in row {
+                sums.clear();
+                sums.resize(b - a, 0);
+                for near in y.saturating_sub(r)..(y + r + 1).min(rows) {
+                    sums.iter_mut().zip(&src[near * width + a..near * width + b]).for_each(|(s, &v)| *s += u32::from(v));
+                }
+                out[a..b].iter_mut().zip(sums.iter()).for_each(|(o, &s)| *o = mean(s, d));
+            }
+        }
+        true
     }
 
     /// xorshift64*: test data without a dependency.
@@ -576,11 +637,8 @@ mod tests {
         to_runs(&img)
     }
 
-    /// Run by hand: `cargo test --release -p resin-slice blur_benchmark -- --ignored --nocapture`.
-    /// The blur over whole rows against the active spans on 8K layers, the same output asserted.
-    #[test]
-    #[ignore]
-    fn blur_benchmark() {
+    /// 8K layers, Saturn 2 pixels: a large part, a field of supports, both.
+    fn scenes() -> ((u32, u32), Vec<(&'static str, Vec<Run>)>) {
         let res = (7680u32, 4320u32);
         // Saturn 2 pixels: 0.0285 mm.
         let mm = 1.0 / 0.0285;
@@ -589,39 +647,70 @@ mod tests {
         let supports: Vec<(f64, f64, f64)> = (0..20)
             .flat_map(|i| (0..12).map(move |j| (cx + (f64::from(i) - 9.5) * 8.0 * mm, cy + (f64::from(j) - 5.5) * 8.0 * mm, 0.4 * mm)))
             .collect();
-        let scenes = [
+        let scenes = vec![
             ("part Ø100 mm", discs(res, &[part])),
             ("240 supports Ø0.8 mm", discs(res, &supports)),
             ("part Ø40 mm + 240 supports", discs(res, &[supports.as_slice(), &[(cx, cy, 20.0 * mm)]].concat())),
         ];
-        const RUNS: usize = 5;
-        let median = |mut v: Vec<f64>| {
-            v.sort_by(f64::total_cmp);
-            (v[v.len() / 2], v[0], v[v.len() - 1])
-        };
-        println!("{:<28} {:>8} {:>22} {:>22} {:>8}", "layer", "r × p", "whole rows ms", "spans ms", "speed-up");
+        (res, scenes)
+    }
+
+    const RUNS: usize = 5;
+    const SETTINGS: [(u32, u8); 4] = [(1, 1), (2, 3), (8, 4), (16, 4)];
+
+    /// Median, min and max.
+    fn median(mut v: Vec<f64>) -> (f64, f64, f64) {
+        v.sort_by(f64::total_cmp);
+        (v[v.len() / 2], v[0], v[v.len() - 1])
+    }
+
+    fn shown((m, lo, hi): (f64, f64, f64)) -> String {
+        format!("{m:.1} ({lo:.1}–{hi:.1})")
+    }
+
+    fn ms(t: Instant) -> f64 {
+        t.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Run by hand: `cargo test --release -p resin-slice blur_benchmark -- --ignored --nocapture`.
+    /// On 8K layers: the blur over whole rows, the active spans with each column's window summed
+    /// on every row, and with running sums down the columns; the same output asserted.
+    #[test]
+    #[ignore]
+    fn blur_benchmark() {
+        let (res, scenes) = scenes();
+        println!(
+            "{:<28} {:>8} {:>20} {:>20} {:>20} {:>9} {:>9}",
+            "layer", "r × p", "whole rows ms", "spans direct ms", "spans running ms", "vs whole", "vs direct"
+        );
         for (name, runs) in &scenes {
-            for (radius, passes) in [(1u32, 1u8), (2, 3), (8, 4)] {
-                let (mut old, mut new) = (Vec::new(), Vec::new());
+            for (radius, passes) in SETTINGS {
+                let mut times = [Vec::new(), Vec::new(), Vec::new()];
                 let mut outputs = None;
                 for _ in 0..RUNS {
                     let t = Instant::now();
                     let a = whole_rows(runs, res, radius, passes);
-                    old.push(t.elapsed().as_secs_f64() * 1000.0);
+                    times[0].push(ms(t));
                     let t = Instant::now();
-                    let b = blur(runs, res, radius, passes, &Cancel::default());
-                    new.push(t.elapsed().as_secs_f64() * 1000.0);
-                    outputs = Some((a, b));
+                    let b = blur_with(runs, res, radius, passes, &Cancel::default(), box_columns_direct);
+                    times[1].push(ms(t));
+                    let t = Instant::now();
+                    let c = blur(runs, res, radius, passes, &Cancel::default());
+                    times[2].push(ms(t));
+                    outputs = Some((a, b, c));
                 }
-                let (a, b) = outputs.unwrap();
+                let (a, b, c) = outputs.unwrap();
                 assert_eq!(a, b, "{name}, {radius} × {passes}");
-                let ((om, olo, ohi), (nm, nlo, nhi)) = (median(old), median(new));
+                assert_eq!(a, c, "{name}, {radius} × {passes}");
+                let [whole, direct, running] = times.map(median);
                 println!(
-                    "{name:<28} {:>8} {:>22} {:>22} {:>7.1}×",
+                    "{name:<28} {:>8} {:>20} {:>20} {:>20} {:>8.1}× {:>8.2}×",
                     format!("{radius} × {passes}"),
-                    format!("{om:.1} ({olo:.1}–{ohi:.1})"),
-                    format!("{nm:.1} ({nlo:.1}–{nhi:.1})"),
-                    om / nm
+                    shown(whole),
+                    shown(direct),
+                    shown(running),
+                    whole.0 / running.0,
+                    direct.0 / running.0
                 );
             }
         }
