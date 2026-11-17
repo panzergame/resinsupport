@@ -5,9 +5,14 @@
 
 //! One layer's cut, filled row by row into runs.
 
+mod blur;
+mod coverage;
 mod downsample;
 mod edge_table;
 mod segments;
+
+pub(crate) use blur::blur;
+pub(crate) use coverage::layer as exact_layer;
 
 pub(crate) use segments::Segments1D;
 
@@ -36,6 +41,40 @@ pub(crate) fn push(out: &mut Vec<Run>, len: u64, grey: u8) {
         Some(r) if r.grey == grey => r.len += len,
         _ => out.push(Run { len, grey }),
     }
+}
+
+/// Grey `g` through `gamma` as PrusaSlicer's `gamma_correction` does (its behaviour, no code):
+/// `255 · (g / 255)^gamma`, and 0 lights a pixel at least half covered and darkens the rest.
+pub(crate) fn gamma_table(gamma: f64) -> [u8; 256] {
+    let mut table = [0; 256];
+    for (i, g) in table.iter_mut().enumerate() {
+        let x = i as f64 / 255.0;
+        let y = if gamma > 0.0 {
+            x.powf(gamma)
+        } else if x < 0.5 {
+            0.0
+        } else {
+            1.0
+        };
+        *g = (y * 255.0).round() as u8;
+    }
+    table
+}
+
+/// Layers of `pixels` pixels each, cut at different heights, averaged into one: Z anti-aliasing.
+pub(crate) fn average(layers: &[Vec<Run>], pixels: u64) -> Vec<Run> {
+    let mut out = Vec::new();
+    downsample(layers, pixels, &mut out);
+    out
+}
+
+/// `runs` with every grey looked up in `table`, neighbours of one grey merged.
+pub(crate) fn regrey(runs: &[Run], table: &[u8; 256]) -> Vec<Run> {
+    let mut out = Vec::with_capacity(runs.len());
+    for r in runs {
+        push(&mut out, r.len, table.get(usize::from(r.grey)).copied().unwrap_or(r.grey));
+    }
+    out
 }
 
 /// The layer cut along `segments`, at `aa` samples per pixel side on a screen of `res` pixels:
@@ -131,6 +170,18 @@ mod tests {
         // Off the plate: clipped, still covering every pixel.
         let (runs, _) = layer(2, (10, 8), &square(-5.0, -5.0, 40.0, 3.0), &cancel);
         assert_eq!(total(&runs), 80);
+    }
+
+    #[test]
+    fn gamma_bends_the_greys_and_zero_thresholds_them() {
+        let same = gamma_table(1.0);
+        assert!(same.iter().enumerate().all(|(i, &g)| usize::from(g) == i));
+        let cut = gamma_table(0.0);
+        assert_eq!((cut[0], cut[127], cut[128], cut[255]), (0, 0, 255, 255));
+        let bright = gamma_table(0.5);
+        assert_eq!((bright[0], bright[64], bright[255]), (0, 128, 255));
+        let runs = [Run { len: 2, grey: 0 }, Run { len: 1, grey: 100 }, Run { len: 3, grey: 200 }, Run { len: 1, grey: 255 }];
+        assert_eq!(regrey(&runs, &cut), [Run { len: 3, grey: 0 }, Run { len: 4, grey: 255 }]);
     }
 
     #[test]

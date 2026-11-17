@@ -275,13 +275,21 @@ pub fn mixed_check_row(ui: &mut Ui, _t: &Tokens, label: &str, help: &str, value:
 
 /// A setting chosen from `options` (stored value, catalog id of its name), in a wide row.
 pub fn choice_row(ui: &mut Ui, t: &Tokens, label: &str, id: &str, value: &mut String, options: &[(&str, &'static str)]) {
+    choice_row_help(ui, t, label, None, id, value, options);
+}
+
+/// [`choice_row`], with `help` shown on hovering the choice.
+pub fn choice_row_help(ui: &mut Ui, t: &Tokens, label: &str, help: Option<&str>, id: &str, value: &mut String, options: &[(&str, &'static str)]) {
     let shown = options.iter().find(|(v, _)| *v == value.as_str()).map_or(value.clone(), |(_, name)| i18n::tr(name).to_string());
     wide_row(ui, t, label, |ui| {
-        egui::ComboBox::from_id_salt(id).selected_text(shown).width(ui.available_width()).show_ui(ui, |ui| {
+        let combo = egui::ComboBox::from_id_salt(id).selected_text(shown).width(ui.available_width()).show_ui(ui, |ui| {
             for (v, name) in options {
                 ui.selectable_value(value, (*v).to_string(), i18n::tr(name));
             }
         });
+        if let Some(help) = help {
+            combo.response.on_hover_text(help);
+        }
     });
 }
 

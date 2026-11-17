@@ -337,7 +337,17 @@ pub fn write_ctb_with(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, p
         bottom_layer_count: s.layers.bottom_count,
         marker: V2_MARKER,
     };
-    let aa_level = u32::from(s.slicing.anti_aliasing.max(1));
+    // The greys carry the anti-aliasing; the level only tells readers there is some. Exact coverage
+    // has no sub-sample count, so it says 8 as UVtools does for PrusaSlicer's greys
+    // (`UVtools.Core/FileFormats/SL1File.cs` at `5fdcc53`, `AntiAliasing`), and a gamma of 0
+    // leaves no grey to tell of.
+    let aa_level = if s.slicing.gamma <= 0.0 {
+        1
+    } else if s.slicing.exact {
+        8
+    } else {
+        u32::from(s.slicing.anti_aliasing.max(1))
+    };
     let slicer = SlicerInfo {
         machine_name_offset: below_4g(name_at)?,
         machine_name_size: below_4g(name.len() as u64)?,
@@ -1095,6 +1105,12 @@ mod tests {
         job.settings.slicing.anti_aliasing = 4;
         let f = read_ctb(&write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap()).unwrap();
         assert_eq!((f.header.aa_level, f.slicer.aa_level, f.slicer.aa_flag), (1, 4, 0x0F));
+        job.settings.slicing.exact = true;
+        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap()).unwrap();
+        assert_eq!((f.slicer.aa_level, f.slicer.aa_flag), (8, 0x0F));
+        job.settings.slicing.gamma = 0.0;
+        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap()).unwrap();
+        assert_eq!((f.slicer.aa_level, f.slicer.aa_flag), (1, 0x07));
     }
 
     #[test]

@@ -1321,12 +1321,17 @@ fn print_config_merges_validates_and_round_trips() {
     let mut expected = PrintConfig::default();
     expected.settings.exposure.normal = 2.5;
     assert_eq!(*s.print_config(), expected);
-    s.execute("print.configure", &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200 }, "slicing": { "anti_aliasing": 8 } }))
-        .unwrap();
+    s.execute(
+        "print.configure",
+        &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200 }, "slicing": { "anti_aliasing": 8, "exact": true, "gamma": 0.6, "anti_aliasing_z": 4, "blur_radius": 2, "blur_passes": 3 } }),
+    )
+    .unwrap();
     let c = s.print_config();
     assert_eq!((c.printer.name.as_str(), c.printer.mirror_y, c.printer.display_x), ("Mars 4", true, 200.0));
     assert_eq!((c.printer.mirror_x, c.printer.display_y), (false, 123.12));
     assert_eq!((c.settings.slicing.anti_aliasing, c.settings.exposure.normal), (8, 2.5));
+    assert_eq!((c.settings.slicing.exact, c.settings.slicing.gamma), (true, 0.6));
+    assert_eq!((c.settings.slicing.anti_aliasing_z, c.settings.slicing.blur_radius, c.settings.slicing.blur_passes), (4, 2, 3));
 
     // A bad patch leaves everything as it was and names the field.
     let before = s.print_config().clone();
@@ -1337,6 +1342,11 @@ fn print_config_merges_validates_and_round_trips() {
         (json!({ "layers": { "height": 0.5 } }), "layers.height"),
         (json!({ "layers": { "bottom_count": -1 } }), "layers.bottom_count"),
         (json!({ "slicing": { "anti_aliasing": 3 } }), "slicing.anti_aliasing"),
+        (json!({ "slicing": { "exact": "yes" } }), "slicing.exact"),
+        (json!({ "slicing": { "gamma": 1.5 } }), "slicing.gamma"),
+        (json!({ "slicing": { "anti_aliasing_z": 3 } }), "slicing.anti_aliasing_z"),
+        (json!({ "slicing": { "blur_radius": 0 } }), "slicing.blur_radius"),
+        (json!({ "slicing": { "blur_passes": 9 } }), "slicing.blur_passes"),
         (json!({ "estimates": { "bottle_cost": -1 } }), "estimates.bottle_cost"),
         (json!({ "estimates": { "resin_density": "1.1" } }), "estimates.resin_density"),
         (json!({ "printer": { "resolution_x": 0 } }), "printer.resolution_x"),

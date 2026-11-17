@@ -207,8 +207,45 @@ impl Travel {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Slicing {
-    /// Sub-samples per pixel side, one of [`ANTI_ALIASING`]; 1 is off.
+    /// Sub-samples per pixel side, one of [`ANTI_ALIASING`]; 1 is off. Unused when `exact`.
     pub anti_aliasing: u8,
+    /// Planes cut through each layer's height, evenly spaced, their greys averaged: one of
+    /// [`ANTI_ALIASING`]; 1 cuts the layer's middle only.
+    #[serde(default = "one")]
+    pub anti_aliasing_z: u8,
+    /// Each pixel's grey is the share of it the layer covers, worked out from the edges, in place
+    /// of `anti_aliasing`'s sub-samples.
+    #[serde(default)]
+    pub exact: bool,
+    /// Greys become `255 · (grey / 255)^gamma`; 0 lights the pixels at least half covered and
+    /// darkens the rest. 1 leaves them as rasterized.
+    #[serde(default = "no_gamma")]
+    pub gamma: f64,
+    /// A box blur after the anti-aliasing and before the gamma: pixels taken in on each side.
+    #[serde(default = "one_px")]
+    pub blur_radius: u32,
+    /// Times the blur runs, 0 for none; three come close to a Gaussian.
+    #[serde(default)]
+    pub blur_passes: u8,
+}
+
+impl Slicing {
+    /// What each grey becomes through `gamma`, as the slicer applies it.
+    pub fn gamma_table(&self) -> [u8; 256] {
+        crate::raster::gamma_table(self.gamma)
+    }
+}
+
+fn one_px() -> u32 {
+    1
+}
+
+fn no_gamma() -> f64 {
+    1.0
+}
+
+fn one() -> u8 {
+    1
 }
 
 /// For the resin and cost estimates.
@@ -256,7 +293,7 @@ impl Default for PrintSettings {
                 bottom_retract_speed_fast: 330.0,
                 bottom_retract_speed_slow: 330.0,
             },
-            slicing: Slicing { anti_aliasing: 1 },
+            slicing: Slicing { anti_aliasing: 1, anti_aliasing_z: 1, exact: false, gamma: 1.0, blur_radius: 1, blur_passes: 0 },
             estimates: Estimates { resin_density: 1.1, bottle_volume: 1000.0, bottle_cost: 0.0 },
         }
     }
@@ -354,6 +391,10 @@ impl PrintSettings {
             ("motion", "bottom_retract_speed_fast") => m.bottom_retract_speed_fast,
             ("motion", "bottom_retract_speed_slow") => m.bottom_retract_speed_slow,
             ("slicing", "anti_aliasing") => s.anti_aliasing.into(),
+            ("slicing", "anti_aliasing_z") => s.anti_aliasing_z.into(),
+            ("slicing", "blur_radius") => s.blur_radius.into(),
+            ("slicing", "blur_passes") => s.blur_passes.into(),
+            ("slicing", "gamma") => s.gamma,
             ("estimates", "resin_density") => x.resin_density,
             ("estimates", "bottle_volume") => x.bottle_volume,
             ("estimates", "bottle_cost") => x.bottle_cost,
@@ -389,6 +430,10 @@ impl PrintSettings {
             ("motion", "bottom_retract_speed_fast") => m.bottom_retract_speed_fast = x,
             ("motion", "bottom_retract_speed_slow") => m.bottom_retract_speed_slow = x,
             ("slicing", "anti_aliasing") => self.slicing.anti_aliasing = x as u8,
+            ("slicing", "anti_aliasing_z") => self.slicing.anti_aliasing_z = x as u8,
+            ("slicing", "blur_radius") => self.slicing.blur_radius = x as u32,
+            ("slicing", "blur_passes") => self.slicing.blur_passes = x as u8,
+            ("slicing", "gamma") => self.slicing.gamma = x,
             ("estimates", "resin_density") => self.estimates.resin_density = x,
             ("estimates", "bottle_volume") => self.estimates.bottle_volume = x,
             ("estimates", "bottle_cost") => self.estimates.bottle_cost = x,
@@ -457,7 +502,7 @@ const fn int(group: &'static str, key: &'static str, min: f64, max: f64) -> Fiel
 const ANY: f64 = f64::MAX;
 
 /// Every number setting. Text and switches (`printer.name`, `printer.mirror_x`,
-/// `printer.mirror_y`) are not here.
+/// `printer.mirror_y`, `slicing.exact`) are not here.
 pub const FIELDS: &[Field] = &[
     int("printer", "resolution_x", 1.0, 32768.0),
     int("printer", "resolution_y", 1.0, 32768.0),
@@ -488,6 +533,10 @@ pub const FIELDS: &[Field] = &[
     real("motion", "bottom_retract_speed_fast", 1.0, 1000.0),
     real("motion", "bottom_retract_speed_slow", 1.0, 1000.0),
     int("slicing", "anti_aliasing", 1.0, 8.0),
+    int("slicing", "anti_aliasing_z", 1.0, 8.0),
+    int("slicing", "blur_radius", 1.0, 16.0),
+    int("slicing", "blur_passes", 0.0, 4.0),
+    real("slicing", "gamma", 0.0, 1.0),
     real("estimates", "resin_density", 0.0, ANY),
     real("estimates", "bottle_volume", 0.0, ANY),
     real("estimates", "bottle_cost", 0.0, ANY),
@@ -502,13 +551,18 @@ impl Field {
     /// Whether `x` is a value of this setting.
     pub fn accepts(&self, x: f64) -> bool {
         let in_range = x.is_finite() && x >= self.min && x <= self.max && (!self.integer || x.fract() == 0.0);
-        in_range && (self.key != "anti_aliasing" || ANTI_ALIASING.iter().any(|a| f64::from(*a) == x))
+        in_range && (!self.is_level() || ANTI_ALIASING.iter().any(|a| f64::from(*a) == x))
+    }
+
+    /// Whether it takes only the [`ANTI_ALIASING`] levels.
+    fn is_level(&self) -> bool {
+        self.group == "slicing" && (self.key == "anti_aliasing" || self.key == "anti_aliasing_z")
     }
 
     /// What it must be, for an error message.
     pub fn describe(&self) -> String {
         let (g, k) = (self.group, self.key);
-        if self.key == "anti_aliasing" {
+        if self.is_level() {
             format!("`{g}.{k}` must be 1, 2, 4 or 8")
         } else if self.integer {
             format!("`{g}.{k}` must be an integer from {} to {}", self.min, self.max)
@@ -626,6 +680,7 @@ mod tests {
         }
         for aa in [0.0, 3.0, 5.0, 16.0] {
             assert!(!field("slicing", "anti_aliasing").is_some_and(|f| f.accepts(aa)), "{aa}");
+            assert!(!field("slicing", "anti_aliasing_z").is_some_and(|f| f.accepts(aa)), "{aa}");
         }
     }
 

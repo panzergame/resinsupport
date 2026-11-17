@@ -1,11 +1,12 @@
 //! The print settings card: the printer profile and how the resin is exposed and the plate moves,
-//! on four tabs (Printer, Bottom Layers, Regular Layers, Slicing), and Restore defaults. The
+//! on four tabs (Printer, with the layer height; Bottom Layers; Regular Layers; Slicing, with the
+//! gamma's curve), and Restore defaults. The
 //! plate's travel shows each phase's value side by side, fast then slow. Every edit runs
 //! `print.configure` at once; the configuration is not an undo step, and `ResinApp::run` keeps it
 //! in the preferences. Shown for as long as the Slice edit mode lasts, and only then: nothing
 //! else opens or closes it.
 
-use egui::{DragValue, pos2, vec2};
+use egui::{DragValue, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::PrintConfig;
 use resin_engine::slice::{ANTI_ALIASING, GROUPS, MAX_NAME_CHARS, Motion, field};
 use serde_json::{Value, json};
@@ -21,9 +22,25 @@ const PRINTER: usize = 0;
 const BOTTOM: usize = 1;
 const REGULAR: usize = 2;
 
-/// The anti-aliasing levels' names, as [`ANTI_ALIASING`].
-const ANTI_ALIASING_NAMES: [(&str, &str); 4] =
-    [("1", "printing.anti_aliasing.off"), ("2", "printing.anti_aliasing.2"), ("4", "printing.anti_aliasing.4"), ("8", "printing.anti_aliasing.8")];
+/// The anti-aliasing choices' names: the levels, as [`ANTI_ALIASING`], then exact coverage.
+const ANTI_ALIASING_NAMES: [(&str, &str); 5] = [
+    ("1", "printing.anti_aliasing.off"),
+    ("2", "printing.anti_aliasing.2"),
+    ("4", "printing.anti_aliasing.4"),
+    ("8", "printing.anti_aliasing.8"),
+    (EXACT, "printing.anti_aliasing.exact"),
+];
+
+/// The Z anti-aliasing choices' names, as [`ANTI_ALIASING`].
+const ANTI_ALIASING_Z_NAMES: [(&str, &str); 4] = [
+    ("1", "printing.anti_aliasing.off"),
+    ("2", "printing.anti_aliasing_z.2"),
+    ("4", "printing.anti_aliasing_z.4"),
+    ("8", "printing.anti_aliasing_z.8"),
+];
+
+/// The anti-aliasing choice that sets `slicing.exact`.
+const EXACT: &str = "exact";
 
 pub(crate) const CARD_ID: &str = "print_settings";
 const CONFIRM_ID: &str = "print_settings_reset";
@@ -119,6 +136,8 @@ fn changes(before: &PrintConfig, after: &PrintConfig) -> Option<Value> {
 struct Num {
     label: &'static str,
     help: Option<&'static str>,
+    /// Whether the field can be edited, from the other settings; always when `None`.
+    when: Option<fn(&PrintConfig) -> bool>,
     group: &'static str,
     key: &'static str,
     suffix: &'static str,
@@ -127,7 +146,7 @@ struct Num {
 }
 
 const fn num(label: &'static str, group: &'static str, key: &'static str, suffix: &'static str, decimals: usize, speed: f64) -> Num {
-    Num { label, help: None, group, key, suffix, decimals, speed }
+    Num { label, help: None, when: None, group, key, suffix, decimals, speed }
 }
 
 impl Num {
@@ -135,19 +154,24 @@ impl Num {
         Num { help: Some(help), ..self }
     }
 
+    const fn when(self, when: fn(&PrintConfig) -> bool) -> Num {
+        Num { when: Some(when), ..self }
+    }
+
     /// A row with the setting's drag field, in its range.
     fn row(&self, ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
         let Some(f) = field(self.group, self.key) else { return };
         let Some(mut v) = f.get(&c.printer, &c.settings) else { return };
+        let enabled = self.when.is_none_or(|when| when(c));
         let changed = ui_kit::wide_row(ui, t, i18n::tr(self.label), |ui| {
             let mut drag = DragValue::new(&mut v).range(f.min..=f.max).speed(self.speed).suffix(self.suffix).max_decimals(self.decimals);
             if f.integer {
                 drag = drag.fixed_decimals(0);
             }
-            let response = ui.add_sized([ui.available_width(), CONTROL_HEIGHT], drag);
+            let response = ui.add_enabled_ui(enabled, |ui| ui.add_sized([ui.available_width(), CONTROL_HEIGHT], drag)).inner;
             let changed = response.changed();
             if let Some(help) = self.help {
-                response.on_hover_text(i18n::tr(help));
+                response.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help));
             }
             changed
         });
@@ -163,6 +187,7 @@ const PRINTER_ROWS: &[Num] = &[
     num("printing.printer.display_x", "printer", "display_x", " mm", 3, 0.1),
     num("printing.printer.display_y", "printer", "display_y", " mm", 3, 0.1),
     num("printing.printer.build_height", "printer", "build_height", " mm", 2, 0.5),
+    num("printing.layers.height", "layers", "height", " mm", 3, 0.001).help("printing.all_layers.help"),
 ];
 
 /// The bottom layers' values; a row's name is its regular twin's, the tab says which.
@@ -174,9 +199,7 @@ const BOTTOM_ROWS: &[Num] = &[
     num("printing.exposure.power", "exposure", "bottom_power", "", 0, 1.0).help("printing.exposure.power.help"),
 ];
 
-/// Layer height is one value for every layer: it sits here, and says so.
 const REGULAR_ROWS: &[Num] = &[
-    num("printing.layers.height", "layers", "height", " mm", 3, 0.001).help("printing.all_layers.help"),
     num("printing.exposure.normal", "exposure", "normal", " s", 2, 0.05),
     num("printing.exposure.light_off", "exposure", "light_off", " s", 2, 0.05).help("printing.exposure.light_off.help"),
     num("printing.exposure.power", "exposure", "power", "", 0, 1.0).help("printing.exposure.power.help"),
@@ -312,17 +335,45 @@ fn pairs(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, pairs: &[Pair]) {
     }
 }
 
-/// After the anti-aliasing choice.
+/// After the anti-aliasing choices, in the order the slicer applies them.
 const SLICING_ROWS: &[Num] = &[
+    num("printing.blur_passes", "slicing", "blur_passes", "", 0, 0.05).help("printing.blur_passes.help"),
+    num("printing.blur_radius", "slicing", "blur_radius", " px", 0, 0.05).help("printing.blur_radius.help").when(blurs),
+    num("printing.gamma", "slicing", "gamma", "", 2, 0.01).help("printing.gamma.help"),
     num("printing.estimates.resin_density", "estimates", "resin_density", " g/ml", 2, 0.01),
     num("printing.estimates.bottle_volume", "estimates", "bottle_volume", " ml", 0, 10.0),
     num("printing.estimates.bottle_cost", "estimates", "bottle_cost", "", 2, 0.5),
 ];
 
+fn blurs(c: &PrintConfig) -> bool {
+    c.settings.slicing.blur_passes > 0
+}
+
 fn rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, rows: &[Num]) {
     for r in rows {
         r.row(ui, t, c);
+        if (r.group, r.key) == ("slicing", "gamma") {
+            gamma_curve(ui, t, &c.settings.slicing.gamma_table());
+        }
     }
+}
+
+/// The plot's height, px.
+const CURVE_HEIGHT: f32 = 88.0;
+
+/// Under the gamma row, in its control column: each grey in (along) and what it becomes (up),
+/// over the diagonal that leaves them as they are.
+fn gamma_curve(ui: &mut egui::Ui, t: &Tokens, table: &[u8; 256]) {
+    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), CURVE_HEIGHT), Sense::hover());
+    let plot = Rect::from_min_max(pos2(row.left() + FORM_WIDE_LABEL_WIDTH, row.top()), row.max);
+    let painter = ui.painter_at(row);
+    painter.rect(plot, RADIUS_SM, t.field, Stroke::new(1.0, t.control_border), egui::StrokeKind::Inside);
+    let inner = plot.shrink(SPACE_3);
+    let at = |i: usize, g: u8| pos2(inner.left() + inner.width() * i as f32 / 255.0, inner.bottom() - inner.height() * f32::from(g) / 255.0);
+    painter.line_segment([at(0, 0), at(255, 255)], Stroke::new(1.0, t.form_dim));
+    let points = table.iter().enumerate().map(|(i, &g)| at(i, g)).collect();
+    painter.add(egui::Shape::line(points, Stroke::new(1.5, t.accent)));
+    response.on_hover_text(i18n::tr("printing.gamma.curve.help"));
 }
 
 fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
@@ -343,10 +394,19 @@ fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
 }
 
 fn slicing_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
-    let mut aa = c.settings.slicing.anti_aliasing.to_string();
+    let s = &mut c.settings.slicing;
+    let mut aa = if s.exact { EXACT.to_owned() } else { s.anti_aliasing.to_string() };
     ui_kit::choice_row(ui, t, i18n::tr("printing.anti_aliasing"), "anti_aliasing", &mut aa, &ANTI_ALIASING_NAMES);
-    if let Some(level) = ANTI_ALIASING.iter().find(|a| a.to_string() == aa) {
-        c.settings.slicing.anti_aliasing = *level;
+    if aa == EXACT {
+        s.exact = true;
+    } else if let Some(level) = ANTI_ALIASING.iter().find(|a| a.to_string() == aa) {
+        (s.exact, s.anti_aliasing) = (false, *level);
+    }
+    let mut z = s.anti_aliasing_z.to_string();
+    let help = i18n::tr("printing.anti_aliasing_z.help");
+    ui_kit::choice_row_help(ui, t, i18n::tr("printing.anti_aliasing_z"), Some(help), "anti_aliasing_z", &mut z, &ANTI_ALIASING_Z_NAMES);
+    if let Some(level) = ANTI_ALIASING.iter().find(|a| a.to_string() == z) {
+        s.anti_aliasing_z = *level;
     }
     rows(ui, t, c, SLICING_ROWS);
 }
@@ -456,8 +516,8 @@ mod tests {
                 }
             }
         }
-        // The anti-aliasing choice, before the Slicing tab's numbers.
-        shown.push(("slicing", "anti_aliasing"));
+        // The anti-aliasing choices, before the Slicing tab's numbers.
+        shown.extend([("slicing", "anti_aliasing"), ("slicing", "anti_aliasing_z")]);
         shown.sort_unstable();
         let mut every: Vec<(&str, &str)> = resin_engine::slice::FIELDS.iter().map(|f| (f.group, f.key)).collect();
         every.sort_unstable();
@@ -482,8 +542,19 @@ mod tests {
     }
 
     #[test]
+    fn the_blur_radius_waits_for_a_pass_and_the_layer_height_is_on_the_printer_tab() {
+        let radius = SLICING_ROWS.iter().find(|r| r.key == "blur_radius").and_then(|r| r.when).unwrap();
+        let mut c = PrintConfig::default();
+        assert_eq!(c.settings.slicing.blur_passes, 0);
+        assert!(!radius(&c));
+        c.settings.slicing.blur_passes = 1;
+        assert!(radius(&c));
+        assert!(PRINTER_ROWS.iter().any(|r| (r.group, r.key) == ("layers", "height")));
+    }
+
+    #[test]
     fn every_card_word_is_in_the_catalog() {
-        for id in TABS.into_iter().chain(ANTI_ALIASING_NAMES.map(|(_, id)| id)).chain(PHASES) {
+        for id in TABS.into_iter().chain(ANTI_ALIASING_NAMES.map(|(_, id)| id)).chain(ANTI_ALIASING_Z_NAMES.map(|(_, id)| id)).chain(PHASES) {
             assert!(i18n::has(id), "{id}");
         }
         for r in [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS].into_iter().flatten() {
@@ -492,6 +563,11 @@ mod tests {
         for p in [BOTTOM_MOTION, REGULAR_MOTION].into_iter().flatten() {
             assert!(i18n::has(p.label) && p.help.is_none_or(i18n::has), "{}", p.label);
         }
-        assert_eq!(ANTI_ALIASING_NAMES.map(|(v, _)| v.parse::<u8>().unwrap_or(0)), ANTI_ALIASING);
+        let levels: Vec<u8> = ANTI_ALIASING_NAMES.iter().filter_map(|(v, _)| v.parse().ok()).collect();
+        assert_eq!(levels, ANTI_ALIASING);
+        assert_eq!(ANTI_ALIASING_NAMES.last().map(|(v, _)| *v), Some(EXACT));
+        assert_eq!(ANTI_ALIASING_Z_NAMES.map(|(v, _)| v.parse::<u8>().unwrap_or(0)), ANTI_ALIASING);
+        assert!(i18n::has("printing.anti_aliasing_z") && i18n::has("printing.anti_aliasing_z.help"));
+        assert!(i18n::has("printing.gamma.curve.help"));
     }
 }

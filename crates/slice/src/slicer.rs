@@ -1,3 +1,7 @@
+// Z anti-aliasing follows mslicer (GPL-3.0), `slice_raster` in slicer/src/slicer/raster/mod.rs at
+// 355aca2; see ATTRIBUTION.md. Changed: each layer's planes are centred in their share of it,
+// rather than starting at its bottom, and the layer's open rows are its worst plane's.
+
 //! The slicer: closed solids in, a [`SlicedJob`] out. Each layer is a plane cut filled with the
 //! nonzero rule, so overlapping solids print as their union and nothing needs merging first.
 //! No threads here: the caller says how layers are run ([`slice_with`]).
@@ -105,7 +109,11 @@ pub fn slice_with(
 ) -> Result<SlicedJob, SliceError> {
     let (profile, settings) = (&input.profile, &input.settings);
     validate(profile, settings).map_err(SliceError::BadInput)?;
-    let aa = u32::from(settings.slicing.anti_aliasing.max(1));
+    let exact = settings.slicing.exact;
+    let aa = if exact { 1 } else { u32::from(settings.slicing.anti_aliasing.max(1)) };
+    let planes = settings.slicing.anti_aliasing_z.max(1);
+    let (radius, passes) = (settings.slicing.blur_radius, settings.slicing.blur_passes);
+    let gamma = (settings.slicing.gamma != 1.0).then(|| raster::gamma_table(settings.slicing.gamma));
     let res = (profile.resolution_x, profile.resolution_y);
     let place = Placement::new(profile, aa);
     let h = settings.layers.height;
@@ -121,9 +129,12 @@ pub fn slice_with(
             solids.push(Segments1D::new(placed.0, placed.1));
         }
     }
-    // Layer `i` samples `(i + 0.5) · h`: a layer exists while its plane is under the top.
+    // Layer `i`'s plane `j` of `n` samples `(i + (j + 0.5) / n) · h`: a layer exists while its
+    // lowest plane is under the top.
     let fit = (profile.build_height / h + 1e-6).floor();
-    let count = (top.min(profile.build_height) / h - 0.5 - 1e-9).ceil().clamp(0.0, fit) as usize;
+    let lowest = 0.5 / f64::from(planes);
+    let count = (top.min(profile.build_height) / h - lowest - 1e-9).ceil().clamp(0.0, fit) as usize;
+    let pixels = u64::from(res.0) * u64::from(res.1);
 
     progress.begin(count);
     let slots: Vec<OnceLock<(Vec<crate::Run>, u64)>> = (0..count).map(|_| OnceLock::new()).collect();
@@ -131,12 +142,30 @@ pub fn slice_with(
         if cancel.is_cancelled() {
             return;
         }
-        let z = ((i as f64 + 0.5) * h) as f32;
         let mut segments: Vec<Segment> = Vec::new();
-        for s in &solids {
-            s.intersect_plane(z, &mut segments);
+        let mut cuts = Vec::with_capacity(usize::from(planes));
+        let mut open = 0;
+        for j in 0..planes {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let z = ((i as f64 + (f64::from(j) + 0.5) / f64::from(planes)) * h) as f32;
+            segments.clear();
+            for s in &solids {
+                s.intersect_plane(z, &mut segments);
+            }
+            let (runs, o) = if exact { raster::exact_layer(res, &segments, cancel) } else { raster::layer(aa, res, &segments, cancel) };
+            open = open.max(o);
+            cuts.push(runs);
         }
-        let out = raster::layer(aa, res, &segments, cancel);
+        let mut runs = if cuts.len() == 1 { cuts.pop().unwrap_or_default() } else { raster::average(&cuts, pixels) };
+        if passes > 0 {
+            runs = raster::blur(&runs, res, radius, passes, cancel);
+        }
+        if let Some(table) = &gamma {
+            runs = raster::regrey(&runs, table);
+        }
+        let out = (runs, open);
         if let Some(slot) = slots.get(i) {
             let _ = slot.set(out);
         }
@@ -302,6 +331,15 @@ mod tests {
             assert_eq!(x.lit, y.lit);
         }
         assert_eq!(both.stats.open_rows, 0);
+        // Exact coverage too: the faces they share cut pixels part way, and count once.
+        let mut one = input(vec![cuboid([-5.0, -5.0, 0.0], [10.0, 5.0, 1.0])]);
+        let mut both = input(vec![cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 1.0]), cuboid([0.0, -5.0, 0.0], [10.0, 5.0, 1.0])]);
+        one.settings.slicing.exact = true;
+        both.settings.slicing.exact = true;
+        let (one, both) = (run(&one), run(&both));
+        for (x, y) in both.layers.iter().zip(&one.layers) {
+            assert_eq!(x.runs, y.runs);
+        }
     }
 
     #[test]
@@ -327,17 +365,27 @@ mod tests {
     fn open_and_inside_out_meshes_slice_and_are_counted() {
         let mut open = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 1.0]);
         open.retain(|t| !(t.iter().all(|v| v[0] == 5.0)));
-        let job = run(&input(vec![open]));
-        assert!(job.stats.open_rows > 0);
         // Half the sides turned inside out.
         let mut flipped = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 1.0]);
         for t in flipped.iter_mut().filter(|t| t.iter().all(|v| v[0] == -5.0)) {
             t.swap(1, 2);
         }
-        let job = run(&input(vec![flipped]));
-        assert!(job.stats.open_rows > 0);
-        for l in &job.layers {
-            assert_eq!(l.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&job.profile));
+        for exact in [false, true] {
+            let mut i = input(vec![open.clone()]);
+            i.settings.slicing.exact = exact;
+            let job = run(&i);
+            assert!(job.stats.open_rows > 0);
+            // The missing side leaves nothing to fill, and no streak to the screen's edge: at most
+            // the pixels the remaining side crosses, one a row.
+            let rows = 10.0 / job.profile.pixel_pitch().1;
+            assert!(job.layers.iter().all(|l| (l.lit as f64) <= rows + 2.0), "exact: {exact}");
+            let mut i = input(vec![flipped.clone()]);
+            i.settings.slicing.exact = exact;
+            let job = run(&i);
+            assert!(job.stats.open_rows > 0);
+            for l in &job.layers {
+                assert_eq!(l.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&job.profile));
+            }
         }
     }
 
@@ -361,6 +409,73 @@ mod tests {
         let (x, y) = (binary.layers[0].lit as f64, l.lit as f64);
         assert!((x - y).abs() / x < 0.01, "{x} {y}");
         assert_eq!(smooth.stats.open_rows, 0);
+    }
+
+    #[test]
+    fn exact_coverage_greys_by_area_and_gamma_bends_it() {
+        // A cube 10 mm wide: 350.877… pixels of 0.0285 mm, so its far sides cut pixels part way.
+        let cube = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 0.1]);
+        let mut exact = input(vec![cube.clone()]);
+        exact.settings.slicing.exact = true;
+        let job = run(&exact);
+        let l = &job.layers[0];
+        let greys: Vec<u8> = l.runs.iter().map(|r| r.grey).filter(|&g| g > 0 && g < 255).collect();
+        assert!(!greys.is_empty(), "grey where the sides cut pixels");
+        assert_eq!(l.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&job.profile));
+        let side = 10.0 / job.profile.pixel_pitch().0;
+        assert!((l.lit as f64 - side * side).abs() < 2.0, "{} lit, {} expected", l.lit, side * side);
+        assert_eq!(job.stats.open_rows, 0);
+        // The sub-sample level does not matter when exact.
+        exact.settings.slicing.anti_aliasing = 8;
+        assert_eq!(run(&exact).layers[0].runs, l.runs);
+        // Gamma 0: the half-covered pixels lit or not, no grey left.
+        exact.settings.slicing.gamma = 0.0;
+        let cut = run(&exact);
+        assert!(cut.layers[0].runs.iter().all(|r| r.grey == 0 || r.grey == 255));
+        // Below 1 it brightens the greys; it leaves a binary layer alone.
+        exact.settings.slicing.gamma = 0.5;
+        assert!(run(&exact).layers[0].lit > l.lit);
+        let mut binary = input(vec![cube]);
+        let plain = run(&binary);
+        binary.settings.slicing.gamma = 0.5;
+        assert_eq!(run(&binary).layers[0].runs, plain.layers[0].runs);
+    }
+
+    #[test]
+    fn z_anti_aliasing_greys_a_layer_the_top_cuts_part_way() {
+        // 2.5 layers of 0.05 mm: one plane a layer stops after two, four planes see the third
+        // half full.
+        let slab = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 0.125]);
+        let flat = run(&input(vec![slab.clone()]));
+        assert_eq!(flat.layers.len(), 2);
+        let mut i = input(vec![slab]);
+        i.settings.slicing.anti_aliasing_z = 4;
+        let job = run(&i);
+        assert_eq!(job.layers.len(), 3);
+        assert_eq!(job.layers[0].runs, flat.layers[0].runs);
+        assert!(job.layers[2].runs.iter().all(|r| r.grey == 0 || r.grey == 127));
+        assert!((job.layers[2].lit as f64 / job.layers[0].lit as f64 - 0.5).abs() < 0.01);
+        assert_eq!(job.layers[2].runs.iter().map(|r| r.len).sum::<u64>(), pixels(&job.profile));
+    }
+
+    #[test]
+    fn blur_greys_the_edges_keeps_the_light_and_comes_before_the_gamma() {
+        let cube = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 0.1]);
+        let sharp = run(&input(vec![cube.clone()]));
+        let mut i = input(vec![cube]);
+        i.settings.slicing.blur_radius = 3;
+        i.settings.slicing.blur_passes = 2;
+        let soft = run(&i);
+        let l = &soft.layers[0];
+        assert!(l.runs.iter().any(|r| r.grey > 0 && r.grey < 255));
+        assert_eq!(l.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&soft.profile));
+        let (a, b) = (sharp.layers[0].lit as f64, l.lit as f64);
+        assert!((a - b).abs() / a < 0.01, "{a} lit, {b} blurred");
+        // Gamma 0 after it: binary again, the corners rounded.
+        i.settings.slicing.gamma = 0.0;
+        let cut = run(&i);
+        assert!(cut.layers[0].runs.iter().all(|r| r.grey == 0 || r.grey == 255));
+        assert!(cut.layers[0].lit < sharp.layers[0].lit);
     }
 
     #[test]
@@ -389,6 +504,25 @@ mod tests {
 
     #[test]
     fn hostile_inputs_never_panic() {
+        let mut wild = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 1.0]);
+        wild[0][0][0] = f32::NAN;
+        wild[3][1] = [f32::MAX, -f32::MAX, 0.5];
+        wild.push([[-1e30, 3.0, 0.0], [1e30, -3.0, 0.4], [2.0, 1e30, 1.0]]);
+        let mut exact = input(vec![wild, cuboid([-500.0, -5.0, 0.0], [5.0, 5.0, 2.0])]);
+        exact.settings.slicing.exact = true;
+        exact.settings.slicing.gamma = 0.0;
+        for l in &run(&exact).layers {
+            assert_eq!(l.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&exact.profile));
+        }
+        exact.settings.slicing.exact = false;
+        exact.settings.slicing.anti_aliasing = 2;
+        exact.settings.slicing.anti_aliasing_z = 8;
+        exact.settings.slicing.blur_radius = 16;
+        exact.settings.slicing.blur_passes = 4;
+        assert_eq!(validate(&exact.profile, &exact.settings), Ok(()));
+        for l in &run(&exact).layers {
+            assert_eq!(l.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&exact.profile));
+        }
         let empty = run(&input(Vec::new()));
         assert!(empty.layers.is_empty());
         let mut nan = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 1.0]);
