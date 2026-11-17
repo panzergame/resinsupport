@@ -5,7 +5,7 @@
 //! the preferences.
 
 use egui::{DragValue, Painter, Pos2, Rect, Stroke, pos2, vec2};
-use resin_engine::{BodyShape, ContactShape, GROUPS, PresetId, SEGMENTS, SupportPreset, range};
+use resin_engine::{BodyShape, ContactShape, GROUPS, PresetId, RaftEdge, SEGMENTS, SupportPreset, range};
 use serde_json::{Value, json};
 
 use crate::theme::Tokens;
@@ -171,6 +171,14 @@ fn contact_name(s: ContactShape) -> (&'static str, &'static str) {
     }
 }
 
+fn edge_name(e: RaftEdge) -> (&'static str, &'static str) {
+    match e {
+        RaftEdge::Straight => (e.id(), "supports.raft.edge.straight"),
+        RaftEdge::Undercut => (e.id(), "supports.raft.edge.undercut"),
+        RaftEdge::Chamfer => (e.id(), "supports.raft.edge.chamfer"),
+    }
+}
+
 fn body_name(s: BodyShape) -> (&'static str, &'static str) {
     match s {
         BodyShape::Cylinder => (s.id(), "supports.shape.cylinder"),
@@ -243,7 +251,7 @@ fn base_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {
         |painter, rect, slots| {
             let s = Side::new(&shown, rect);
             s.paint(painter, t);
-            s.width_dim(painter, t, slot(slots, 0), s.base_top - SPACE_4, s.base / 2.0, s.x);
+            s.width_dim(painter, t, slot(slots, 0), s.base_bottom + SPACE_4, s.base / 2.0, s.x);
             s.height_dim(painter, t, slot(slots, 1), s.x + s.base / 2.0 + SPACE_6, s.base_top, s.base_bottom);
         },
     );
@@ -254,6 +262,8 @@ fn raft_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {
     let raft = &mut p.raft;
     // Off, the raft's sizes stay in view with the values it gets back when turned on again.
     let on = raft.enabled;
+    let sloped = on && raft.edge != RaftEdge::Straight;
+    let rim = on && raft.rim_height > 0.0;
     ui_kit::figure_rows(
         ui,
         t,
@@ -261,22 +271,35 @@ fn raft_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {
         ui_kit::figure_height(TIP_DIMENSIONS),
         &mut [
             FigureRow::Check { label: i18n::tr("supports.raft.enabled"), help: i18n::tr("supports.raft.enabled.help"), value: &mut raft.enabled },
-            FigureField { enabled: on, ..field("supports.raft.chamfer", &mut raft.chamfer_angle, "raft", "chamfer_angle", "°") }.into(),
+            FigureField { enabled: sloped, ..field("supports.raft.edge_angle", &mut raft.edge_angle, "raft", "edge_angle", "°") }.into(),
             FigureField { enabled: on, ..field("supports.raft.thickness", &mut raft.thickness, "raft", "thickness", " mm") }.into(),
             FigureField { enabled: on, ..field("supports.raft.margin", &mut raft.margin, "raft", "margin", " mm") }.into(),
+            FigureField { enabled: on, ..field("supports.raft.rim_height", &mut raft.rim_height, "raft", "rim_height", " mm") }.into(),
+            FigureField { enabled: rim, ..field("supports.raft.rim_width", &mut raft.rim_width, "raft", "rim_width", " mm") }.into(),
         ],
         |painter, rect, slots| {
+            // As tall as on the other tabs, where they put it: this tab's extra rows go below.
+            let rect = Rect::from_min_size(rect.min, vec2(rect.width(), rect.height().min(ui_kit::figure_height(TIP_DIMENSIONS))));
             let s = Side::new(&shown, rect);
             s.paint(painter, t);
             // No raft is drawn, so there is nothing to dimension.
             if s.raft {
-                s.height_dim(painter, t, slot(slots, 2), s.raft_right + SPACE_4, s.base_bottom, s.plate);
-                s.chamfer_dim(painter, t, slot(slots, 1));
+                s.edge_dim(painter, t, slot(slots, 1));
+                s.height_dim(painter, t, slot(slots, 2), s.x + s.raft_half.max(s.raft_bottom_half) + SPACE_4, s.base_bottom, s.plate);
                 let base_edge = s.x + s.base / 2.0;
-                s.width_dim(painter, t, slot(slots, 3), s.plate + SPACE_4, (s.raft_right - base_edge) / 2.0, (s.raft_right + base_edge) / 2.0);
+                let raft_edge = s.x + s.raft_half;
+                s.width_dim(painter, t, slot(slots, 3), s.base_bottom - SPACE_4, (raft_edge - base_edge) / 2.0, (raft_edge + base_edge) / 2.0);
+                if s.rim_top < s.base_bottom {
+                    let left = s.x - s.raft_half.max(s.rim_top_half) - SPACE_4;
+                    s.height_dim(painter, t, slot(slots, 4), left, s.rim_top, s.base_bottom);
+                    let (outer, inner) = (s.x - s.raft_half.min(s.rim_top_half), s.x - s.rim_inner);
+                    s.width_dim(painter, t, slot(slots, 5), s.rim_top - SPACE_4, (inner - outer) / 2.0, (inner + outer) / 2.0);
+                }
             }
         },
     );
+    shape_row(ui, t, "supports.raft.edge", "raft_edge", &mut p.raft.edge, &RaftEdge::ALL, edge_name);
+    number_row(ui, t, "supports.raft.merge_distance", &mut p.raft.merge_distance, "raft", "merge_distance", " mm");
 }
 
 fn slot(slots: &[FigureSlot], i: usize) -> Option<&FigureSlot> {
@@ -297,10 +320,15 @@ struct Side {
     upper: f32,
     body: f32,
     base: f32,
-    raft_left: f32,
-    raft_right: f32,
-    raft_inset: f32,
+    /// Half the raft's width where the bases stand, at its bottom, and at its rim's top.
+    raft_half: f32,
+    raft_bottom_half: f32,
+    rim_top_half: f32,
+    /// The rim's top, at `base_bottom` without one, and half the width of the hollow inside it.
+    rim_top: f32,
+    rim_inner: f32,
     raft: bool,
+    sloped: bool,
     sphere: bool,
     prism: bool,
     rect: Rect,
@@ -311,9 +339,13 @@ impl Side {
         let r = rect.shrink2(vec2(SPACE_4, SPACE_4));
         let raft = p.raft.enabled;
         let margin = if raft { p.raft.margin as f32 } else { 0.0 };
-        // Millimetres to points: the base takes most of the width, so the tip stays legible; the
-        // raft's margin is cut at the figure's edge.
-        let k = (r.width() * 0.65 / p.base.diameter as f32).clamp(4.0, 60.0);
+        // Millimetres to points: the base takes most of the width, so the tip stays legible, but
+        // the raft's whole foot fits while it can, so its margin shows; past the smallest scale
+        // the margin is cut at the figure's edge.
+        let slope_mm = if raft { p.raft.slope() } else { 0.0 };
+        let overhang_mm = (p.raft.thickness * slope_mm).max(-p.raft.rim_height * slope_mm).max(0.0);
+        let foot = p.base.diameter + 2.0 * (margin as f64 + overhang_mm);
+        let k = (r.width() * 0.65 / p.base.diameter as f32).min(r.width() * 0.9 / foot as f32).clamp(4.0, 60.0);
         let w = |mm: f64, min: f32| (mm as f32 * k).clamp(min, r.width());
         let h = |mm: f64, min: f32, max: f32| (mm as f32 * k).clamp(min, max);
         let model_bottom = r.top() + 16.0;
@@ -329,9 +361,15 @@ impl Side {
         let upper = w(p.tip.upper_diameter, 3.0).min(body);
         let contact = w(p.tip.contact_diameter, 2.0).min(upper);
         let x = r.center().x;
-        let raft_half = (base / 2.0 + margin * k).min(r.width() / 2.0);
-        let chamfer = (p.raft.chamfer_angle as f32).to_radians();
-        let raft_inset = if chamfer.tan() > 0.01 { (raft_h / chamfer.tan()).min(raft_half - base / 2.0) } else { 0.0 };
+        // The edge's run per point of height, drawn at its true angle.
+        let slope = p.raft.slope() as f32;
+        let edge = |half: f32, below: f32| (half + below * slope).clamp(base / 4.0, r.width() / 2.0);
+        let rim_h = if raft && p.raft.rim_height > 0.0 { h(p.raft.rim_height, 4.0, 12.0) } else { 0.0 };
+        // Room for the edge's widest point: a chamfer's foot, an undercut rim's top.
+        let overhang = (raft_h * slope).max(-rim_h * slope).max(0.0);
+        let raft_half = (base / 2.0 + margin * k).min(r.width() / 2.0 - overhang);
+        let rim_top_half = edge(raft_half, -rim_h);
+        let rim_inner = (raft_half.min(rim_top_half) - w(p.raft.rim_width, 3.0)).max(base / 2.0);
         Side {
             x,
             model_bottom,
@@ -344,10 +382,13 @@ impl Side {
             upper,
             body,
             base,
-            raft_left: x - raft_half,
-            raft_right: x + raft_half,
-            raft_inset: raft_inset.max(0.0),
+            raft_half,
+            raft_bottom_half: edge(raft_half, raft_h),
+            rim_top_half,
+            rim_top: base_bottom - rim_h,
+            rim_inner,
             raft,
+            sloped: p.raft.edge != RaftEdge::Straight,
             sphere: p.tip.contact_shape == ContactShape::Sphere,
             prism: p.body.shape == BodyShape::Prism,
             rect,
@@ -369,16 +410,31 @@ impl Side {
         painter.hline(model.x_range(), self.model_bottom, edge);
         // Raft, base, body, then the tip over them.
         if self.raft {
-            let pts = vec![
-                pos2(self.raft_left, self.plate),
-                pos2(self.raft_right, self.plate),
-                pos2(self.raft_right - self.raft_inset, self.base_bottom),
-                pos2(self.raft_left + self.raft_inset, self.base_bottom),
-            ];
-            painter.add(egui::Shape::convex_polygon(pts, fill, edge));
+            let (bottom, top) = (self.raft_bottom_half, self.raft_half);
+            let plate =
+                vec![pos2(x - bottom, self.plate), pos2(x + bottom, self.plate), pos2(x + top, self.base_bottom), pos2(x - top, self.base_bottom)];
+            painter.add(egui::Shape::convex_polygon(plate, fill, edge));
+            if self.rim_top < self.base_bottom {
+                for side in [-1.0, 1.0] {
+                    let at = |half: f32, y: f32| pos2(x + side * half, y);
+                    let rim = vec![
+                        at(self.rim_inner, self.base_bottom),
+                        at(top, self.base_bottom),
+                        at(self.rim_top_half, self.rim_top),
+                        at(self.rim_inner, self.rim_top),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(rim, fill, edge));
+                }
+            }
         }
-        let base = Rect::from_min_max(pos2(x - self.base / 2.0, self.base_top), pos2(x + self.base / 2.0, self.base_bottom));
-        painter.rect(base, 1.0, fill, edge, egui::StrokeKind::Middle);
+        // The base is a cone from its diameter on the raft to the body's.
+        let base = vec![
+            pos2(x - self.base / 2.0, self.base_bottom),
+            pos2(x + self.base / 2.0, self.base_bottom),
+            pos2(x + self.body / 2.0, self.base_top),
+            pos2(x - self.body / 2.0, self.base_top),
+        ];
+        painter.add(egui::Shape::convex_polygon(base, fill, edge));
         let body = Rect::from_min_max(pos2(x - self.body / 2.0, self.tip_bottom), pos2(x + self.body / 2.0, self.base_top));
         painter.rect(body, 0.0, fill, edge, egui::StrokeKind::Middle);
         if self.prism {
@@ -431,20 +487,30 @@ impl Side {
         Self::leader(painter, t, pos2(x, (top + bottom) / 2.0), s);
     }
 
-    /// The raft's sloped edge and the angle it makes with the plate.
-    fn chamfer_dim(&self, painter: &Painter, t: &Tokens, s: Option<&FigureSlot>) {
+    /// The raft's sloped edge and the angle it makes with the plate: inside the raft for a
+    /// chamfer, outside it for an undercut, where the edge overhangs.
+    fn edge_dim(&self, painter: &Painter, t: &Tokens, s: Option<&FigureSlot>) {
         if !self.raft {
             return;
         }
         let ink = Self::ink(t, s);
-        let corner = pos2(self.raft_right, self.plate);
-        let top = pos2(self.raft_right - self.raft_inset, self.base_bottom);
+        let corner = pos2(self.x + self.raft_bottom_half, self.plate);
+        let top = pos2(self.x + self.raft_half, self.base_bottom);
+        if !self.sloped {
+            Self::leader(painter, t, pos2(corner.x, (corner.y + top.y) / 2.0), s);
+            return;
+        }
         painter.line_segment([corner, top], ink);
         let r = 9.0;
-        let angle = (self.plate - self.base_bottom).atan2(self.raft_inset.max(0.01));
-        let arc: Vec<Pos2> = (0..=8).map(|i| angle * i as f32 / 8.0).map(|a| pos2(corner.x - r * a.cos(), corner.y - r * a.sin())).collect();
+        let rise = (self.plate - self.base_bottom).max(0.01);
+        let run = (corner.x - top.x).abs().max(0.01);
+        let angle = rise.atan2(run);
+        // A chamfer's angle opens inwards (towards -X), an undercut's outwards.
+        let towards = if top.x <= corner.x { -1.0 } else { 1.0 };
+        let arc: Vec<Pos2> =
+            (0..=8).map(|i| angle * i as f32 / 8.0).map(|a| pos2(corner.x + towards * r * a.cos(), corner.y - r * a.sin())).collect();
         painter.add(egui::Shape::line(arc, ink));
-        Self::leader(painter, t, pos2(corner.x - r, corner.y - SPACE_2), s);
+        Self::leader(painter, t, pos2(corner.x + towards * r, corner.y - SPACE_2), s);
     }
 }
 
@@ -636,6 +702,9 @@ mod tests {
         }
         for s in BodyShape::ALL {
             assert!(i18n::has(body_name(s).1));
+        }
+        for e in RaftEdge::ALL {
+            assert!(i18n::has(edge_name(e).1));
         }
     }
 }

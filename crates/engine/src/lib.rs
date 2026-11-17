@@ -6,6 +6,7 @@
 mod brace;
 mod cmd;
 mod print_config;
+mod raft;
 mod route;
 mod session;
 mod slice_job;
@@ -19,6 +20,7 @@ pub use brace::{
 };
 pub use cmd::{CommandSpec, commands};
 pub use print_config::PrintConfig;
+pub use raft::{raft_feet, raft_triangles};
 pub use resin_geom as geom;
 pub use resin_io as io;
 pub use resin_render as render;
@@ -27,7 +29,9 @@ pub use route::{Route, route, support_head};
 pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
 pub use slice_job::{Job, SliceSource};
 pub use support_line::{DEFAULT_LINE_SPACING, DEFAULT_TIPS_PER_BODY, LinePoint, MAX_LINE_TIPS, line_points};
-pub use support_settings::{Base, Body, BodyShape, ContactShape, GROUPS, PresetId, Raft, SEGMENTS, SupportPreset, SupportSettings, Tip, range};
+pub use support_settings::{
+    Base, Body, BodyShape, ContactShape, GROUPS, PresetId, Raft, RaftEdge, SEGMENTS, SupportPreset, SupportSettings, Tip, range,
+};
 pub use support_solids::{Owner, Primitive, SupportTessellator, strut_primitives, support_primitives};
 
 pub type Result<T, E = EngineError> = std::result::Result<T, E>;

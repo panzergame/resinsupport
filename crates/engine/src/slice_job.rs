@@ -10,7 +10,7 @@ use resin_slice::{PrinterProfile, SliceInput, SlicedJob, Solid, SolidKind, Stamp
 use serde::Serialize;
 
 use crate::support_solids::SupportTessellator;
-use crate::{PrintConfig, Scene, Session, SupportPreset, brace_solids, route};
+use crate::{PrintConfig, Scene, Session, SupportPreset, brace_solids, raft_feet, raft_triangles, route};
 
 /// A sliced job and what was left out of it.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,7 +41,8 @@ impl SliceSource {
     }
 
     /// The slicer's input: each model placed, each support that reaches the plate (a branch: through
-    /// its parent) as its closed solids; and how many supports do not reach it, which are left out.
+    /// its parent) as its closed solids, the raft under them; and how many supports do not reach
+    /// it, which are left out.
     pub fn input(&self) -> (SliceInput, usize) {
         let models = self.scene.models();
         let mut solids: Vec<Solid> = models
@@ -76,6 +77,10 @@ impl SliceSource {
             let mut triangles = Vec::new();
             tess.strut_triangles(&struts, b.params.diameter_ratio, &self.preset, &mut triangles);
             solids.push(Solid { kind: SolidKind::Support, triangles });
+        }
+        let raft = raft_triangles(&raft_feet(printed.values()), &self.preset);
+        if !raft.is_empty() {
+            solids.push(Solid { kind: SolidKind::Support, triangles: raft });
         }
         let input = SliceInput { solids, profile: self.config.printer.clone(), settings: self.config.settings, stamp: self.stamp };
         (input, unreachable)

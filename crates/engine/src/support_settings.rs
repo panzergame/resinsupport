@@ -44,16 +44,25 @@ impl PresetId {
 
     /// The built-in values: what Restore defaults puts back.
     pub fn defaults(self) -> SupportPreset {
-        let (contact, penetration, length, upper, body, segments, base, base_h, raft, margin) = match self {
-            PresetId::Light => (0.25, 0.1, 1.5, 0.5, 0.7, 8, 3.0, 0.6, 0.6, 1.5),
-            PresetId::Medium => (0.35, 0.15, 2.0, 0.7, 1.0, 12, 4.2, 0.8, 1.0, 2.0),
-            PresetId::Heavy => (0.5, 0.25, 2.6, 1.0, 1.4, 16, 5.6, 1.0, 1.4, 2.5),
+        let (contact, penetration, length, upper, body, segments, base, base_h, raft, margin, merge) = match self {
+            PresetId::Light => (0.25, 0.1, 1.5, 0.5, 0.7, 8, 3.0, 0.6, 0.6, 1.5, 4.0),
+            PresetId::Medium => (0.35, 0.15, 2.0, 0.7, 1.0, 12, 4.2, 0.8, 1.0, 2.0, 5.0),
+            PresetId::Heavy => (0.5, 0.25, 2.6, 1.0, 1.4, 16, 5.6, 1.0, 1.4, 2.5, 6.0),
         };
         SupportPreset {
             tip: Tip { contact_shape: ContactShape::Cone, contact_diameter: contact, penetration, length, upper_diameter: upper, max_angle: 80.0 },
             body: Body { shape: BodyShape::Cylinder, diameter: body, max_angle: 40.0, clearance: 0.5, segments },
             base: Base { diameter: base, height: base_h },
-            raft: Raft { enabled: true, thickness: raft, margin, chamfer_angle: 45.0 },
+            raft: Raft {
+                enabled: true,
+                thickness: raft,
+                margin,
+                merge_distance: merge,
+                edge: RaftEdge::Chamfer,
+                edge_angle: 45.0,
+                rim_height: 0.0,
+                rim_width: 1.0,
+            },
         }
     }
 }
@@ -71,6 +80,28 @@ pub enum ContactShape {
 pub enum BodyShape {
     Cylinder,
     Prism,
+}
+
+/// The raft's outer edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RaftEdge {
+    Straight,
+    /// Wider at the top than on the plate, so a scraper gets under it.
+    Undercut,
+    /// Narrower at the top.
+    Chamfer,
+}
+
+impl RaftEdge {
+    pub const ALL: [RaftEdge; 3] = [RaftEdge::Straight, RaftEdge::Undercut, RaftEdge::Chamfer];
+    pub fn id(self) -> &'static str {
+        match self {
+            RaftEdge::Straight => "straight",
+            RaftEdge::Undercut => "undercut",
+            RaftEdge::Chamfer => "chamfer",
+        }
+    }
 }
 
 impl ContactShape {
@@ -120,20 +151,43 @@ pub struct Body {
     pub segments: u32,
 }
 
+/// A cone under the body, from `diameter` on the raft (or the plate) to the body's at `height`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Base {
     pub diameter: f64,
     pub height: f64,
 }
 
+/// One plate joining every base: the bases' outline widened by `margin`, gaps narrower than
+/// `merge_distance` filled.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Raft {
     pub enabled: bool,
     pub thickness: f64,
-    /// How far the raft reaches past the bases.
+    /// How far the raft reaches past the bases, at its top.
     pub margin: f64,
-    /// Degrees of the raft's edge from the plate; 90 is a straight wall.
-    pub chamfer_angle: f64,
+    pub merge_distance: f64,
+    pub edge: RaftEdge,
+    /// Degrees of an undercut's or a chamfer's edge from the plate.
+    pub edge_angle: f64,
+    /// A rim round the raft's edge, standing on it, the inside left hollow; 0 for none.
+    pub rim_height: f64,
+    /// The rim's width where it is narrowest.
+    pub rim_width: f64,
+}
+
+impl Raft {
+    /// How far the edge moves out per millimetre down: [`resin_geom::RaftProfile::slope`]. An
+    /// undercut reaches in no further than the margin, steeper than its angle if need be: past
+    /// it, the raft's foot would shrink under the bases.
+    pub fn slope(&self) -> f64 {
+        let run = 1.0 / self.edge_angle.to_radians().tan();
+        match self.edge {
+            RaftEdge::Straight => 0.0,
+            RaftEdge::Undercut => -run.min((self.margin / self.thickness).max(0.0)),
+            RaftEdge::Chamfer => run,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -142,6 +196,18 @@ pub struct SupportPreset {
     pub body: Body,
     pub base: Base,
     pub raft: Raft,
+}
+
+impl SupportPreset {
+    /// Where the bases stand: on the raft, or on the plate without one.
+    pub fn foot_z(&self) -> f64 {
+        if self.raft.enabled { self.raft.thickness } else { 0.0 }
+    }
+
+    /// The top of the bases' cones.
+    pub fn base_top(&self) -> f64 {
+        self.foot_z() + self.base.height
+    }
 }
 
 /// The groups of a preset, as named in parameters and stored settings.
@@ -161,7 +227,10 @@ const NUMBERS: &[(&str, &str, f64, f64)] = &[
     ("base", "height", 0.1, 5.0),
     ("raft", "thickness", 0.1, 5.0),
     ("raft", "margin", 0.0, 20.0),
-    ("raft", "chamfer_angle", 15.0, 90.0),
+    ("raft", "merge_distance", 0.0, 50.0),
+    ("raft", "edge_angle", 30.0, 89.0),
+    ("raft", "rim_height", 0.0, 10.0),
+    ("raft", "rim_width", 0.4, 5.0),
 ];
 
 pub const SEGMENTS: RangeInclusive<u32> = 3..=64;
@@ -193,7 +262,10 @@ impl SupportPreset {
             ("base", "height") => &mut self.base.height,
             ("raft", "thickness") => &mut self.raft.thickness,
             ("raft", "margin") => &mut self.raft.margin,
-            ("raft", "chamfer_angle") => &mut self.raft.chamfer_angle,
+            ("raft", "merge_distance") => &mut self.raft.merge_distance,
+            ("raft", "edge_angle") => &mut self.raft.edge_angle,
+            ("raft", "rim_height") => &mut self.raft.rim_height,
+            ("raft", "rim_width") => &mut self.raft.rim_width,
             _ => return None,
         })
     }
@@ -224,6 +296,12 @@ impl SupportPreset {
                     .ok_or_else(|| bad(&format!("an integer from {} to {}", SEGMENTS.start(), SEGMENTS.end())))?
             }
             ("raft", "enabled") => self.raft.enabled = v.as_bool().ok_or_else(|| bad("true or false"))?,
+            ("raft", "edge") => {
+                self.raft.edge = v
+                    .as_str()
+                    .and_then(|s| RaftEdge::ALL.into_iter().find(|e| e.id() == s))
+                    .ok_or_else(|| bad("\"straight\", \"undercut\" or \"chamfer\""))?
+            }
             _ => {
                 let r = range(group, key).ok_or(FieldError::Unknown)?;
                 let x = v.as_f64().filter(|x| r.contains(x)).ok_or_else(|| bad(&format!("a number from {} to {}", r.start(), r.end())))?;

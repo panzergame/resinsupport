@@ -196,7 +196,7 @@ pub fn brace_struts(a: &Route, b: &Route, params: &BraceParams, p: &SupportPrese
     if !(a.foot && b.foot && a.body.len() >= 2 && b.body.len() >= 2) || params.validate().is_err() {
         return Vec::new();
     }
-    let lo = p.base.height + params.foot_gap;
+    let lo = p.base_top() + params.foot_gap;
     let hi = ha.z.min(hb.z) - params.head_gap;
     if !(hi - lo > 0.0) {
         return Vec::new();
@@ -362,7 +362,7 @@ mod tests {
         let params = BraceParams::default();
         // 5 mm apart, a 21.5 mm span from 1 mm above the base to 2 mm under the lower head: four
         // bays at 45° would rise 20 mm, so four taller ones fill it.
-        let lo = p.base.height + 1.0;
+        let lo = p.base_top() + 1.0;
         let (a, b) = (column(0.0, 0.0, lo + 21.5 + 2.0), column(5.0, 0.0, lo + 30.0));
         let s = brace_struts(&a, &b, &params, &p);
         assert_eq!(s.len(), 4);

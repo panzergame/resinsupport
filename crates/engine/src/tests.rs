@@ -511,7 +511,7 @@ fn hostile_params_never_panic() {
         json!({ "lifted": "yes", "height": -1, "models": [{ "id": 1, "lifted": 1 }] }),
         json!({ "lifted": true, "height": 1e308, "ids": [u64::MAX], "path": "/", "fit": false }),
         json!({ "arrange": "yes", "ids": [1, 1, 2] }),
-        json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "chamfer_angle": "45" } }),
+        json!({ "tip": { "length": [], "penetration": {} }, "base": { "diameter": 0, "height": 1e-300 }, "raft": { "edge_angle": "45", "edge": 3 } }),
         json!({ "printer": { "name": 1, "resolution_x": 1e308, "display_x": -1, "mirror_x": "yes" }, "layers": [], "slicing": "aa" }),
         json!({ "printer": { "resolution_x": u64::MAX, "resolution_y": 0.5, "display_y": 1e-300 }, "exposure": { "power": 256, "normal": null } }),
         json!({ "layers": { "height": 1e-300, "bottom_count": u64::MAX, "transition_count": -1 }, "motion": { "lift_speed_slow": 1e308 } }),
@@ -752,7 +752,7 @@ fn a_branch_is_a_straight_tip_to_its_parents_head() {
     assert!((lowest - parent.head.z).abs() < 1e-9, "{lowest}");
     let (input, unreachable) = s.slice_input();
     assert_eq!(unreachable, 0);
-    assert_eq!(input.solids.iter().filter(|x| x.kind == resin_slice::SolidKind::Support).count(), 2);
+    assert_eq!(input.solids.iter().filter(|x| x.kind == resin_slice::SolidKind::Support).count(), 3, "the support, its branch and the raft");
 
     // Moving the parent's head takes the branch's tip with it; through the model, it is flagged.
     let to = parent.head + Vec3::new(0.0, 1.0, -1.0);
@@ -1222,6 +1222,19 @@ fn support_settings_merge_validate_and_round_trip() {
     // `preset` defaults to the new active one.
     s.execute("support.configure", &json!({ "active": "light", "raft": { "margin": 3 } })).unwrap();
     assert_eq!((s.support_settings().active, s.support_settings().light.raft.margin), (PresetId::Light, 3.0));
+    s.execute("support.configure", &json!({ "raft": { "edge": "undercut", "edge_angle": 60, "rim_height": 1.5, "merge_distance": 8 } })).unwrap();
+    let raft = s.support_settings().light.raft;
+    assert_eq!((raft.edge, raft.edge_angle, raft.rim_height, raft.merge_distance), (crate::RaftEdge::Undercut, 60.0, 1.5, 8.0));
+    assert!(raft.slope() < 0.0, "an undercut widens going up");
+    // Light's 0.6 mm raft, undercut at 30°, would reach 1.04 mm in: under a 0.5 mm margin it
+    // goes steeper and reaches in 0.5 mm; with none it is a straight wall.
+    s.execute("support.configure", &json!({ "raft": { "edge_angle": 30, "margin": 0.5 } })).unwrap();
+    let raft = s.support_settings().light.raft;
+    assert!((raft.thickness * -raft.slope() - 0.5).abs() < 1e-12, "{}", raft.slope());
+    s.execute("support.configure", &json!({ "raft": { "margin": 0 } })).unwrap();
+    assert_eq!(s.support_settings().light.raft.slope(), 0.0);
+    let (back, problems) = SupportSettings::from_stored(&s.execute("support.settings", &json!({})).unwrap());
+    assert_eq!((back, problems), (*s.support_settings(), vec![]));
 
     // Rejections change nothing: bad types, ranges, names, and sizes that don't fit together.
     let before = *s.support_settings();
@@ -1235,6 +1248,8 @@ fn support_settings_merge_validate_and_round_trip() {
         json!({ "body": { "shape": "cube" } }),
         json!({ "tip": { "lenght": 2 } }),
         json!({ "raft": { "enabled": 1 } }),
+        json!({ "raft": { "edge": "round" } }),
+        json!({ "raft": { "edge_angle": 10 } }),
         json!({ "raft": "on" }),
         json!({ "preset": "huge" }),
         json!({ "elevation": 5 }),
@@ -1670,9 +1685,19 @@ fn supports_reach_the_plate_in_the_slice() {
     assert_eq!(held["layers"], 300);
     assert!(held["volume_ml"].as_f64().unwrap() > alone["volume_ml"].as_f64().unwrap(), "the support is printed");
     assert_eq!((held["clipped"].as_u64(), held["open_rows"].as_u64()), (Some(0), Some(0)));
-    // The first layers: empty without the support, lit with it.
+    // The first layers: empty without the support, lit with it, its raft wider than its base.
     let first_lit = s.job().unwrap().sliced.layers[0].lit;
     assert!(first_lit > 0, "the support's base is on the plate");
+    s.execute("support.configure", &json!({ "raft": { "enabled": false } })).unwrap();
+    s.execute("print.slice", &json!({})).unwrap();
+    let base_lit = s.job().unwrap().sliced.layers[0].lit;
+    // Medium, halfway up the first 0.05 mm layer: the raft's disc 2 mm past the 4.2 mm base and
+    // 0.975 mm wider still at 45°; the base a 12-sided cone already narrowed to 2.05 mm.
+    let (raft, base) = (std::f64::consts::PI * 5.075f64.powi(2), 3.0 * 2.05f64.powi(2));
+    let ratio = first_lit as f64 / base_lit as f64;
+    assert!((ratio / (raft / base) - 1.0).abs() < 0.01, "{first_lit} {base_lit}");
+    s.execute("support.configure", &json!({ "raft": { "enabled": true } })).unwrap();
+    s.execute("print.slice", &json!({})).unwrap();
     assert!(s.job_is_current());
     // Moved off the plate's edge, the cube is clipped.
     s.execute("model.move", &json!({ "ids": [m], "by": [200, 0, 0] })).unwrap();
@@ -1780,9 +1805,9 @@ fn braces_join_selected_supports_until_one_is_edited() {
     assert_eq!(rebuilt["replaced"].as_u64(), Some(3));
     assert_eq!(s.scene.braces().iter().map(|x| (x.a, x.b)).collect::<Vec<_>>(), vec![(a, b), (b, c)]);
     // Only braces joining two of the supports given: `a`'s brace to `b` stays.
-    s.execute("support.add_braces", &json!({ "ids": [b, c], "angle": 60 })).unwrap();
+    s.execute("support.add_braces", &json!({ "ids": [b, c], "angle": 55 })).unwrap();
     let kept: Vec<(u64, u64, f64)> = s.scene.braces().iter().map(|x| (x.a, x.b, x.params.angle)).collect();
-    assert_eq!(kept, vec![(a, b, 50.0), (b, c, 60.0)]);
+    assert_eq!(kept, vec![(a, b, 50.0), (b, c, 55.0)]);
     s.execute("edit.undo", &json!({})).unwrap();
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.scene.braces().len(), 3);

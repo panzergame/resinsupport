@@ -67,9 +67,10 @@ pub fn support_primitives(r: &Route, p: &SupportPreset, mut f: impl FnMut(Owner,
     for (c, i) in corners.iter().zip(0u32..) {
         f(Owner::Part(SupportPart::Joint(i)), Primitive::Sphere { center: *c, radius });
     }
+    // On the raft: the body goes on down into it, and the slicer prints their union.
     if let Some(foot) = r.body.last().filter(|_| r.foot) {
-        let top = *foot + Vec3::Z * p.base.height;
-        f(Owner::Base, Primitive::Frustum { a: *foot, b: top, ra: p.base.diameter / 2.0, rb: radius, sides, smooth, caps: (true, false) });
+        let (bottom, top) = (*foot + Vec3::Z * p.foot_z(), *foot + Vec3::Z * p.base_top());
+        f(Owner::Base, Primitive::Frustum { a: bottom, b: top, ra: p.base.diameter / 2.0, rb: radius, sides, smooth, caps: (true, false) });
     }
 }
 
@@ -158,6 +159,20 @@ mod tests {
         SupportTessellator::default().triangles(&r, &p, &mut t);
         let mesh = Mesh::new(t);
         assert!(mesh.signed_volume() > 0.0, "wound outwards");
-        assert!(mesh.bounds().min.z.abs() < 1e-6, "the base stands on the plate");
+        assert!(mesh.bounds().min.z.abs() < 1e-6, "the body reaches the plate");
+        let mut base = None;
+        support_primitives(&r, &p, |part, prim| {
+            if let (Owner::Base, Primitive::Frustum { a, b, .. }) = (part, prim) {
+                base = Some((a.z, b.z));
+            }
+        });
+        assert_eq!(base, Some((p.raft.thickness, p.raft.thickness + p.base.height)), "the base stands on the raft");
+        let mut bare = p;
+        bare.raft.enabled = false;
+        support_primitives(&r, &bare, |part, prim| {
+            if let (Owner::Base, Primitive::Frustum { a, .. }) = (part, prim) {
+                assert_eq!(a.z, 0.0, "and on the plate without one");
+            }
+        });
     }
 }

@@ -86,3 +86,90 @@ mod tests {
         assert_eq!(out.len(), before);
     }
 }
+
+/// `triangles` shaded smooth where they meet within `crease_degrees` of each other: a corner's
+/// normal is the area-weighted mean of the faces sharing that exact point whose normals lie within
+/// the crease of its own face's, so a curved wall shades round and an edge stays sharp. Corners
+/// are matched bit for bit, as a mesh built to share them gives them.
+pub fn smooth_shaded(triangles: &[[[f32; 3]; 3]], crease_degrees: f64) -> Vec<ShadedVertex> {
+    use std::collections::HashMap;
+    // Each face's normal scaled by twice its area.
+    let faces: Vec<Vec3> = triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(Vec3::from);
+            (b - a).cross(c - a)
+        })
+        .collect();
+    // One id per distinct point, then the faces round each id, grouped in one array.
+    let mut ids: HashMap<[u32; 3], u32> = HashMap::with_capacity(triangles.len());
+    let corner: Vec<u32> = triangles
+        .iter()
+        .flatten()
+        .map(|p| {
+            let next = ids.len() as u32;
+            *ids.entry(p.map(f32::to_bits)).or_insert(next)
+        })
+        .collect();
+    let mut start = vec![0u32; ids.len() + 1];
+    for &id in &corner {
+        if let Some(s) = start.get_mut(id as usize + 1) {
+            *s += 1;
+        }
+    }
+    for i in 1..start.len() {
+        start[i] += start[i - 1];
+    }
+    let mut fill = start.clone();
+    let mut round = vec![0u32; corner.len()];
+    for (k, &id) in corner.iter().enumerate() {
+        if let Some(at) = fill.get_mut(id as usize)
+            && let Some(slot) = round.get_mut(*at as usize)
+        {
+            *slot = (k / 3) as u32;
+            *at += 1;
+        }
+    }
+    let unit: Vec<Option<Vec3>> = faces.iter().map(|n| n.normalized()).collect();
+    let cos = crease_degrees.to_radians().cos();
+    let mut out = Vec::with_capacity(corner.len());
+    for (k, &id) in corner.iter().enumerate() {
+        let f = k / 3;
+        let own = unit.get(f).copied().flatten().unwrap_or(Vec3::Z);
+        let (a, b) = (start.get(id as usize).copied().unwrap_or(0), start.get(id as usize + 1).copied().unwrap_or(0));
+        let mut sum = Vec3::default();
+        for &g in round.get(a as usize..b as usize).unwrap_or_default() {
+            if let (Some(n), Some(Some(u))) = (faces.get(g as usize), unit.get(g as usize))
+                && u.dot(own) >= cos
+            {
+                sum += *n;
+            }
+        }
+        let pos = triangles.get(f).and_then(|t| t.get(k % 3)).copied().unwrap_or_default();
+        out.push(ShadedVertex { pos, normal: sum.normalized().unwrap_or(own).to_f32() });
+    }
+    out
+}
+
+#[cfg(test)]
+mod smooth_tests {
+    use super::*;
+
+    #[test]
+    fn shared_corners_shade_smooth_within_the_crease_and_sharp_beyond_it() {
+        // Two faces folded 20° along the X axis, and one at 90°.
+        let (s, c) = (20f32.to_radians().sin(), 20f32.to_radians().cos());
+        let tris = [
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, -c, s]],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]],
+        ];
+        let v = smooth_shaded(&tris, 30.0);
+        let n = |i: usize| Vec3::from(v[i].normal);
+        // The shared corner of the first two leans halfway; the upright face keeps its own.
+        let half = n(0);
+        assert!((half.dot(Vec3::Z) - 10f64.to_radians().cos()).abs() < 1e-3, "{half:?}");
+        assert!((n(6) - Vec3::new(0.0, -1.0, 0.0)).len() < 1e-6 || (n(6) - Vec3::new(0.0, 1.0, 0.0)).len() < 1e-6, "{:?}", n(6));
+        assert!((n(2) - Vec3::Z).len() < 1e-6, "a corner no other face shares keeps its face's normal");
+    }
+}

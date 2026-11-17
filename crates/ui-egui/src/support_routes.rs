@@ -3,17 +3,24 @@
 //! a bounded amount of search per frame: a gizmo drag changes the scene every frame, and
 //! re-routing hundreds of supports in one frame would stall the window. Routes not yet redone
 //! are drawn where they were, the oldest redone first. Braces' struts are worked out once every
-//! route is, within the same budget.
+//! route is, within the same budget. The raft under them is redone once every route is.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
-use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere};
-use resin_engine::{Owner, Primitive, Route, Scene, SupportPart, SupportPreset, brace_solids, route, strut_primitives, support_primitives};
+use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere, smooth_shaded};
+use resin_engine::{
+    Owner, Primitive, Raft, Route, Scene, SupportPart, SupportPreset, brace_solids, raft_feet, raft_triangles, route, strut_primitives,
+    support_primitives,
+};
 
 /// How far round a joint a press picks it, as a multiple of the body's radius: the joint is drawn
 /// no wider than the body, and a press must not need to land on its sliver beside the columns.
 const JOINT_PICK_SCALE: f64 = 1.5;
+
+/// The raft's faces shade smooth within this angle of each other: its edges are at least 30°
+/// from its flat faces (`edge_angle`'s range), and its walls bend far less from cell to cell.
+const RAFT_CREASE_DEGREES: f64 = 25.0;
 
 /// Routing time per frame, at most (one route past it finishes). A clearance test costs from a
 /// fraction of a microsecond to a few, with the mesh around it, so time is what is capped.
@@ -107,7 +114,12 @@ pub enum Piece {
     Joint(u32),
 }
 
-type MeshKey = (u64, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
+/// The preset is part of it: a base or a raft setting changes the solids and no route. So is
+/// whether every route is done, which the raft waits for.
+type MeshKey = (u64, SupportPreset, bool, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
+
+/// What the raft is built from: its settings, the bases' diameter and the feet, as bits.
+type RaftKey = (Raft, u64, Vec<[u64; 2]>);
 
 /// A brace's struts.
 pub type Struts = Vec<(Vec3, Vec3)>;
@@ -125,6 +137,7 @@ pub struct RouteCache {
     /// Counts route changes: the solids are stale once it moves.
     changed: u64,
     mesh: Option<(MeshKey, Arc<SupportMesh>)>,
+    raft: Option<(RaftKey, Arc<Vec<ShadedVertex>>)>,
 }
 
 impl RouteCache {
@@ -225,7 +238,7 @@ impl RouteCache {
         let none = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         let (selected, parts, braces) =
             if selection { (&scene.selected, &scene.selected_parts, &scene.selected_braces) } else { (&none.0, &none.1, &none.2) };
-        let key = (self.changed, selection, selected.clone(), parts.clone(), braces.clone(), hidden);
+        let key = (self.changed, *preset, self.todo.is_empty(), selection, selected.clone(), parts.clone(), braces.clone(), hidden);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
@@ -262,6 +275,9 @@ impl RouteCache {
                 }
             });
         }
+        if let Some(g) = groups.get_mut(Look::Plain.index()) {
+            g.body.extend(self.raft(scene, preset).iter());
+        }
         let mut out = SupportMesh { handles, ..Default::default() };
         for (look, g) in Look::ALL.into_iter().zip(groups) {
             let start = out.vertices.len() as u32;
@@ -278,6 +294,23 @@ impl RouteCache {
         let mesh = Arc::new(out);
         self.mesh = Some((key, Arc::clone(&mesh)));
         mesh
+    }
+
+    /// The raft under the supports that reach the plate, rebuilt only when a foot or a setting
+    /// it depends on changed: not while the routes are still being redone, so a drag does not
+    /// rebuild it for every route it moves.
+    fn raft(&mut self, scene: &Scene, preset: &SupportPreset) -> Arc<Vec<ShadedVertex>> {
+        let grounded = self.grounded(scene);
+        let feet = raft_feet(self.routed(scene).filter(|(id, _)| grounded.contains(id)).map(|(_, r)| r));
+        let key = (preset.raft, preset.base.diameter.to_bits(), feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect());
+        match &self.raft {
+            Some((k, raft)) if *k == key || !self.todo.is_empty() => return Arc::clone(raft),
+            _ => {}
+        }
+        // Its walls are cut in many small faces: flat, each would shade apart from its neighbours.
+        let raft = Arc::new(smooth_shaded(&raft_triangles(&feet, preset), RAFT_CREASE_DEGREES));
+        self.raft = Some((key, Arc::clone(&raft)));
+        raft
     }
 
     /// The nearest selected joint along the ray from `origin` along unit `dir`: its support, the
@@ -302,7 +335,7 @@ impl RouteCache {
         let base = preset.base.diameter / 2.0;
         self.routed(scene)
             .flat_map(|(id, r)| {
-                let foot = r.body.last().filter(|_| r.foot && bodies).map(|&f| (f, f + Vec3::Z * preset.base.height));
+                let foot = r.body.last().filter(|_| r.foot && bodies).map(|&f| (f + Vec3::Z * preset.foot_z(), f + Vec3::Z * preset.base_top()));
                 let bottom = bottom_segment(r).map_or(Piece::Whole, Piece::Segment);
                 let whole = std::iter::once((r.contact, r.head, tip, Piece::Whole)).chain(foot.map(|(a, b)| (a, b, base, bottom)));
                 let whole = whole.filter_map(move |(a, b, rad, piece)| ray_capsule(origin, dir, a, b, rad).map(|t| (id, piece, t)));

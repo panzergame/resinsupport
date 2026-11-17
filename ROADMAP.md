@@ -37,7 +37,8 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - [x] Braces: H with supports selected (a selected segment standing for its support) pairs them by chain, spanning tree or every pair within a reach, and lays struts between their bodies, zig-zag or crossed, at an angle from horizontal measured in the plane of the two bodies, section by section between their knees (only ever steeper, so whole bays fill each section), a share of the body's diameter, clear of the head and the base cones by set gaps; struts near a model are left out; editing a braced support removes its braces (`support.add_braces`)
 - A ribbon button for the tip line (L) and braces (H)
 - A button for `support.reset_route`
-- Overhang and island detection, automatic generation, raft
+- [x] Raft: one plate under every base, the bases' outline widened by a margin with gaps up to a merge distance filled, a straight, undercut or chamfered edge, an optional rim; bases stand on it; drawn and printed
+- Overhang and island detection, automatic generation
 
 ## 5. Slicing
 - [x] Print settings: crate `resin-slice` (printer profile, print settings, the sliced job's types), `print.configure`, `print.reset`, `print.settings`, a print settings card, kept in the preferences, never undo steps

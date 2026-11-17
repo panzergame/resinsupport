@@ -127,7 +127,7 @@ pub fn route(scene: &Scene, s: &Support, p: &SupportPreset) -> Route {
     let head = s.tip + axis * p.tip.length;
     out.axis = axis;
     out.head = head;
-    let base_top = p.base.height;
+    let base_top = p.base_top();
     if !(head.is_finite() && head.z > base_top) {
         return out;
     }
@@ -234,7 +234,7 @@ fn placed(models: &[Model], s: &Support, corners: &[Vec3], p: &SupportPreset) ->
     let mut obs = Obstacles { models: models.iter().filter_map(|m| Some((m, m.transform.inverse()?))).collect(), tests: 0 };
     let body_r = p.body.diameter / 2.0 + p.body.clearance;
     let base_r = p.base.diameter / 2.0 + p.body.clearance;
-    let base_top = p.base.height;
+    let base_top = p.base_top();
     let steep = p.body.max_angle.to_radians().cos() - 1e-9;
     let leans_ok = out.body.windows(2).all(|w| match w {
         [a, b] => a.dist(*b) <= TOUCH || (a.z - b.z) >= steep * a.dist(*b),
