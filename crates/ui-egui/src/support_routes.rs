@@ -3,10 +3,12 @@
 //! a bounded amount of search per frame: a gizmo drag changes the scene every frame, and
 //! re-routing hundreds of supports in one frame would stall the window. Routes not yet redone
 //! are drawn where they were, the oldest redone first. Braces' struts are worked out once every
-//! route is, within the same budget. The raft under them is redone once every route is.
+//! route is, within the same budget. The raft under them is redone once every route is, off the
+//! window thread: the old one is drawn until the new one is in.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere, smooth_shaded};
 use resin_engine::{
@@ -115,11 +117,17 @@ pub enum Piece {
 }
 
 /// The preset is part of it: a base or a raft setting changes the solids and no route. So is
-/// whether every route is done, which the raft waits for.
-type MeshKey = (u64, SupportPreset, bool, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
+/// the raft drawn, which arrives later.
+type MeshKey = (u64, u64, SupportPreset, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
 
 /// What the raft is built from: its settings, the bases' diameter and the feet, as bits.
 type RaftKey = (Raft, u64, Vec<[u64; 2]>);
+
+/// A raft being built on its own thread.
+struct RaftJob {
+    key: RaftKey,
+    done: Receiver<Vec<ShadedVertex>>,
+}
 
 /// A brace's struts.
 pub type Struts = Vec<(Vec3, Vec3)>;
@@ -137,7 +145,13 @@ pub struct RouteCache {
     /// Counts route changes: the solids are stale once it moves.
     changed: u64,
     mesh: Option<(MeshKey, Arc<SupportMesh>)>,
+    /// The raft drawn, and what it was built from.
     raft: Option<(RaftKey, Arc<Vec<ShadedVertex>>)>,
+    /// Counts rafts drawn: the solids are stale once it moves.
+    rafts: u64,
+    raft_job: Option<RaftJob>,
+    /// The generation and route changes the drawn or building raft's feet were gathered at.
+    raft_checked: Option<(u64, u64)>,
 }
 
 impl RouteCache {
@@ -192,7 +206,90 @@ impl RouteCache {
             }
             self.braces.insert(id, (struts, self.generation));
         }
+        self.poll_raft(false);
+        // Not while routes are being redone, so a drag does not rebuild it for every route it moves.
+        if self.todo.is_empty() {
+            self.refresh_raft(scene, preset);
+        }
         !self.todo.is_empty() || !self.brace_todo.is_empty()
+    }
+
+    /// Whether a raft is being built: it is drawn once in.
+    pub fn raft_pending(&self) -> bool {
+        self.raft_job.is_some()
+    }
+
+    /// Wait for the raft being built, if any, so it is drawn: for a still image.
+    pub fn wait_raft(&mut self) {
+        self.poll_raft(true);
+    }
+
+    /// Start building the raft under the supports that reach the plate when a foot or a setting
+    /// it depends on changed. One job at a time: while one runs, the feet are looked at again once
+    /// it is in, so a drag builds the latest raft rather than one per frame.
+    fn refresh_raft(&mut self, scene: &Scene, preset: &SupportPreset) {
+        let seen = (self.generation, self.changed);
+        if self.raft_checked == Some(seen) {
+            return;
+        }
+        let grounded = self.grounded(scene);
+        let feet = raft_feet(self.routed(scene).filter(|(id, _)| grounded.contains(id)).map(|(_, r)| r));
+        let key: RaftKey = (preset.raft, preset.base.diameter.to_bits(), feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect());
+        if self.raft.as_ref().is_some_and(|(k, _)| *k == key) {
+            // A job for other feet would bring back a raft older than this one.
+            self.raft_job = None;
+            self.raft_checked = Some(seen);
+            return;
+        }
+        match &self.raft_job {
+            Some(job) if job.key == key => {
+                self.raft_checked = Some(seen);
+                return;
+            }
+            Some(_) => return,
+            None => {}
+        }
+        self.raft_checked = Some(seen);
+        if !preset.raft.enabled || feet.is_empty() {
+            self.show_raft(key, Vec::new());
+            return;
+        }
+        let (tx, done) = mpsc::channel();
+        let preset = *preset;
+        // Its walls are cut in many small faces: flat, each would shade apart from its neighbours.
+        let job = move || {
+            // The receiver is gone when a newer raft replaced this one: nobody wants it.
+            let _ = tx.send(smooth_shaded(&raft_triangles(&feet, &preset), RAFT_CREASE_DEGREES));
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(e) = std::thread::Builder::new().name("raft".into()).spawn(job) {
+            log::error!("could not start the raft thread: {e}");
+        }
+        #[cfg(target_arch = "wasm32")]
+        job();
+        self.raft_job = Some(RaftJob { key, done });
+    }
+
+    /// Draw the raft being built once it is in, waiting for it when `wait`.
+    fn poll_raft(&mut self, wait: bool) {
+        let Some(job) = self.raft_job.take() else { return };
+        let got = if wait { job.done.recv().map_err(|_| TryRecvError::Disconnected) } else { job.done.try_recv() };
+        match got {
+            Ok(raft) => {
+                self.show_raft(job.key, raft);
+                // It may be for feet older than the latest: look at them again.
+                self.raft_checked = None;
+            }
+            Err(TryRecvError::Empty) => self.raft_job = Some(job),
+            // Tried again on the next change, not every frame.
+            Err(TryRecvError::Disconnected) => log::error!("the raft could not be built"),
+        }
+    }
+
+    fn show_raft(&mut self, key: RaftKey, raft: Vec<ShadedVertex>) {
+        self.raft = Some((key, Arc::new(raft)));
+        self.rafts += 1;
+        self.raft_job = None;
     }
 
     /// Brace `id`'s struts, as last worked out.
@@ -238,7 +335,7 @@ impl RouteCache {
         let none = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         let (selected, parts, braces) =
             if selection { (&scene.selected, &scene.selected_parts, &scene.selected_braces) } else { (&none.0, &none.1, &none.2) };
-        let key = (self.changed, *preset, self.todo.is_empty(), selection, selected.clone(), parts.clone(), braces.clone(), hidden);
+        let key = (self.changed, self.rafts, *preset, selection, selected.clone(), parts.clone(), braces.clone(), hidden);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
@@ -275,8 +372,8 @@ impl RouteCache {
                 }
             });
         }
-        if let Some(g) = groups.get_mut(Look::Plain.index()) {
-            g.body.extend(self.raft(scene, preset).iter());
+        if let (Some(g), Some((_, raft))) = (groups.get_mut(Look::Plain.index()), &self.raft) {
+            g.body.extend(raft.iter());
         }
         let mut out = SupportMesh { handles, ..Default::default() };
         for (look, g) in Look::ALL.into_iter().zip(groups) {
@@ -294,23 +391,6 @@ impl RouteCache {
         let mesh = Arc::new(out);
         self.mesh = Some((key, Arc::clone(&mesh)));
         mesh
-    }
-
-    /// The raft under the supports that reach the plate, rebuilt only when a foot or a setting
-    /// it depends on changed: not while the routes are still being redone, so a drag does not
-    /// rebuild it for every route it moves.
-    fn raft(&mut self, scene: &Scene, preset: &SupportPreset) -> Arc<Vec<ShadedVertex>> {
-        let grounded = self.grounded(scene);
-        let feet = raft_feet(self.routed(scene).filter(|(id, _)| grounded.contains(id)).map(|(_, r)| r));
-        let key = (preset.raft, preset.base.diameter.to_bits(), feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect());
-        match &self.raft {
-            Some((k, raft)) if *k == key || !self.todo.is_empty() => return Arc::clone(raft),
-            _ => {}
-        }
-        // Its walls are cut in many small faces: flat, each would shade apart from its neighbours.
-        let raft = Arc::new(smooth_shaded(&raft_triangles(&feet, preset), RAFT_CREASE_DEGREES));
-        self.raft = Some((key, Arc::clone(&raft)));
-        raft
     }
 
     /// The nearest selected joint along the ray from `origin` along unit `dir`: its support, the
@@ -520,6 +600,27 @@ mod tests {
         while cache.update(&s.scene, &preset) {}
         assert_eq!(cache.routes.len(), 3);
         assert!(cache.struts(brace).is_none());
+        // The raft is built off the window thread: the old one is drawn until the new one is in.
+        cache.wait_raft();
+        let drawn = |cache: &RouteCache| cache.raft.as_ref().map(|(k, r)| (k.0, r.len()));
+        let before = drawn(&cache).unwrap();
+        assert!(before.1 > 0 && !cache.raft_pending());
+        let mut wider = preset;
+        wider.raft.margin += 2.0;
+        while cache.update(&s.scene, &wider) {}
+        assert!(cache.raft_pending());
+        let mesh = cache.mesh(&s.scene, &wider, true, None);
+        assert_eq!(drawn(&cache), Some(before), "the old raft meanwhile");
+        cache.wait_raft();
+        assert!(!cache.raft_pending() && drawn(&cache).unwrap().0 == wider.raft);
+        assert!(!Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &wider, true, None)), "the new raft redraws the solids");
+        // Nothing changed: no new job.
+        cache.update(&s.scene, &wider);
+        assert!(!cache.raft_pending());
+        // Turned off, it goes at once.
+        wider.raft.enabled = false;
+        while cache.update(&s.scene, &wider) {}
+        assert!(!cache.raft_pending() && drawn(&cache).unwrap().1 == 0);
         std::fs::remove_file(path).ok();
     }
 }

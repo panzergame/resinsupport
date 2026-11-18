@@ -122,7 +122,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let struts: Vec<Line> = support_brace::preview_struts(app).map(|(a, b)| Line { a, b, color: linear(tokens.support_preview) }).collect();
     overlay.lines.extend(struts.iter().copied());
     let preset = *app.session.support_settings().current();
-    if app.routes.update(&app.session.scene, &preset) {
+    if app.routes.update(&app.session.scene, &preset) || app.routes.raft_pending() {
         ctx.request_repaint();
     }
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice, app.supports.moving);
@@ -186,6 +186,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
 pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) -> ViewFrame {
     let preset = *app.session.support_settings().current();
     app.routes.update(&app.session.scene, &preset);
+    app.routes.wait_raft();
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, false, None);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let joints = joint_spheres(&support_mesh, &colors, 1.0);
