@@ -1338,7 +1338,7 @@ fn print_config_merges_validates_and_round_trips() {
     assert_eq!(*s.print_config(), expected);
     s.execute(
         "print.configure",
-        &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200 }, "slicing": { "anti_aliasing": 8, "exact": true, "gamma": 0.6, "anti_aliasing_z": 4, "blur_radius": 2, "blur_passes": 3 } }),
+        &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200 }, "slicing": { "anti_aliasing": 8, "exact": true, "gamma": 0.6, "anti_aliasing_z": 4, "blur_radius": 2, "blur_passes": 3, "dither_z": true, "dither_xy": true, "dither_floor": 90 } }),
     )
     .unwrap();
     let c = s.print_config();
@@ -1347,6 +1347,7 @@ fn print_config_merges_validates_and_round_trips() {
     assert_eq!((c.settings.slicing.anti_aliasing, c.settings.exposure.normal), (8, 2.5));
     assert_eq!((c.settings.slicing.exact, c.settings.slicing.gamma), (true, 0.6));
     assert_eq!((c.settings.slicing.anti_aliasing_z, c.settings.slicing.blur_radius, c.settings.slicing.blur_passes), (4, 2, 3));
+    assert_eq!((c.settings.slicing.dither_z, c.settings.slicing.dither_xy, c.settings.slicing.dither_floor), (true, true, 90));
 
     // A bad patch leaves everything as it was and names the field.
     let before = s.print_config().clone();
@@ -1362,6 +1363,10 @@ fn print_config_merges_validates_and_round_trips() {
         (json!({ "slicing": { "anti_aliasing_z": 3 } }), "slicing.anti_aliasing_z"),
         (json!({ "slicing": { "blur_radius": 0 } }), "slicing.blur_radius"),
         (json!({ "slicing": { "blur_passes": 9 } }), "slicing.blur_passes"),
+        (json!({ "slicing": { "dither_z": 1 } }), "slicing.dither_z"),
+        (json!({ "slicing": { "dither_xy": "on" } }), "slicing.dither_xy"),
+        (json!({ "slicing": { "dither_floor": 0 } }), "slicing.dither_floor"),
+        (json!({ "slicing": { "dither_floor": 101 } }), "slicing.dither_floor"),
         (json!({ "estimates": { "bottle_cost": -1 } }), "estimates.bottle_cost"),
         (json!({ "estimates": { "resin_density": "1.1" } }), "estimates.resin_density"),
         (json!({ "printer": { "resolution_x": 0 } }), "printer.resolution_x"),

@@ -339,6 +339,7 @@ fn pairs(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, pairs: &[Pair]) {
 const SLICING_ROWS: &[Num] = &[
     num("printing.blur_passes", "slicing", "blur_passes", "", 0, 0.05).help("printing.blur_passes.help"),
     num("printing.blur_radius", "slicing", "blur_radius", " px", 0, 0.05).help("printing.blur_radius.help").when(blurs),
+    num("printing.dither_floor", "slicing", "dither_floor", " %", 0, 0.2).help("printing.dither_floor.help").when(dithers),
     num("printing.gamma", "slicing", "gamma", "", 2, 0.01).help("printing.gamma.help"),
     num("printing.estimates.resin_density", "estimates", "resin_density", " g/ml", 2, 0.01),
     num("printing.estimates.bottle_volume", "estimates", "bottle_volume", " ml", 0, 10.0),
@@ -349,8 +350,17 @@ fn blurs(c: &PrintConfig) -> bool {
     c.settings.slicing.blur_passes > 0
 }
 
+fn dithers(c: &PrintConfig) -> bool {
+    c.settings.slicing.dither_z || c.settings.slicing.dither_xy
+}
+
 fn rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, rows: &[Num]) {
     for r in rows {
+        if (r.group, r.key) == ("slicing", "dither_floor") {
+            let s = &mut c.settings.slicing;
+            ui_kit::check_row(ui, t, i18n::tr("printing.dither_z"), i18n::tr("printing.dither_z.help"), &mut s.dither_z);
+            ui_kit::check_row(ui, t, i18n::tr("printing.dither_xy"), i18n::tr("printing.dither_xy.help"), &mut s.dither_xy);
+        }
         r.row(ui, t, c);
         if (r.group, r.key) == ("slicing", "gamma") {
             gamma_curve(ui, t, &c.settings.slicing.gamma_table());
@@ -553,6 +563,18 @@ mod tests {
     }
 
     #[test]
+    fn the_dither_floor_waits_for_a_dither() {
+        let floor = SLICING_ROWS.iter().find(|r| r.key == "dither_floor").and_then(|r| r.when).unwrap();
+        let mut c = PrintConfig::default();
+        assert!(!floor(&c));
+        c.settings.slicing.dither_xy = true;
+        assert!(floor(&c));
+        c.settings.slicing = PrintConfig::default().settings.slicing;
+        c.settings.slicing.dither_z = true;
+        assert!(floor(&c));
+    }
+
+    #[test]
     fn every_card_word_is_in_the_catalog() {
         for id in TABS.into_iter().chain(ANTI_ALIASING_NAMES.map(|(_, id)| id)).chain(ANTI_ALIASING_Z_NAMES.map(|(_, id)| id)).chain(PHASES) {
             assert!(i18n::has(id), "{id}");
@@ -569,5 +591,8 @@ mod tests {
         assert_eq!(ANTI_ALIASING_Z_NAMES.map(|(v, _)| v.parse::<u8>().unwrap_or(0)), ANTI_ALIASING);
         assert!(i18n::has("printing.anti_aliasing_z") && i18n::has("printing.anti_aliasing_z.help"));
         assert!(i18n::has("printing.gamma.curve.help"));
+        for id in ["printing.dither_z", "printing.dither_z.help", "printing.dither_xy", "printing.dither_xy.help"] {
+            assert!(i18n::has(id), "{id}");
+        }
     }
 }

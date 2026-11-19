@@ -7,12 +7,14 @@
 
 mod blur;
 mod coverage;
+mod dither;
 mod downsample;
 mod edge_table;
 mod segments;
 
 pub(crate) use blur::blur;
 pub(crate) use coverage::layer as exact_layer;
+pub(crate) use dither::{Dither, coverage_floor, dither};
 
 pub(crate) use segments::Segments1D;
 

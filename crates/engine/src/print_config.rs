@@ -55,6 +55,8 @@ impl PrintConfig {
             ("printer", "mirror_x") => self.printer.mirror_x = v.as_bool().ok_or_else(|| bad("true or false"))?,
             ("printer", "mirror_y") => self.printer.mirror_y = v.as_bool().ok_or_else(|| bad("true or false"))?,
             ("slicing", "exact") => self.settings.slicing.exact = v.as_bool().ok_or_else(|| bad("true or false"))?,
+            ("slicing", "dither_z") => self.settings.slicing.dither_z = v.as_bool().ok_or_else(|| bad("true or false"))?,
+            ("slicing", "dither_xy") => self.settings.slicing.dither_xy = v.as_bool().ok_or_else(|| bad("true or false"))?,
             _ => {
                 let f = field(group, key).ok_or(FieldError::Unknown)?;
                 let x = v.as_f64().ok_or_else(|| FieldError::Bad(f.describe()))?;

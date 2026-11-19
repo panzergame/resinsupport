@@ -227,9 +227,28 @@ pub struct Slicing {
     /// Times the blur runs, 0 for none; three come close to a Gaussian.
     #[serde(default)]
     pub blur_passes: u8,
+    /// After the blur and before the gamma, greys printing under `dither_floor` are lit at it on
+    /// their share of the layers and left dark on the others.
+    #[serde(default)]
+    pub dither_z: bool,
+    /// Each pixel dithers from its own starting point, so neighbours along an edge switch on at
+    /// different layers.
+    #[serde(default)]
+    pub dither_xy: bool,
+    /// The lowest grey sent to the printer that the resin cures reliably, in percent of full
+    /// light: with `dither_z` or `dither_xy`, the greys printing under it are dithered between it
+    /// and dark. 100 dithers between lit and dark only.
+    #[serde(default = "half")]
+    pub dither_floor: u8,
 }
 
 impl Slicing {
+    /// `dither_floor` as a grey, 1 to 255.
+    pub fn dither_floor_grey(&self) -> u8 {
+        let grey = (u32::from(self.dither_floor.min(100)) * 255 + 50) / 100;
+        u8::try_from(grey).unwrap_or(u8::MAX).max(1)
+    }
+
     /// What each grey becomes through `gamma`, as the slicer applies it.
     pub fn gamma_table(&self) -> [u8; 256] {
         crate::raster::gamma_table(self.gamma)
@@ -246,6 +265,10 @@ fn no_gamma() -> f64 {
 
 fn one() -> u8 {
     1
+}
+
+fn half() -> u8 {
+    50
 }
 
 /// For the resin and cost estimates.
@@ -293,7 +316,17 @@ impl Default for PrintSettings {
                 bottom_retract_speed_fast: 330.0,
                 bottom_retract_speed_slow: 330.0,
             },
-            slicing: Slicing { anti_aliasing: 1, anti_aliasing_z: 1, exact: false, gamma: 1.0, blur_radius: 1, blur_passes: 0 },
+            slicing: Slicing {
+                anti_aliasing: 1,
+                anti_aliasing_z: 1,
+                exact: false,
+                gamma: 1.0,
+                blur_radius: 1,
+                blur_passes: 0,
+                dither_z: false,
+                dither_xy: false,
+                dither_floor: 50,
+            },
             estimates: Estimates { resin_density: 1.1, bottle_volume: 1000.0, bottle_cost: 0.0 },
         }
     }
@@ -394,6 +427,7 @@ impl PrintSettings {
             ("slicing", "anti_aliasing_z") => s.anti_aliasing_z.into(),
             ("slicing", "blur_radius") => s.blur_radius.into(),
             ("slicing", "blur_passes") => s.blur_passes.into(),
+            ("slicing", "dither_floor") => s.dither_floor.into(),
             ("slicing", "gamma") => s.gamma,
             ("estimates", "resin_density") => x.resin_density,
             ("estimates", "bottle_volume") => x.bottle_volume,
@@ -433,6 +467,7 @@ impl PrintSettings {
             ("slicing", "anti_aliasing_z") => self.slicing.anti_aliasing_z = x as u8,
             ("slicing", "blur_radius") => self.slicing.blur_radius = x as u32,
             ("slicing", "blur_passes") => self.slicing.blur_passes = x as u8,
+            ("slicing", "dither_floor") => self.slicing.dither_floor = x as u8,
             ("slicing", "gamma") => self.slicing.gamma = x,
             ("estimates", "resin_density") => self.estimates.resin_density = x,
             ("estimates", "bottle_volume") => self.estimates.bottle_volume = x,
@@ -502,7 +537,7 @@ const fn int(group: &'static str, key: &'static str, min: f64, max: f64) -> Fiel
 const ANY: f64 = f64::MAX;
 
 /// Every number setting. Text and switches (`printer.name`, `printer.mirror_x`,
-/// `printer.mirror_y`, `slicing.exact`) are not here.
+/// `printer.mirror_y`, `slicing.exact`, `slicing.dither_z`, `slicing.dither_xy`) are not here.
 pub const FIELDS: &[Field] = &[
     int("printer", "resolution_x", 1.0, 32768.0),
     int("printer", "resolution_y", 1.0, 32768.0),
@@ -536,6 +571,7 @@ pub const FIELDS: &[Field] = &[
     int("slicing", "anti_aliasing_z", 1.0, 8.0),
     int("slicing", "blur_radius", 1.0, 16.0),
     int("slicing", "blur_passes", 0.0, 4.0),
+    int("slicing", "dither_floor", 1.0, 100.0),
     real("slicing", "gamma", 0.0, 1.0),
     real("estimates", "resin_density", 0.0, ANY),
     real("estimates", "bottle_volume", 0.0, ANY),

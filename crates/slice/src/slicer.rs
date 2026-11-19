@@ -163,6 +163,12 @@ pub fn slice_with(
     let planes = settings.slicing.anti_aliasing_z.max(1);
     let (radius, passes) = (settings.slicing.blur_radius, settings.slicing.blur_passes);
     let gamma = (settings.slicing.gamma != 1.0).then(|| raster::gamma_table(settings.slicing.gamma));
+    let s = &settings.slicing;
+    let dither = (s.dither_z || s.dither_xy).then(|| raster::Dither {
+        z: s.dither_z,
+        xy: s.dither_xy,
+        floor: raster::coverage_floor(gamma.as_ref(), s.dither_floor_grey()),
+    });
     let res = (profile.resolution_x, profile.resolution_y);
     let place = Placement::new(profile, aa);
     let h = settings.layers.height;
@@ -213,6 +219,9 @@ pub fn slice_with(
         let mut runs = if cuts.len() == 1 { cuts.pop().unwrap_or_default() } else { raster::average(&cuts, pixels) };
         if passes > 0 {
             runs = raster::blur(&runs, res, radius, passes, cancel);
+        }
+        if let Some(d) = dither {
+            runs = raster::dither(&runs, res.0, i as u32, d, cancel);
         }
         if let Some(table) = &gamma {
             runs = raster::regrey(&runs, table);
@@ -543,6 +552,35 @@ mod tests {
         let cut = run(&i);
         assert!(cut.layers[0].runs.iter().all(|r| r.grey == 0 || r.grey == 255));
         assert!(cut.layers[0].lit < sharp.layers[0].lit);
+    }
+
+    #[test]
+    fn dithering_leaves_no_grey_under_the_floor_and_keeps_the_light() {
+        let cube = cuboid([-5.0, -5.0, 0.0], [5.0, 5.0, 0.1]);
+        let mut i = input(vec![cube]);
+        i.settings.slicing.exact = true;
+        let grey = run(&i);
+        i.settings.slicing.dither_z = true;
+        i.settings.slicing.dither_xy = true;
+        i.settings.slicing.dither_floor = 100;
+        let job = run(&i);
+        for (g, d) in grey.layers.iter().zip(&job.layers) {
+            assert!(d.runs.iter().all(|r| r.grey == 0 || r.grey == 255));
+            assert_eq!(d.runs.iter().map(|r| r.len).sum::<u64>(), pixels(&job.profile));
+            let (a, b) = (g.lit as f64, d.lit as f64);
+            assert!((a - b).abs() / a < 0.005, "{a} lit, {b} dithered");
+        }
+        // The floor is read through the gamma: every grey comes out dark or at least the floor.
+        i.settings.slicing.dither_floor = 50;
+        i.settings.slicing.gamma = 0.5;
+        let job = run(&i);
+        assert!(job.layers.iter().flat_map(|l| &l.runs).all(|r| r.grey == 0 || r.grey >= 128));
+        assert_eq!(PrintSettings::default().slicing.dither_floor_grey(), 128);
+        // Off, nothing changes.
+        i.settings.slicing = PrintSettings::default().slicing;
+        i.settings.slicing.exact = true;
+        i.settings.slicing.dither_floor = 20;
+        assert_eq!(run(&i).layers, grey.layers);
     }
 
     #[test]
