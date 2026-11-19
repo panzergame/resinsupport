@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use resin_geom::{Affine3, Placement, Vec3};
+use resin_geom::{Affine3, Label, LabelSide, Placement, Vec3};
 
 use super::{ids_param, num_param, select_ids, str_param, vec3_param};
 use resin_slice::{SLICING_KEYS, field};
@@ -97,6 +97,7 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
                 "placement": m.placement,
                 "lifted": m.lifted,
                 "slicing": m.slicing,
+                "label": m.label,
                 "selected": s.scene.selected_models.contains(&m.id),
             })
         })
@@ -174,6 +175,66 @@ pub(crate) fn slicing(s: &mut Session, p: &Value) -> Result<Value> {
     s.scene.set_slicing(&edits)?;
     let models: Vec<Value> = edits.iter().map(|(id, o)| json!({ "id": id, "slicing": o })).collect();
     Ok(json!({ "models": models }))
+}
+
+/// The `id` parameter, or the one selected model.
+fn one_target(s: &Session, p: &Value) -> Result<u64> {
+    let id = match p.get("id") {
+        None | Some(Value::Null) => match s.scene.selected_models.iter().copied().collect::<Vec<_>>()[..] {
+            [id] => id,
+            _ => return Err(EngineError::BadParams("select one model, or give its `id`".into())),
+        },
+        Some(_) => id_param(p)?,
+    };
+    check_known(s, &[id])?;
+    Ok(id)
+}
+
+fn refuse_unknown(p: &Value, known: &[&str]) -> Result<()> {
+    if let Value::Object(o) = p
+        && let Some(k) = o.keys().find(|k| !known.contains(&k.as_str()))
+    {
+        return Err(EngineError::BadParams(format!("unknown parameter `{k}`")));
+    }
+    Ok(())
+}
+
+/// `id?` (default the one selected model), `text?`, `side?`, `size?`, `depth?`: change what is
+/// given of the model's label, giving it one first if it has none (its text the model's place in
+/// the model list, from 1).
+pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
+    refuse_unknown(p, &["id", "text", "side", "size", "depth"])?;
+    let id = one_target(s, p)?;
+    let index = s.scene.models().iter().position(|m| m.id == id).map_or(0, |i| i + 1);
+    let mut label = s.scene.model(id).and_then(|m| m.label.clone()).unwrap_or_else(|| Label { text: index.to_string(), ..Label::default() });
+    match p.get("text") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(t)) => label.text = t.clone(),
+        Some(_) => return Err(EngineError::BadParams("`text` must be a string".into())),
+    }
+    match p.get("side") {
+        None | Some(Value::Null) => {}
+        Some(v) => {
+            label.side =
+                v.as_str().and_then(LabelSide::parse).ok_or_else(|| EngineError::BadParams("`side` must be front, back, left or right".into()))?
+        }
+    }
+    if let Some(size) = num_param(p, "size")? {
+        label.size = size;
+    }
+    if let Some(depth) = num_param(p, "depth")? {
+        label.depth = depth;
+    }
+    s.scene.set_label(id, Some(label.clone()))?;
+    Ok(json!({ "id": id, "label": label }))
+}
+
+/// `id?` (default the one selected model): take the model's label away.
+pub(crate) fn delete_label(s: &mut Session, p: &Value) -> Result<Value> {
+    refuse_unknown(p, &["id"])?;
+    let id = one_target(s, p)?;
+    s.scene.set_label(id, None)?;
+    Ok(json!({ "id": id }))
 }
 
 fn check_known(s: &Session, ids: &[u64]) -> Result<()> {

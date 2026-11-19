@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true }
+ttf-parser = { workspace = true }

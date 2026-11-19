@@ -3,17 +3,17 @@
 //! a bounded amount of search per frame: a gizmo drag changes the scene every frame, and
 //! re-routing hundreds of supports in one frame would stall the window. Routes not yet redone
 //! are drawn where they were, the oldest redone first. Braces' struts are worked out once every
-//! route is, within the same budget. The raft under them is redone once every route is, off the
-//! window thread: the old one is drawn until the new one is in.
+//! route is, within the same budget. The raft under them and the models' labels on it are redone
+//! once every route is, off the window thread: the old ones are drawn until the new ones are in.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use resin_engine::geom::{Aabb3, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere, smooth_shaded};
+use resin_engine::geom::{Aabb3, Label, ShadedVertex, Vec3, frustum, ray_capsule, ray_sphere, smooth_shaded};
 use resin_engine::{
-    Owner, Primitive, Raft, Route, Scene, SupportPart, SupportPreset, brace_solids, raft_feet, raft_triangles, route, strut_primitives,
-    support_primitives,
+    Owner, Primitive, Raft, Route, Scene, SupportPart, SupportPreset, brace_solids, label_sites, label_triangles, raft_feet, raft_triangles, route,
+    strut_primitives, support_primitives,
 };
 
 /// How far round a joint a press picks it, as a multiple of the body's radius: the joint is drawn
@@ -120,8 +120,9 @@ pub enum Piece {
 /// the raft drawn, which arrives later.
 type MeshKey = (u64, u64, SupportPreset, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
 
-/// What the raft is built from: its settings, the bases' diameter and the feet, as bits.
-type RaftKey = (Raft, u64, Vec<[u64; 2]>);
+/// What the raft is built from: its settings, the bases' diameter and the feet, as bits; and the
+/// labels with their models' feet.
+type RaftKey = (Raft, u64, Vec<[u64; 2]>, Vec<(Label, Vec<[f64; 2]>)>);
 
 /// A raft being built on its own thread.
 struct RaftJob {
@@ -224,8 +225,8 @@ impl RouteCache {
         self.poll_raft(true);
     }
 
-    /// Start building the raft under the supports that reach the plate when a foot or a setting
-    /// it depends on changed. One job at a time: while one runs, the feet are looked at again once
+    /// Start building the raft under the supports that reach the plate, and the labels on it, when
+    /// a foot, a label or a setting they depend on changed. One job at a time: while one runs, the feet are looked at again once
     /// it is in, so a drag builds the latest raft rather than one per frame.
     fn refresh_raft(&mut self, scene: &Scene, preset: &SupportPreset) {
         let seen = (self.generation, self.changed);
@@ -233,8 +234,12 @@ impl RouteCache {
             return;
         }
         let grounded = self.grounded(scene);
-        let feet = raft_feet(self.routed(scene).filter(|(id, _)| grounded.contains(id)).map(|(_, r)| r));
-        let key: RaftKey = (preset.raft, preset.base.diameter.to_bits(), feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect());
+        let held: Vec<(u64, &Route)> =
+            scene.supports().iter().filter(|s| grounded.contains(&s.id)).filter_map(|s| self.routes.get(&s.id).map(|(r, _)| (s.model, r))).collect();
+        let feet = raft_feet(held.iter().map(|(_, r)| *r));
+        let sites = label_sites(scene, held.iter().map(|(m, r)| (*m, *r)));
+        let key: RaftKey =
+            (preset.raft, preset.base.diameter.to_bits(), feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect(), sites.clone());
         if self.raft.as_ref().is_some_and(|(k, _)| *k == key) {
             // A job for other feet would bring back a raft older than this one.
             self.raft_job = None;
@@ -259,7 +264,9 @@ impl RouteCache {
         // Its walls are cut in many small faces: flat, each would shade apart from its neighbours.
         let job = move || {
             // The receiver is gone when a newer raft replaced this one: nobody wants it.
-            let _ = tx.send(smooth_shaded(&raft_triangles(&feet, &preset), RAFT_CREASE_DEGREES));
+            let mut solid = raft_triangles(&feet, &sites, &preset);
+            solid.extend(label_triangles(&sites, &preset));
+            let _ = tx.send(smooth_shaded(&solid, RAFT_CREASE_DEGREES));
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = std::thread::Builder::new().name("raft".into()).spawn(job) {

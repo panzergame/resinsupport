@@ -131,8 +131,8 @@ fn card_frame(t: &Tokens) -> egui::Frame {
         .inner_margin(0.0)
 }
 
-/// The 40 pt header: 12 pt inset, 19 pt icon, 8 pt gap, the title, a 26 pt close target (when
-/// `closable`) and a rule under it. Whether close was clicked.
+/// The 40 pt header: 12 pt inset, 19 pt icon, 8 pt gap, the title (cut short to fit, whole in a
+/// tooltip), a 26 pt close target (when `closable`) and a rule under it. Whether close was clicked.
 fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, closable: bool) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), FORM_HEADER_HEIGHT), Sense::hover());
     let icon_rect =
@@ -143,7 +143,16 @@ fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, closable: bool) -> b
         icons::paint(ui.painter(), icon_rect, icon, t.dark, 1.0);
     }
     let title_left = icon_rect.right() + SPACE_8;
-    ui.painter().text(pos2(title_left, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(FONT_HEADING), t.form_ink);
+    let title_right = if closable { rect.right() - SPACE_8 - FORM_CLOSE_SIZE - SPACE_8 } else { rect.right() - SPACE_12 };
+    let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), FontId::proportional(FONT_HEADING), t.form_ink);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((title_right - title_left).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let title_rect = Rect::from_min_size(pos2(title_left, rect.center().y - galley.size().y / 2.0), galley.size());
+    let elided = galley.elided;
+    ui.painter().galley(title_rect.min, galley, t.form_ink);
+    if elided {
+        ui.interact(title_rect, ui.id().with("title"), Sense::hover()).on_hover_text(title);
+    }
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.dialog_rule));
     closable && close_button(ui, t, pos2(rect.right() - SPACE_8 - FORM_CLOSE_SIZE / 2.0, rect.center().y))
 }

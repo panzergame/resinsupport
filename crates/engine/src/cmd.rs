@@ -67,6 +67,10 @@ pub fn commands() -> &'static [CommandSpec] {
             "ids?: [integer] (default every model); arranges them, the largest first, each at the free spot nearest the plate's centre, around the other models: moved across, turned a quarter about Z to lay their long side along the plate's or when only that fits (not a model with supports), put down on the plate or at the lift height; those with no room go in a column right of the plate, listed in `beside`",
         ),
         CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
+        CommandSpec::new("model.label", "Label Model", model::label).params(
+            "id?: integer (default the one selected model), text?: string (lines break at \\n; at most 200 characters, 8 lines), side?: \"front\" (-Y) | \"back\" (+Y) | \"left\" (-X) | \"right\" (+X), size?: 1-50 mm (the capital letters' height), depth?: 0.1-10 mm (how far the letters stand out); what is left out is kept, or for a model without a label its number in the model list, front, 2 mm and 0.5 mm. The label is printed past the raft's farthest disc under the model's supports on that side, the raft widened out round it, the letters standing on it, read from that side. Returns `id` and `label`",
+        ),
+        CommandSpec::new("model.label.delete", "Delete Model Label", model::delete_label).params("id?: integer (default the one selected model)"),
         CommandSpec::new("model.lift", "Lift Models", model::lift).params(
             "lifted: bool (true keeps their lowest points at the lift height, false leaves them where they are), ids?: [integer] (default the selected models)",
         ),

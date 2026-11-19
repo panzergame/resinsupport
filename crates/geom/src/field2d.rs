@@ -1,5 +1,5 @@
 //! A signed distance field sampled on a square grid in the XY plane: the outline of a raft round
-//! the supports' feet, and every outline offset from it.
+//! the supports' feet and every outline offset from it, or a label's letters.
 
 /// Most nodes a field holds: past it the cells grow, so a raft over the whole plate stays a few
 /// tens of megabytes.
@@ -8,6 +8,8 @@ pub const MAX_NODES: usize = 4_000_000;
 const MAX_SPAN: f64 = 10_000.0;
 /// Most centres taken.
 const MAX_CENTERS: usize = 200_000;
+/// Most polygon edges taken.
+pub const MAX_SEGMENTS: usize = 2_000_000;
 /// What stands for "no site" in the distance transform: finite, so differences stay numbers.
 const FAR: f64 = 1e20;
 
@@ -44,6 +46,20 @@ impl Field2 {
     /// closing shrunk by that much, exactly, and a level above it a closing by a smaller disc.
     /// Outside `D` it is the distance to the nearest disc. None for no usable centre or size.
     pub fn closed_discs(centers: &[[f64; 2]], radius: f64, merge: f64, reach: f64, depth: f64, cell: f64) -> Option<Field2> {
+        Field2::closed_discs_covering(centers, radius, merge, reach, depth, cell, &[])
+    }
+
+    /// [`Field2::closed_discs`] on a grid that also reaches `reach` mm past each of `cover`'s
+    /// points: room for shapes joined to the outline afterwards ([`Field2::union_with`]).
+    pub fn closed_discs_covering(
+        centers: &[[f64; 2]],
+        radius: f64,
+        merge: f64,
+        reach: f64,
+        depth: f64,
+        cell: f64,
+        cover: &[[f64; 2]],
+    ) -> Option<Field2> {
         let centers: Vec<[f64; 2]> = centers.iter().copied().filter(|c| c[0].is_finite() && c[1].is_finite()).take(MAX_CENTERS).collect();
         let usable = |x: f64| x.is_finite() && x >= 0.0;
         if centers.is_empty()
@@ -65,6 +81,13 @@ impl Field2 {
             for k in 0..2 {
                 lo[k] = lo[k].min(c[k] - splat);
                 hi[k] = hi[k].max(c[k] + splat);
+            }
+        }
+        let past = reach + 4.0 * cell;
+        for c in cover.iter().filter(|c| c[0].is_finite() && c[1].is_finite()) {
+            for k in 0..2 {
+                lo[k] = lo[k].min(c[k] - past);
+                hi[k] = hi[k].max(c[k] + past);
             }
         }
         let span = [hi[0] - lo[0], hi[1] - lo[1]];
@@ -136,6 +159,126 @@ impl Field2 {
                 None => FAR,
             };
             *v = half - g;
+        }
+        Some(f)
+    }
+
+    /// Join a shape to the outline: at each node within `lo..hi`, the lower of the value there and
+    /// `distance`'s, the shape's signed distance (negative inside). Exact outside both; inside, a
+    /// node near both edges keeps the deeper of the two depths, so levels below zero shrink each
+    /// shape apart. Outside the box the shape must be farther than every level drawn.
+    pub fn union_with(&mut self, lo: [f64; 2], hi: [f64; 2], distance: impl Fn([f64; 2]) -> f64) {
+        let index = |x: f64, k: usize, n: usize, up: bool| {
+            let t = (x - self.origin[k]) / self.cell;
+            let t = if up { t.ceil() } else { t.floor() };
+            if t.is_finite() { t.clamp(0.0, n.saturating_sub(1) as f64) as usize } else { 0 }
+        };
+        let (i0, i1) = (index(lo[0], 0, self.nx, false), index(hi[0], 0, self.nx, true));
+        let (j0, j1) = (index(lo[1], 1, self.ny, false), index(hi[1], 1, self.ny, true));
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                let d = distance(self.point(i, j));
+                if let Some(v) = self.values.get_mut(j * self.nx + i)
+                    && d < *v
+                {
+                    *v = d;
+                }
+            }
+        }
+    }
+
+    /// The region `contours` enclose by the nonzero rule, over the box `lo..hi`, sampled every
+    /// `cell` mm (coarser when the grid would pass [`MAX_NODES`]): the distance to its edge,
+    /// negative inside, exact within two cells of it and that far everywhere beyond. A contour is
+    /// closed from its last point back to its first. `None` for no usable box or cell, or more
+    /// than [`MAX_SEGMENTS`] edges.
+    pub fn polygons(contours: &[Vec<[f64; 2]>], lo: [f64; 2], hi: [f64; 2], cell: f64) -> Option<Field2> {
+        let span = [hi[0] - lo[0], hi[1] - lo[1]];
+        if !(lo.iter().all(|x| x.is_finite()) && span.iter().all(|s| *s > 0.0 && *s <= MAX_SPAN) && cell > 0.0 && cell.is_finite()) {
+            return None;
+        }
+        let mut segments = Vec::new();
+        for c in contours {
+            for (k, a) in c.iter().enumerate() {
+                let b = c.get(k + 1).or(c.first()).copied().unwrap_or(*a);
+                if a.iter().chain(&b).all(|x| x.is_finite()) && a != &b {
+                    segments.push((*a, b));
+                }
+            }
+            if segments.len() > MAX_SEGMENTS {
+                return None;
+            }
+        }
+        let nodes = |c: f64| ((span[0] / c).ceil() + 1.0) * ((span[1] / c).ceil() + 1.0);
+        let mut cell = cell.max(MAX_SPAN / 1e6);
+        while nodes(cell) > MAX_NODES as f64 {
+            cell *= 1.25;
+        }
+        let nx = (span[0] / cell).ceil() as usize + 1;
+        let ny = (span[1] / cell).ceil() as usize + 1;
+        let near = 2.0 * cell;
+        let mut f = Field2 { origin: lo, cell, nx, ny, values: vec![near; nx * ny] };
+
+        // Where each row of nodes crosses an edge, and which way: the winding at a node is the sum
+        // of the crossings left of it. A crossing counts from an edge's lower end, not its upper
+        // one, so a row through a corner crosses once.
+        let mut rows: Vec<Vec<(f64, i32)>> = vec![Vec::new(); ny];
+        for (a, b) in &segments {
+            if a[1] == b[1] {
+                continue;
+            }
+            let (y0, y1, w) = if a[1] < b[1] { (a[1], b[1], 1) } else { (b[1], a[1], -1) };
+            let mut j = ((y0 - lo[1]) / cell).ceil().max(0.0) as usize;
+            while j < ny {
+                let y = lo[1] + j as f64 * cell;
+                if y >= y1 {
+                    break;
+                }
+                if y >= y0
+                    && let Some(row) = rows.get_mut(j)
+                {
+                    row.push((a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]), w));
+                }
+                j += 1;
+            }
+        }
+        let mut inside = vec![false; nx * ny];
+        for (j, row) in rows.iter_mut().enumerate() {
+            row.sort_by(|p, q| p.0.total_cmp(&q.0));
+            let (mut winding, mut next) = (0, row.iter().peekable());
+            for i in 0..nx {
+                let x = lo[0] + i as f64 * cell;
+                while let Some((_, w)) = next.next_if(|(cx, _)| *cx < x) {
+                    winding += w;
+                }
+                if let Some(v) = inside.get_mut(j * nx + i) {
+                    *v = winding != 0;
+                }
+            }
+        }
+
+        for (a, b) in &segments {
+            let range = |k: usize, n: usize| {
+                let from = ((a[k].min(b[k]) - near - lo[k]) / cell).floor().max(0.0) as usize;
+                let to = (((a[k].max(b[k]) + near - lo[k]) / cell).ceil().max(0.0) as usize).min(n.saturating_sub(1));
+                from..=to
+            };
+            let (d, len2) = ([b[0] - a[0], b[1] - a[1]], (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2));
+            for j in range(1, ny) {
+                for i in range(0, nx) {
+                    let p = f.point(i, j);
+                    let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0);
+                    let dist = (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1]);
+                    if let Some(v) = f.values.get_mut(j * nx + i) {
+                        *v = v.min(dist);
+                    }
+                }
+            }
+        }
+        for (v, inside) in f.values.iter_mut().zip(&inside) {
+            if *inside {
+                *v = -*v;
+            }
         }
         Some(f)
     }
@@ -455,6 +598,47 @@ mod tests {
         for x in [0.5, 1.0, 2.0, 2.9] {
             let got = sample(&f, x, 0.0);
             assert!((got - (x - 3.0)).abs() < 0.03, "{x}: {got}");
+        }
+    }
+
+    #[test]
+    fn polygons_fill_by_the_nonzero_rule_with_holes_and_overlaps() {
+        let square = |x0: f64, y0: f64, s: f64, ccw: bool| {
+            let mut c = vec![[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]];
+            if !ccw {
+                c.reverse();
+            }
+            c
+        };
+        // A 10 mm square with a 4 mm hole, and a square overlapping its corner the same way round.
+        let shapes = [square(0.0, 0.0, 10.0, true), square(3.0, 3.0, 4.0, false), square(8.0, 8.0, 4.0, true)];
+        let f = Field2::polygons(&shapes, [-2.0, -2.0], [14.0, 14.0], 0.1).unwrap();
+        for (x, y, want) in [(1.0, 5.0, -0.2), (5.0, 5.0, 0.2), (9.0, 9.0, -0.2), (11.0, 11.0, -0.2), (-1.0, 5.0, 0.2), (13.5, 1.0, 0.2)] {
+            assert_eq!(sample(&f, x, y), want, "({x}, {y})");
+        }
+        for (x, y, want) in [(0.1, 5.0, -0.1), (2.9, 5.0, -0.1), (-0.1, 5.0, 0.1), (5.0, 3.1, 0.1)] {
+            assert!((sample(&f, x, y) - want).abs() < 1e-9, "({x}, {y}): {}", sample(&f, x, y));
+        }
+        assert!(Field2::polygons(&shapes, [0.0, 0.0], [0.0, 1.0], 0.1).is_none());
+        assert!(Field2::polygons(&shapes, [f64::NAN, 0.0], [1.0, 1.0], 0.1).is_none());
+        assert!(Field2::polygons(&shapes, [0.0, 0.0], [1.0, 1.0], 0.0).is_none());
+        let wide = Field2::polygons(&[vec![[0.0, 0.0], [f64::NAN, 1.0], [5000.0, 5000.0]]], [0.0, 0.0], [5000.0, 5000.0], 0.001).unwrap();
+        assert!(wide.nx * wide.ny <= MAX_NODES && wide.values.len() == wide.nx * wide.ny);
+    }
+
+    #[test]
+    fn a_shape_joined_to_the_discs_widens_the_grid_and_the_outline() {
+        let mut f = Field2::closed_discs_covering(&[[0.0, 0.0]], 1.0, 0.0, 0.5, 1.0, 0.1, &[[10.0, -1.0], [10.0, 1.0]]).unwrap();
+        assert!(f.origin[0] + (f.nx - 1) as f64 * f.cell >= 10.5);
+        assert!(sample(&f, 6.0, 0.0) > 4.0);
+        // A 10 by 2 mm box from the disc's centre.
+        let bar = |p: [f64; 2]| {
+            let d = [(p[0] - 5.0).abs() - 5.0, p[1].abs() - 1.0];
+            d[0].max(0.0).hypot(d[1].max(0.0)) + d[0].max(d[1]).min(0.0)
+        };
+        f.union_with([-0.5, -1.5], [10.5, 1.5], bar);
+        for (x, y, want) in [(6.0, 0.0, -1.0), (10.3, 0.0, 0.3), (6.0, 1.2, 0.2), (0.0, 0.0, -1.0), (-1.3, 0.0, 0.3)] {
+            assert!((sample(&f, x, y) - want).abs() < 1e-9, "({x}, {y}): {}", sample(&f, x, y));
         }
     }
 

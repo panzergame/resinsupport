@@ -38,6 +38,7 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - A ribbon button for the tip line (L) and braces (H)
 - A button for `support.reset_route`
 - [x] Raft: one plate under every base, the bases' outline widened by a margin with gaps up to a merge distance filled, a straight, undercut or chamfered edge, an optional rim; bases stand on it; drawn and printed
+- [x] Labels: L in Object edition, the selected model's text (its number to start with, several lines) standing out of the raft, widened past its supports' farthest disc on a side (front, back, left, right), its edge and rim going round, read from that side; size and depth set on the card, Delete takes it away (`model.label`, `model.label.delete`); in project files (`resinsupport/4`) and copies
 - Overhang and island detection, automatic generation
 
 ## 5. Slicing

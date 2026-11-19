@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-use crate::{EngineError, Session, commands};
+use crate::{EngineError, Session, commands, label_sites, label_triangles, route};
 use resin_geom::Vec3;
 use resin_slice::{Slicing, SlicingOverride, SolidKind};
 
@@ -527,6 +527,9 @@ fn hostile_params_never_panic() {
         json!({ "path": "plate.ctb", "format": ["v2"], "printer": { "ctb_format": 2 } }),
         json!({ "ids": [1, 2], "pattern": "spiral", "pairing": 3, "angle": 1e308, "diameter_ratio": -1, "max_distance": 0, "braces": "all" }),
         json!({ "ids": [u64::MAX, 0], "pattern": null, "pairing": "all", "angle": 90, "head_gap": 1e300, "foot_gap": -0.0, "braces": [u64::MAX, -1] }),
+        json!({ "id": 1, "text": "x".repeat(100_000), "side": "up", "size": 1e308, "depth": -1 }),
+        json!({ "id": 1, "text": ["a"], "side": 3, "size": "5", "depth": null }),
+        json!({ "id": 1, "text": "\u{0}\r\u{1b}", "side": null, "size": 0, "depth": 1e-300 }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -540,7 +543,7 @@ fn hostile_params_never_panic() {
 
 /// What a step must put back, selection aside: the models, where they are, their supports.
 fn content(s: &Session) -> String {
-    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted, m.slicing)).collect();
+    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted, m.slicing, &m.label)).collect();
     format!("{models:?} {:?} {:?} {}", s.scene.supports(), s.scene.braces(), s.scene.lift_height())
 }
 
@@ -928,6 +931,8 @@ struct Fixture {
     tip: u64,
     /// The slab's supports.
     braced: [u64; 2],
+    /// The slab, which has a label.
+    labelled: u64,
 }
 
 fn fixture(dir: &std::path::Path) -> Fixture {
@@ -942,13 +947,14 @@ fn fixture(dir: &std::path::Path) -> Fixture {
     let braced = [under(&mut s, 64.0), under(&mut s, 72.0)];
     let made = s.execute("support.add_braces", &json!({ "ids": braced })).unwrap();
     assert_eq!(made["ids"].as_array().map(Vec::len), Some(1), "{made}");
+    s.execute("model.label", &json!({ "id": slab })).unwrap();
     s.execute("model.select", &json!({ "ids": [a] })).unwrap();
     s.execute("support.select", &json!({ "ids": [tip] })).unwrap();
     // Something for `edit.paste` to paste.
     s.execute("edit.copy", &json!({ "ids": [a] })).unwrap();
     let project = dir.join("fixture.rsup");
     std::fs::write(&project, resin_io::write_project(&s.scene.project()).unwrap()).unwrap();
-    Fixture { session: s, path, project, a, b, tip, braced }
+    Fixture { session: s, path, project, a, b, tip, braced, labelled: slab }
 }
 
 /// Valid parameters for every command, run on the fixture. `None`: undo and redo, the history
@@ -966,6 +972,8 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "file.save" => Some(json!({ "path": f.project.with_file_name("saved.rsup") })),
         "model.arrange" => Some(json!({})),
         "model.delete" => Some(json!({ "id": a })),
+        "model.label" => Some(json!({ "id": b, "text": "B\n2", "side": "left", "size": 4 })),
+        "model.label.delete" => Some(json!({ "id": f.labelled })),
         "model.lift" => Some(json!({ "lifted": true })),
         "model.list" | "support.list" | "scene.clear" => Some(json!({})),
         "scene.lift_height" => Some(json!({ "height": 8 })),
@@ -1082,6 +1090,87 @@ fn a_models_slicing_settings_go_with_it_and_its_supports() {
 
     s.execute("model.slicing", &json!({ "ids": [a, copy], "clear": "all" })).unwrap();
     assert!(own(&s, a).is_empty() && own(&s, copy).is_empty());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A model's label: given one with its number, changed field by field, refused out of range or
+/// for no one model, kept with copies and in project files, taken away; printed past its
+/// supports' farthest foot on its side, beside the raft, with the plate's slicing settings.
+#[test]
+fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
+    let dir = temp_dir("model-label");
+    let f = fixture(&dir);
+    let (mut s, a, b) = (f.session, f.a, f.b);
+    let label = |s: &Session, id: u64| s.scene.model(id).unwrap().label.clone();
+    s.execute("model.select", &json!({ "ids": [a, b] })).unwrap();
+    assert!(s.execute("model.label", &json!({})).is_err(), "two models selected");
+    for bad in [json!({ "size": 0.5 }), json!({ "depth": 20 }), json!({ "side": "up" }), json!({ "text": "a\tb" }), json!({ "font": "x" })] {
+        let mut p = bad.clone();
+        p["id"] = json!(a);
+        assert!(s.execute("model.label", &p).is_err(), "{p}");
+    }
+    assert_eq!(label(&s, a), None, "a refused edit changes nothing");
+
+    s.execute("model.select", &json!({ "ids": [a] })).unwrap();
+    let depth = s.undo_depth();
+    let r = s.execute("model.label", &json!({})).unwrap();
+    assert_eq!(r["label"], json!({ "text": "1", "side": "front", "size": 2.0, "depth": 0.5 }), "the first model's number");
+    assert_eq!(s.undo_depth(), depth + 1);
+    s.execute("model.label", &json!({ "side": "back", "size": 6 })).unwrap();
+    s.execute("model.label", &json!({ "text": "A\n1" })).unwrap();
+    let want = resin_geom::Label { text: "A\n1".into(), side: resin_geom::LabelSide::Back, size: 6.0, depth: 0.5 };
+    assert_eq!(label(&s, a), Some(want.clone()), "what is left out is kept");
+    let depth = s.undo_depth();
+    s.execute("model.label", &json!({ "size": 6 })).unwrap();
+    assert_eq!(s.undo_depth(), depth, "the same again is no step");
+    assert_eq!(s.execute("model.list", &json!({})).unwrap()["models"][0]["label"]["side"], json!("back"));
+
+    // Lifted, the support under it reaches the plate: the label stands past its foot, towards +Y,
+    // a plate as thick as the raft and letters standing out of it.
+    s.execute("model.lift", &json!({ "ids": [a], "lifted": true })).unwrap();
+    let (input, _) = s.slice_input();
+    let preset = *s.support_settings().current();
+    let routes: Vec<(u64, crate::Route)> = s.scene.supports().iter().map(|t| (t.model, route(&s.scene, t, &preset))).collect();
+    let sites = label_sites(&s.scene, routes.iter().map(|(m, r)| (*m, r)));
+    assert_eq!(sites.iter().map(|(l, _)| l.text.as_str()).collect::<Vec<_>>(), ["A\n1", "3"], "the slab's too");
+    let all = label_triangles(&sites, &preset);
+    assert!(
+        input.solids.iter().any(|x| x.kind == SolidKind::Support && x.slicing.is_none() && x.triangles == all),
+        "printed with the plate's settings"
+    );
+    let b0 = resin_geom::Mesh::new(label_triangles(&sites[..1], &preset)).bounds();
+    let foot = route(&s.scene, &s.scene.supports()[0], &preset).body.last().copied().unwrap();
+    let r = preset.base.diameter / 2.0 + preset.raft.margin;
+    // The letters start their margin (1.8 mm, 0.3 of their height) past the disc, less 1 mm.
+    assert!((b0.min.y - (foot.y + r - 1.0 + 1.8)).abs() < 0.05, "{b0:?} {foot:?}");
+    assert!((b0.min.z - preset.raft.thickness / 2.0).abs() < 1e-4 && (b0.max.z - (preset.raft.thickness + 0.5)).abs() < 1e-4, "{b0:?}");
+    // The raft comes just before the letters.
+    let at = input.solids.iter().position(|x| x.triangles == all).unwrap();
+    let raft = &input.solids[at - 1];
+    let rb = resin_geom::Mesh::new(raft.triangles.clone()).bounds();
+    assert!(rb.max.y > b0.max.y + 1.4, "the raft reaches round the letters: {rb:?} {b0:?}");
+    let before = input.solids.len();
+    s.execute("support.configure", &json!({ "raft": { "enabled": false } })).unwrap();
+    assert_eq!(s.slice_input().0.solids.len(), before - 2, "neither raft nor label without a raft");
+    s.execute("support.configure", &json!({ "raft": { "enabled": true } })).unwrap();
+
+    // A copy has it, so has a saved and reopened project.
+    s.execute("edit.copy", &json!({ "ids": [a] })).unwrap();
+    let copy = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(label(&s, copy), Some(want.clone()));
+    let path = dir.join("label.rsup");
+    s.execute("file.save", &json!({ "path": path })).unwrap();
+    let mut t = Session::new();
+    t.execute("file.open", &json!({ "path": path })).unwrap();
+    assert_eq!(t.scene.models().iter().filter(|m| m.label.as_ref() == Some(&want)).count(), 2);
+
+    let depth = s.undo_depth();
+    s.execute("model.label.delete", &json!({ "id": copy })).unwrap();
+    assert_eq!((label(&s, copy), s.undo_depth()), (None, depth + 1));
+    s.execute("model.label.delete", &json!({ "id": copy })).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1, "nothing to take away is no step");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(label(&s, copy), Some(want));
     std::fs::remove_dir_all(dir).ok();
 }
 

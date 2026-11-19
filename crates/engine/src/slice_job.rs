@@ -10,7 +10,7 @@ use resin_slice::{CtbFormat, PrinterProfile, SliceInput, SlicedJob, Solid, Solid
 use serde::Serialize;
 
 use crate::support_solids::SupportTessellator;
-use crate::{PrintConfig, Scene, Session, SupportPreset, brace_solids, raft_feet, raft_triangles, route};
+use crate::{PrintConfig, Scene, Session, SupportPreset, brace_solids, label_sites, label_triangles, raft_feet, raft_triangles, route};
 
 /// A sliced job and what was left out of it.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,9 +41,10 @@ impl SliceSource {
     }
 
     /// The slicer's input: each model placed, each support that reaches the plate (a branch: through
-    /// its parent) as its closed solids, the raft under them; and how many supports do not reach
-    /// it, which are left out. A model with slicing settings of its own takes them, and so do its
-    /// supports and the braces between them; the raft keeps the plate's.
+    /// its parent) as its closed solids, the raft under them and the models' labels on it; and how
+    /// many supports do not reach it, which are left out. A model with slicing settings of its own
+    /// takes them, and so do its supports and the braces between them; the raft and the labels
+    /// keep the plate's.
     pub fn input(&self) -> (SliceInput, usize) {
         let models = self.scene.models();
         let plate = self.config.settings.slicing;
@@ -84,9 +85,14 @@ impl SliceSource {
             let slicing = if ma == mb { own(*ma) } else { None };
             solids.push(Solid { kind: SolidKind::Support, triangles, slicing });
         }
-        let raft = raft_triangles(&raft_feet(printed.values().map(|(r, _)| r)), &self.preset);
+        let sites = label_sites(&self.scene, printed.values().map(|(r, m)| (*m, r)));
+        let raft = raft_triangles(&raft_feet(printed.values().map(|(r, _)| r)), &sites, &self.preset);
         if !raft.is_empty() {
             solids.push(Solid { kind: SolidKind::Support, triangles: raft, slicing: None });
+        }
+        let labels = label_triangles(&sites, &self.preset);
+        if !labels.is_empty() {
+            solids.push(Solid { kind: SolidKind::Support, triangles: labels, slicing: None });
         }
         let input = SliceInput { solids, profile: self.config.printer.clone(), settings: self.config.settings, stamp: self.stamp };
         (input, unreachable)

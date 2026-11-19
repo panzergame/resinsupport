@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use resin_geom::{Aabb3, Affine3, Item, Mesh, MeshIndex, Placement, RayHit, Rect, Vec3};
+use resin_geom::{Aabb3, Affine3, Item, Label, Mesh, MeshIndex, Placement, RayHit, Rect, Vec3};
 use resin_io::{Project, ProjectBrace, ProjectModel, ProjectSupport};
 use resin_render::Camera;
 use resin_slice::SlicingOverride;
@@ -46,6 +46,8 @@ pub struct Model {
     pub lifted: bool,
     /// The slicing settings it and its supports take in place of the plate's.
     pub slicing: SlicingOverride,
+    /// Its label on the raft, past its supports' farthest foot on one side.
+    pub label: Option<Label>,
 }
 
 impl Model {
@@ -236,6 +238,7 @@ impl Scene {
             bounds,
             lifted: false,
             slicing: SlicingOverride::default(),
+            label: None,
         });
         self.next_id
     }
@@ -257,6 +260,23 @@ impl Scene {
             if let Some(m) = self.models.iter_mut().find(|m| m.id == *id) {
                 m.slicing = *o;
             }
+        }
+        Ok(())
+    }
+    /// Give model `id` its label, or take it away (`None`). Refused for an unknown model or a
+    /// label that does not validate.
+    pub(crate) fn set_label(&mut self, id: u64, label: Option<Label>) -> Result<()> {
+        let m = self.model(id).ok_or_else(|| EngineError::BadParams(format!("no model {id}")))?;
+        if let Some(l) = &label {
+            l.validate().map_err(|e| EngineError::BadParams(format!("model {id}: {e}")))?;
+        }
+        // Setting what is already there must not bump: it would make an empty undo step.
+        if m.label == label {
+            return Ok(());
+        }
+        self.revision += 1;
+        if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
+            m.label = label;
         }
         Ok(())
     }
@@ -536,7 +556,7 @@ impl Scene {
         let braces = &self.braces;
         self.selected_braces.retain(|id| braces.iter().any(|b| b.id == *id));
     }
-    /// What a project file keeps: each model's mesh, name, placement and slicing settings, each support's tip and
+    /// What a project file keeps: each model's mesh, name, placement, slicing settings and label, each support's tip and
     /// normal on its model and placed corners, and the braces. Not the lift (a model setting), ids
     /// or the selection.
     pub fn project(&self) -> Project {
@@ -545,8 +565,10 @@ impl Scene {
     /// [`Scene::project`] for the models `keep` takes, and their supports.
     pub(crate) fn project_of(&self, keep: impl Fn(u64) -> bool) -> Project {
         let kept: Vec<&Model> = self.models.iter().filter(|m| keep(m.id)).collect();
-        let models =
-            kept.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement, slicing: m.slicing }).collect();
+        let models = kept
+            .iter()
+            .map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement, slicing: m.slicing, label: m.label.clone() })
+            .collect();
         // A branch goes with the support it joins: a parent always comes before its branches, so
         // it is already kept, or left out, by the time they come.
         let mut kept_supports: Vec<u64> = Vec::new();
@@ -601,6 +623,9 @@ impl Scene {
         let mut ids = Vec::with_capacity(p.models.len());
         for pm in p.models {
             pm.slicing.validate().map_err(|e| EngineError::Failed(format!("model {}: {e}", pm.name)))?;
+            if let Some(l) = &pm.label {
+                l.validate().map_err(|e| EngineError::Failed(format!("model {}: {e}", pm.name)))?;
+            }
             let id = self.add_shared(pm.name, pm.mesh);
             let m = self.model(id).ok_or_else(|| EngineError::Internal(format!("model {id} went missing")))?;
             let (placement, transform, bounds) = m.placed(pm.placement, None)?;
@@ -609,6 +634,7 @@ impl Scene {
                 m.transform = transform;
                 m.bounds = bounds;
                 m.slicing = pm.slicing;
+                m.label = pm.label;
             }
             ids.push(id);
         }

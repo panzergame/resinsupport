@@ -13,6 +13,7 @@ pub mod layer_image;
 pub mod layer_preview;
 pub mod layer_view;
 pub mod navigation;
+pub mod object_label;
 pub mod object_settings;
 pub mod object_slicing;
 pub mod objects;
@@ -121,6 +122,8 @@ pub struct ResinApp {
     pub(crate) confirm_print_reset: bool,
     /// The selected model's own slicing settings card is open.
     pub(crate) object_slicing: bool,
+    /// The model whose label card is open.
+    pub(crate) label_tool: Option<u64>,
     /// The layers shown in Slice edition, and how.
     pub(crate) preview: layer_preview::LayerPreview,
     /// The device's largest texture side: a layer is cut into tiles no bigger.
@@ -196,6 +199,7 @@ impl ResinApp {
             slicer: Default::default(),
             confirm_print_reset: false,
             object_slicing: false,
+            label_tool: None,
             preview: Default::default(),
             max_texture: DEFAULT_MAX_TEXTURE,
             prefs_writer: writer,
@@ -602,9 +606,15 @@ impl ResinApp {
                 ui.horizontal(|ui| {
                     let selected = self.session.scene.selected_models.contains(&m.id);
                     let size = m.bounds.size();
-                    let label = ui.selectable_label(selected, &m.name).on_hover_text(i18n::format(
+                    let title = object_label::titled(m);
+                    // Room is left for the delete button: a long name is cut short, whole in the tooltip.
+                    let h = ui.spacing().interact_size.y;
+                    let room = (ui.available_width() - h - ui.spacing().item_spacing.x).max(0.0);
+                    let label = ui.allocate_ui(egui::vec2(room, h), |ui| ui.add(egui::Button::selectable(selected, title.as_str()).truncate()));
+                    let label = label.inner.on_hover_text(i18n::format(
                         "models.tip",
                         &[
+                            ("name", &title),
                             ("triangles", &m.mesh.triangle_count()),
                             ("x", &format!("{:.2}", size.x)),
                             ("y", &format!("{:.2}", size.y)),
@@ -780,6 +790,7 @@ impl ResinApp {
                     self.brace.tool = None;
                 }
                 egui::Key::H if plain => support_brace::open(self),
+                egui::Key::L if plain && self.mode == EditMode::Object => object_label::open(self),
                 egui::Key::L if plain => support_line::open(self),
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
                 egui::Key::R if plain => transform::open(self, transform::Op::Rotate),
@@ -984,6 +995,7 @@ impl eframe::App for ResinApp {
         egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui));
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
+        object_label::panel(self, &ctx);
         support_line::card(self, &ctx);
         support_brace::card(self, &ctx);
         // The tools' cards and Shift+wheel change their settings without a command.

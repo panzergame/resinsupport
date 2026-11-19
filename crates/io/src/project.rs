@@ -5,8 +5,9 @@
 //!
 //! A project is a ZIP with nothing in front of it:
 //! - `container.json`: `{"format": "resinsupport-container/1"}`, the package layout;
-//! - `document.json`: `{"format": "resinsupport/3", "models": […], "supports": […], "braces": […]}`,
-//!   Deflated (`resinsupport/1` and `/2`, read too, have no braces and no model slicing settings);
+//! - `document.json`: `{"format": "resinsupport/4", "models": […], "supports": […], "braces": […]}`,
+//!   Deflated (`resinsupport/1` and `/2`, read too, have no braces and no model slicing settings,
+//!   `/3` no labels);
 //! - `blobs/<lowercase SHA-256>.mesh`: each distinct mesh once, stored, hashed over its bytes.
 //!
 //! A mesh blob is `RSMESH01`, a little-endian `u64` triangle count, then nine little-endian `f32`
@@ -24,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-use resin_geom::{Mesh, Placement, Vec3};
+use resin_geom::{Label, Mesh, Placement, Vec3};
 use resin_slice::SlicingOverride;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -36,7 +37,7 @@ use crate::stl::MAX_TRIANGLES;
 pub const EXTENSION: &str = "rsup";
 const CONTAINER_FORMAT: &str = "resinsupport-container/1";
 const FORMAT_NAME: &str = "resinsupport/";
-const FORMAT_VERSION: u64 = 3;
+const FORMAT_VERSION: u64 = 4;
 const MESH_MAGIC: &[u8; 8] = b"RSMESH01";
 const MESH_HEADER: usize = 16;
 const TRIANGLE_BYTES: usize = 36;
@@ -64,6 +65,8 @@ pub struct ProjectModel {
     pub placement: Placement,
     /// The slicing settings it takes in place of the plate's.
     pub slicing: SlicingOverride,
+    /// Its label on the raft, if any.
+    pub label: Option<Label>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +141,8 @@ struct ModelEntry {
     mesh_blob: String,
     #[serde(default, skip_serializing_if = "SlicingOverride::is_empty")]
     slicing: SlicingOverride,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<Label>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -260,7 +265,7 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
         if !m.placement.is_finite() {
             return Err(invalid(format!("model {} has a non-finite placement", m.name)));
         }
-        m.slicing.validate().map_err(|e| invalid(format!("model {}: {e}", m.name)))?;
+        check_model(&m.name, &m.slicing, m.label.as_ref())?;
         let key = Arc::as_ptr(&m.mesh);
         let blob = match written.iter().find(|(k, _)| *k == key) {
             Some((_, name)) => name.clone(),
@@ -270,7 +275,7 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
                 name
             }
         };
-        models.push(ModelEntry { name: m.name.clone(), placement: m.placement, mesh_blob: blob, slicing: m.slicing });
+        models.push(ModelEntry { name: m.name.clone(), placement: m.placement, mesh_blob: blob, slicing: m.slicing, label: m.label.clone() });
     }
     let mut supports = Vec::with_capacity(project.supports.len());
     for (i, s) in project.supports.iter().enumerate() {
@@ -284,6 +289,12 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
     writer.part("document.json", &serde_json::to_vec(&document).map_err(invalid)?, true)?;
     writer.part("container.json", &serde_json::to_vec(&serde_json::json!({ "format": CONTAINER_FORMAT })).map_err(invalid)?, false)?;
     writer.finish()
+}
+
+/// A model's own settings: its slicing settings and its label.
+fn check_model(name: &str, slicing: &SlicingOverride, label: Option<&Label>) -> Result<(), IoError> {
+    slicing.validate().map_err(|e| invalid(format!("model {name}: {e}")))?;
+    label.map_or(Ok(()), Label::validate).map_err(|e| invalid(format!("model {name}: {e}")))
 }
 
 /// Support number `index` of the project.
@@ -429,8 +440,8 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, IoError> {
                 mesh
             }
         };
-        m.slicing.validate().map_err(|e| invalid(format!("model {}: {e}", m.name)))?;
-        models.push(ProjectModel { name: m.name, mesh, placement: m.placement, slicing: m.slicing });
+        check_model(&m.name, &m.slicing, m.label.as_ref())?;
+        models.push(ProjectModel { name: m.name, mesh, placement: m.placement, slicing: m.slicing, label: m.label });
     }
     let supports: Vec<ProjectSupport> = document
         .supports
@@ -482,12 +493,14 @@ mod tests {
                     mesh: mesh.clone(),
                     placement: Placement::at(Vec3::new(5.0, 5.0, 5.0)),
                     slicing: SlicingOverride::default(),
+                    label: None,
                 },
                 ProjectModel {
                     name: "copy é".into(),
                     mesh,
                     placement: moved,
                     slicing: SlicingOverride { blur_passes: Some(2), dither_xy: Some(true), gamma: Some(0.5), ..SlicingOverride::default() },
+                    label: Some(Label { text: "2\nB é".into(), side: resin_geom::LabelSide::Right, size: 4.5, depth: 0.8 }),
                 },
             ],
             supports: vec![
@@ -570,7 +583,7 @@ mod tests {
     #[test]
     fn newer_formats_are_refused_with_a_reason() {
         let mut d = document();
-        d["format"] = "resinsupport/4".into();
+        d["format"] = "resinsupport/5".into();
         assert!(refused(&with_document(&d)).contains("newer"));
         let bytes = write_project(&sample()).unwrap();
         let mut list: Vec<(String, Vec<u8>)> = parts(&bytes).into_iter().filter(|(n, _)| n != "container.json").collect();
@@ -601,6 +614,18 @@ mod tests {
         let mut d = document();
         d["supports"][0]["model"] = 7.into();
         refused(&with_document(&d));
+        for (key, value) in [
+            ("size", serde_json::json!(0)),
+            ("depth", serde_json::json!(1e308)),
+            ("side", serde_json::json!("up")),
+            ("text", serde_json::json!("x".repeat(10_000))),
+            ("text", serde_json::json!(3)),
+            ("font", serde_json::json!("x")),
+        ] {
+            let mut d = document();
+            d["models"][1]["label"][key] = value;
+            refused(&with_document(&d));
+        }
         let mut d = document();
         d["models"][0]["mesh_blob"] = "blobs/../../etc/passwd.mesh".into();
         refused(&with_document(&d));

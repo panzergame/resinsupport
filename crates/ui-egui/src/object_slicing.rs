@@ -32,7 +32,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let (Some((id, index)), true) = (target, app.object_slicing) else { return };
     let Some(model) = app.session.scene.model(id) else { return };
     let own = model.slicing;
-    let title = i18n::format("printing.object.title", &[("name", &model.name), ("index", &index)]);
+    let title = i18n::format("printing.object.title", &[("name", &crate::object_label::titled(model)), ("index", &index)]);
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
     // Beside the print settings card, which opens at the viewport's top left.
     let at = app.viewport_rect.map_or(egui::pos2(640.0, 140.0), |r| r.left_top() + egui::vec2(FORM_TABBED_CARD_WIDTH + 2.0 * SPACE_12, SPACE_12));

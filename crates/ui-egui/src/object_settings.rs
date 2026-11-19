@@ -1,5 +1,5 @@
-//! The object settings card, shown in Object edition while no Move, Rotate or Scale tool is open
-//! (that tool's card takes its place): the lift height every lifted model sits at, whether the
+//! The object settings card, shown in Object edition while no Move, Rotate or Scale tool or label
+//! card is open (that card takes its place): the lift height every lifted model sits at, whether the
 //! selected models are lifted, and whether imports are. The height is scene state, so changing
 //! it is an undo step; `ResinApp::run` keeps it in the preferences.
 
@@ -15,7 +15,7 @@ use crate::{EditMode, ResinApp, i18n};
 pub(crate) const CARD_ID: &str = "object_settings";
 
 pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
-    if app.mode != EditMode::Object || app.tool.is_some() {
+    if app.mode != EditMode::Object || app.tool.is_some() || app.label_tool.is_some() {
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);

@@ -48,6 +48,12 @@ impl RaftProfile {
         (self.thickness - z) * self.slope
     }
 
+    /// How far in from the outline the top it stands on is bounded: the rim's inner wall, at its
+    /// innermost; 0 without a rim.
+    pub fn inset(&self) -> f64 {
+        if self.rim() { (-self.inner()).max(0.0) } else { 0.0 }
+    }
+
     /// How far past the outline the raft reaches, at its widest: how far its field must go.
     pub fn reach(&self) -> f64 {
         self.edge(0.0).max(self.edge(self.top())).max(0.0)

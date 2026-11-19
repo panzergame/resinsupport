@@ -27,6 +27,7 @@ sha2 = "0.10"
 aes = "0.8"
 cbc = "0.1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 
 # ui
 egui = "0.36"
