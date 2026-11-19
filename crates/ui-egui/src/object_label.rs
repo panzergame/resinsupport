@@ -7,7 +7,7 @@
 
 use egui::DragValue;
 use resin_engine::Model;
-use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars};
+use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars};
 use serde_json::{Map, Value, json};
 
 use crate::theme::Tokens;
@@ -62,8 +62,8 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
     let at = app.viewport_rect.map_or(egui::pos2(220.0, 140.0), |r| r.left_top() + egui::vec2(SPACE_12, SPACE_12));
     let why_not = why_not_printed(app, id, &label.text);
-    let (mut side, mut size, mut depth, mut text) =
-        (LabelSide::ALL.iter().position(|s| *s == label.side).unwrap_or(0), label.size, label.depth, label.text.clone());
+    let (mut side, mut size, mut depth, mut margin, mut text) =
+        (LabelSide::ALL.iter().position(|s| *s == label.side).unwrap_or(0), label.size, label.depth, label.margin, label.text.clone());
     let mut delete = false;
     let card = Card {
         id: egui::Id::new(CARD_ID),
@@ -93,6 +93,13 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             )
             .on_hover_text(i18n::tr("tool.label.depth_tip"));
         });
+        ui_kit::row(ui, &t, i18n::tr("tool.label.margin"), |ui| {
+            ui.add_sized(
+                [ui.available_width(), CONTROL_HEIGHT],
+                DragValue::new(&mut margin).range(LABEL_MARGIN_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
+            )
+            .on_hover_text(i18n::tr("tool.label.margin_tip"));
+        });
         ui_kit::row(ui, &t, i18n::tr("tool.label.text"), |_| {});
         ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(f32::INFINITY));
         if let Some(why) = &why_not {
@@ -118,6 +125,9 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     }
     if depth != label.depth {
         set.insert("depth".into(), json!(depth));
+    }
+    if margin != label.margin {
+        set.insert("margin".into(), json!(margin));
     }
     if text != label.text {
         set.insert("text".into(), json!(text));
@@ -255,6 +265,8 @@ mod tests {
             "tool.label.size_tip",
             "tool.label.depth",
             "tool.label.depth_tip",
+            "tool.label.margin",
+            "tool.label.margin_tip",
             "tool.label.text",
             "tool.label.hint",
             "tool.label.delete",

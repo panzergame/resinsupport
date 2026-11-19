@@ -32,8 +32,8 @@ pub(crate) fn label_layouts(labels: &[(Label, Vec<[f64; 2]>)], p: &SupportPreset
     if !p.raft.enabled {
         return Vec::new();
     }
-    let (profile, radius) = (profile(p), disc_radius(p));
-    labels.iter().filter_map(|(label, feet)| LabelLayout::new(label, feet, radius, &profile)).collect()
+    let profile = profile(p);
+    labels.iter().filter_map(|(label, feet)| LabelLayout::new(label, feet, p.base.diameter / 2.0, &profile)).collect()
 }
 
 /// The raft under `feet` sized by `p`, widened out to the plates of `labels` (see
@@ -102,7 +102,7 @@ mod tests {
         p.raft.edge = RaftEdge::Straight;
         (p.raft.rim_height, p.raft.rim_width) = (1.0, 1.0);
         let feet = [foot(0.0, 0.0), foot(10.0, 3.0)];
-        let label = resin_geom::Label { text: "7".into(), side: resin_geom::LabelSide::Front, size: 5.0, depth: 0.5 };
+        let label = resin_geom::Label { text: "7".into(), side: resin_geom::LabelSide::Front, size: 5.0, depth: 0.5, margin: 1.5 };
         // The foot farthest to the front is (0, 0): the label is centred on it.
         let sites = [(label, vec![[0.0, 0.0], [10.0, 3.0]])];
         let bare = Mesh::new(raft_triangles(&feet, &[], &p));
@@ -123,7 +123,8 @@ mod tests {
         assert!(rim_y.iter().any(|y| *y < w.min.y + 1.5), "{rim_y:?}");
         assert!(rim_y.iter().all(|y| *y < w.min.y + 1.5 || *y > 4.1 - 1.5), "no rim across the join: {rim_y:?}");
         let letters = Mesh::new(crate::label_triangles(&sites, &p)).bounds();
-        assert!(letters.min.y > w.min.y + 2.0 && letters.max.y < -4.1, "{letters:?} {w:?}");
+        assert!((letters.max.y + 2.1 + 1.5).abs() < 0.05, "the margin from the base: {letters:?}");
+        assert!(letters.min.y > w.min.y + 1.95, "past the rim's inset and the edge's margin: {letters:?} {w:?}");
     }
 
     #[test]

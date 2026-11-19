@@ -23,7 +23,8 @@ pub use bvh::{Bvh, MeshIndex};
 pub use distance::{closest_point_triangle, closest_points_segments, segment_triangle_distance};
 pub use field2d::Field2;
 pub use label::{
-    DEFAULT_LABEL_DEPTH, DEFAULT_LABEL_SIZE, LABEL_DEPTH_RANGE, LABEL_SIZE_RANGE, Label, LabelLayout, LabelSide, MAX_LABEL_CHARS, MAX_LABEL_LINES,
+    DEFAULT_LABEL_DEPTH, DEFAULT_LABEL_MARGIN, DEFAULT_LABEL_SIZE, LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, Label, LabelLayout,
+    LabelSide, MAX_LABEL_CHARS, MAX_LABEL_LINES,
 };
 pub use mesh::{Mesh, RayHit};
 pub use raft::{RaftProfile, raft_solid};

@@ -500,7 +500,7 @@ mod tests {
                     mesh,
                     placement: moved,
                     slicing: SlicingOverride { blur_passes: Some(2), dither_xy: Some(true), gamma: Some(0.5), ..SlicingOverride::default() },
-                    label: Some(Label { text: "2\nB é".into(), side: resin_geom::LabelSide::Right, size: 4.5, depth: 0.8 }),
+                    label: Some(Label { text: "2\nB é".into(), side: resin_geom::LabelSide::Right, size: 4.5, depth: 0.8, margin: 2.5 }),
                 },
             ],
             supports: vec![
@@ -617,6 +617,8 @@ mod tests {
         for (key, value) in [
             ("size", serde_json::json!(0)),
             ("depth", serde_json::json!(1e308)),
+            ("margin", serde_json::json!(-1)),
+            ("margin", serde_json::json!("1")),
             ("side", serde_json::json!("up")),
             ("text", serde_json::json!("x".repeat(10_000))),
             ("text", serde_json::json!(3)),

@@ -1,5 +1,5 @@
-//! A model's label, to tell prints apart: its text standing out of the raft, past the raft's
-//! farthest disc on one side of the model's supports, on a plate that widens the raft's outline
+//! A model's label, to tell prints apart: its text standing out of the raft, past the base of the
+//! model's farthest support on one side, on a plate that widens the raft's outline
 //! out to it, so the raft's edge and rim go round it. The text reads from outside that side.
 
 use serde::{Deserialize, Serialize};
@@ -11,16 +11,19 @@ use crate::{Field2, RaftProfile, raft_solid};
 pub const LABEL_SIZE_RANGE: std::ops::RangeInclusive<f64> = 1.0..=50.0;
 /// How far the letters stand out of the plate, mm.
 pub const LABEL_DEPTH_RANGE: std::ops::RangeInclusive<f64> = 0.1..=10.0;
+/// The gap from the support's base to the letters, mm.
+pub const LABEL_MARGIN_RANGE: std::ops::RangeInclusive<f64> = 0.0..=20.0;
 pub const MAX_LABEL_CHARS: usize = 200;
 pub const MAX_LABEL_LINES: usize = 8;
 pub const DEFAULT_LABEL_SIZE: f64 = 2.0;
 pub const DEFAULT_LABEL_DEPTH: f64 = 0.5;
-/// How far the text's margin reaches into the raft's disc, at most: the margin is never less, so
-/// no letter stands over the disc.
-const OVERLAP: f64 = 1.0;
-/// The plate's margin round the text: at least this, or this share of the letters' height.
-const MIN_PAD: f64 = 1.0;
-const PAD_SHARE: f64 = 0.3;
+pub const DEFAULT_LABEL_MARGIN: f64 = 1.0;
+/// The plate's margin past the letters on its three outer sides, inside the rim's inset: they
+/// would otherwise touch the raft's edge.
+const EDGE_PAD: f64 = 1.0;
+/// The letters' grid reaches this many cells past them: the field must be outside all round its
+/// edge for their solid to close.
+const GRID_PAD_CELLS: f64 = 4.0;
 /// The letters' grid: this share of their height, within the bounds below (mm). A printer's
 /// pixel is some 0.02 to 0.05 mm, and a stroke a tenth of the height.
 const CELL_SHARE: f64 = 1.0 / 60.0;
@@ -76,11 +79,19 @@ pub struct Label {
     pub size: f64,
     /// How far the letters stand out of the plate, mm.
     pub depth: f64,
+    /// The gap from the support's base to the letters, mm. Files from before it was set take
+    /// the default.
+    #[serde(default = "default_margin")]
+    pub margin: f64,
+}
+
+fn default_margin() -> f64 {
+    DEFAULT_LABEL_MARGIN
 }
 
 impl Default for Label {
     fn default() -> Label {
-        Label { text: String::new(), side: LabelSide::Front, size: DEFAULT_LABEL_SIZE, depth: DEFAULT_LABEL_DEPTH }
+        Label { text: String::new(), side: LabelSide::Front, size: DEFAULT_LABEL_SIZE, depth: DEFAULT_LABEL_DEPTH, margin: DEFAULT_LABEL_MARGIN }
     }
 }
 
@@ -93,6 +104,9 @@ impl Label {
         }
         if !within(self.depth, &LABEL_DEPTH_RANGE) {
             return Err(format!("the label's depth must be from {} to {} mm", LABEL_DEPTH_RANGE.start(), LABEL_DEPTH_RANGE.end()));
+        }
+        if !within(self.margin, &LABEL_MARGIN_RANGE) {
+            return Err(format!("the label's margin must be from {} to {} mm", LABEL_MARGIN_RANGE.start(), LABEL_MARGIN_RANGE.end()));
         }
         if self.text.chars().count() > MAX_LABEL_CHARS {
             return Err(format!("the label's text must be at most {MAX_LABEL_CHARS} characters"));
@@ -119,23 +133,24 @@ pub struct LabelLayout {
     lo: [f64; 2],
     hi: [f64; 2],
     text: TextOutline,
-    /// The text's box with its margin, in the text frame: where its letters' grid goes.
-    text_lo: [f64; 2],
-    text_hi: [f64; 2],
+    /// Where the letters' grid goes, in the text frame: their box and some cells round it.
+    grid_lo: [f64; 2],
+    grid_hi: [f64; 2],
     cell: f64,
     depth: f64,
 }
 
 impl LabelLayout {
-    /// `label` on a raft `profile` made of discs of `disc_radius` about `feet` (the model's
-    /// supports' feet on the plate): the text past the disc reaching farthest towards its side,
-    /// its margin reaching 1 mm into that disc at most and widened by the rim's inset so no letter
-    /// stands on the rim; the plate from that foot's centre out round the text. `None` for no
-    /// foot, no raft, a label that does not validate or one with no letters.
-    pub fn new(label: &Label, feet: &[[f64; 2]], disc_radius: f64, profile: &RaftProfile) -> Option<LabelLayout> {
+    /// `label` on a raft `profile` under `feet` (the model's supports' feet on the plate), whose
+    /// bases are `base_radius` wide: the letters `label.margin` past the base of the foot farthest
+    /// towards its side, inset into the raft's disc round it; the plate from that foot's centre
+    /// out round them, a fixed margin and the rim's inset past them on its three outer sides so no
+    /// letter stands on the rim. `None` for no foot, no raft, a label that does not validate or
+    /// one with no letters.
+    pub fn new(label: &Label, feet: &[[f64; 2]], base_radius: f64, profile: &RaftProfile) -> Option<LabelLayout> {
         let usable = |x: f64| x.is_finite() && x > 0.0;
         let inset = profile.inset();
-        if label.validate().is_err() || !usable(disc_radius) || !usable(profile.thickness) || !inset.is_finite() {
+        if label.validate().is_err() || !usable(base_radius) || !usable(profile.thickness) || !inset.is_finite() {
             return None;
         }
         let out = label.side.outwards();
@@ -146,14 +161,19 @@ impl LabelLayout {
         let cell = (label.size * CELL_SHARE).clamp(CELL_RANGE.0, CELL_RANGE.1);
         let text = text_outline(&label.text, label.size, cell / 5.0)?;
         let (lo, hi) = text.bounds()?;
-        let pad = MIN_PAD.max(PAD_SHARE * label.size) + inset;
-        let (text_lo, text_hi) = ([lo[0] - pad, lo[1] - pad], [hi[0] + pad, hi[1] + pad]);
-        // The text's margin starts just inside the farthest disc; the plate goes on to its foot.
-        let edge = along(far, out) + disc_radius - OVERLAP.min(disc_radius);
-        let centre = along(far, x) - (text_lo[0] + text_hi[0]) / 2.0;
+        // Where the plate's back edge, at the foot's centre, leaves the raft's disc, the rim runs
+        // along it: a rim wider than the base would reach letters only `margin` past the base.
+        let near = label.margin.max(inset - base_radius);
+        let side = EDGE_PAD + inset;
+        let (plate_lo, text_hi) = ([lo[0] - side, lo[1] - side], [hi[0] + side, hi[1] + near]);
+        let g = GRID_PAD_CELLS * cell;
+        let (grid_lo, grid_hi) = ([lo[0] - g, lo[1] - g], [hi[0] + g, hi[1] + g]);
+        // The letters' top lands `near` past the farthest base; the plate goes on to its foot.
+        let edge = along(far, out) + base_radius;
+        let centre = along(far, x) - (plate_lo[0] + text_hi[0]) / 2.0;
         let origin = [x[0] * centre + out[0] * (edge + text_hi[1]), x[1] * centre + out[1] * (edge + text_hi[1])];
-        let hi = [text_hi[0], text_hi[1] + disc_radius - OVERLAP.min(disc_radius)];
-        Some(LabelLayout { x, y, origin, lo: text_lo, hi, text, text_lo, text_hi, cell, depth: label.depth })
+        let plate_hi = [text_hi[0], text_hi[1] + base_radius];
+        Some(LabelLayout { x, y, origin, lo: plate_lo, hi: plate_hi, text, grid_lo, grid_hi, cell, depth: label.depth })
     }
 
     fn map(&self, p: [f64; 2]) -> [f64; 2] {
@@ -177,7 +197,7 @@ impl LabelLayout {
     /// out of its top, from halfway down into it, so their bottom faces hide inside the raft
     /// rather than lying on its top, where they would flicker against it.
     pub fn letters(&self, thickness: f64) -> Vec<[[f32; 3]; 3]> {
-        let Some(field) = Field2::polygons(&self.text.contours, self.text_lo, self.text_hi, self.cell) else { return Vec::new() };
+        let Some(field) = Field2::polygons(&self.text.contours, self.grid_lo, self.grid_hi, self.cell) else { return Vec::new() };
         let profile = RaftProfile { thickness: self.depth + thickness / 2.0, slope: 0.0, rim_height: 0.0, rim_width: 0.0 };
         // The frame is a turn, not a mirror: the winding stays outwards.
         raft_solid(&field, &profile)
@@ -198,7 +218,7 @@ mod tests {
     use crate::Mesh;
 
     fn label(text: &str, side: LabelSide) -> Label {
-        Label { text: text.into(), side, size: 5.0, depth: 0.5 }
+        Label { text: text.into(), side, size: 5.0, depth: 0.5, margin: 1.5 }
     }
 
     fn flat(thickness: f64) -> RaftProfile {
@@ -206,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plate_runs_from_the_farthest_foot_out_round_the_text_standing_past_its_disc() {
+    fn the_plate_runs_from_the_farthest_foot_out_round_the_text_standing_past_its_base() {
         let feet = [[0.0, 0.0], [10.0, -3.0], [20.0, 5.0]];
         let (r, t) = (4.1, 1.0);
         for side in LabelSide::ALL {
@@ -223,7 +243,7 @@ mod tests {
             let c = l.corners();
             let (near, far) = c.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(along(*p)), b.max(along(*p))));
             assert!((near - along(foot)).abs() < 1e-9, "{side:?}: from the foot's centre");
-            assert!(far - near > r - OVERLAP + 5.0 + 2.0 * 1.5 - 0.1, "{side:?}: {near} {far}");
+            assert!(far - near > r + 1.5 + 5.0 + EDGE_PAD - 0.1, "{side:?}: {near} {far}");
             let mid = c.iter().map(|p| across(*p)).sum::<f64>() / 4.0;
             assert!((mid - across(foot)).abs() < 1e-9, "{side:?}: centred on it");
             assert!(l.plate_distance(foot).abs() < 1e-9 && l.plate_distance(c[0]).abs() < 1e-9);
@@ -233,11 +253,11 @@ mod tests {
             let mesh = Mesh::new(tris.clone());
             let b = mesh.bounds();
             assert!((b.min.z - t / 2.0).abs() < 1e-6 && (b.max.z - (t + 0.5)).abs() < 1e-5, "{side:?}: {b:?}");
-            // Clear of the disc but for its margin, inside the plate.
+            // The margin from the base, inside the plate.
+            let gap = tris.iter().flatten().map(|p| along([f64::from(p[0]), f64::from(p[1])]) - along(foot)).fold(f64::MAX, f64::min);
+            assert!((gap - (r + 1.5)).abs() < 0.05, "{side:?}: {gap}");
             for p in tris.iter().flatten() {
-                let p = [f64::from(p[0]), f64::from(p[1])];
-                assert!(along(p) - along(foot) > r - OVERLAP + 1.4, "{side:?}: {p:?}");
-                assert!(l.plate_distance(p) < -1.4, "{side:?}: {p:?}");
+                assert!(l.plate_distance([f64::from(p[0]), f64::from(p[1])]) < -EDGE_PAD + 0.05, "{side:?}: {p:?}");
             }
             // Closed: its volume does not depend on where it is measured from.
             let moved = Mesh::new(tris.iter().map(|t| t.map(|p| [p[0] + 100.0, p[1] - 50.0, p[2] + 30.0])).collect()).signed_volume();
@@ -247,15 +267,49 @@ mod tests {
     }
 
     #[test]
-    fn a_rim_widens_the_margin_so_no_letter_stands_on_it() {
+    fn a_rim_widens_the_outer_sides_so_no_letter_stands_on_it_but_not_the_margin() {
         let rim = RaftProfile { thickness: 1.0, slope: 0.0, rim_height: 1.0, rim_width: 2.0 };
+        let near = |l: &LabelLayout| l.letters(1.0).iter().flatten().map(|p| -f64::from(p[1])).fold(f64::MAX, f64::min);
         let plain = LabelLayout::new(&label("1", LabelSide::Front), &[[0.0, 0.0]], 3.0, &flat(1.0)).unwrap();
         let ringed = LabelLayout::new(&label("1", LabelSide::Front), &[[0.0, 0.0]], 3.0, &rim).unwrap();
-        let width = |l: &LabelLayout| l.hi[0] - l.lo[0];
+        let (width, length) = (|l: &LabelLayout| l.hi[0] - l.lo[0], |l: &LabelLayout| l.hi[1] - l.lo[1]);
         assert!((width(&ringed) - width(&plain) - 4.0).abs() < 1e-9);
+        assert!((length(&ringed) - length(&plain) - 2.0).abs() < 1e-9, "the far side only");
+        assert!((near(&ringed) - near(&plain)).abs() < 1e-6 && (near(&plain) - 4.5).abs() < 0.05, "{}", near(&ringed));
         for p in ringed.letters(1.0).iter().flatten() {
-            assert!(ringed.plate_distance([f64::from(p[0]), f64::from(p[1])]) < -3.4, "{p:?}");
+            assert!(ringed.plate_distance([f64::from(p[0]), f64::from(p[1])]) < -2.95, "{p:?}");
         }
+        // A rim wider than the base past a smaller margin: its run along the plate's back edge
+        // would reach the letters, which keep that far from the foot's centre.
+        let thin = LabelLayout::new(&Label { margin: 0.0, ..label("1", LabelSide::Front) }, &[[0.0, 0.0]], 0.5, &rim).unwrap();
+        assert!((near(&thin) - 2.0).abs() < 0.05, "{}", near(&thin));
+    }
+
+    #[test]
+    fn the_margin_sets_the_gap_from_the_base_and_none_still_closes_the_letters() {
+        let at = |margin: f64| {
+            let l = LabelLayout::new(&Label { margin, ..label("8", LabelSide::Front) }, &[[0.0, 0.0]], 2.0, &flat(1.0)).unwrap();
+            let tris = l.letters(1.0);
+            // The letters' highest y on the plate: the gap from them to the base is the margin.
+            let near = tris.iter().flatten().map(|p| -f64::from(p[1])).fold(f64::MAX, f64::min);
+            // The plate's three outer sides keep their own margin.
+            let edge = tris.iter().flatten().map(|p| l.plate_distance([f64::from(p[0]), f64::from(p[1])])).fold(f64::MIN, f64::max);
+            (l, tris, near, edge)
+        };
+        for margin in [0.0, 0.5, 4.0] {
+            let (_, tris, near, edge) = at(margin);
+            assert!((near - (2.0 + margin)).abs() < 0.05, "{margin}: {near}");
+            assert!((edge + EDGE_PAD).abs() < 0.05, "{margin}: {edge}");
+            let mesh = Mesh::new(tris.clone());
+            let moved = Mesh::new(tris.iter().map(|t| t.map(|p| [p[0] + 100.0, p[1] - 50.0, p[2] + 30.0])).collect()).signed_volume();
+            assert!((moved - mesh.signed_volume()).abs() < 1e-3 * mesh.signed_volume(), "{margin}: closed");
+        }
+        let size = |m: f64| {
+            let l = at(m).0;
+            (l.hi[0] - l.lo[0], l.hi[1] - l.lo[1])
+        };
+        let (a, b) = (size(0.5), size(4.0));
+        assert!((b.0 - a.0).abs() < 1e-9 && (b.1 - a.1 - 3.5).abs() < 1e-9, "{a:?} {b:?}");
     }
 
     #[test]
@@ -286,6 +340,9 @@ mod tests {
             Label { size: f64::NAN, ..label("1", LabelSide::Front) },
             Label { depth: 0.0, ..label("1", LabelSide::Front) },
             Label { depth: 1e308, ..label("1", LabelSide::Front) },
+            Label { margin: -0.1, ..label("1", LabelSide::Front) },
+            Label { margin: 21.0, ..label("1", LabelSide::Front) },
+            Label { margin: f64::INFINITY, ..label("1", LabelSide::Front) },
             label(&"1".repeat(MAX_LABEL_CHARS + 1), LabelSide::Front),
             label(&"1\n".repeat(MAX_LABEL_LINES), LabelSide::Front),
             label("1\r2", LabelSide::Front),

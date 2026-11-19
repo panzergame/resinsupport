@@ -199,11 +199,11 @@ fn refuse_unknown(p: &Value, known: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// `id?` (default the one selected model), `text?`, `side?`, `size?`, `depth?`: change what is
+/// `id?` (default the one selected model), `text?`, `side?`, `size?`, `depth?`, `margin?`: change what is
 /// given of the model's label, giving it one first if it has none (its text the model's place in
 /// the model list, from 1).
 pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
-    refuse_unknown(p, &["id", "text", "side", "size", "depth"])?;
+    refuse_unknown(p, &["id", "text", "side", "size", "depth", "margin"])?;
     let id = one_target(s, p)?;
     let index = s.scene.models().iter().position(|m| m.id == id).map_or(0, |i| i + 1);
     let mut label = s.scene.model(id).and_then(|m| m.label.clone()).unwrap_or_else(|| Label { text: index.to_string(), ..Label::default() });
@@ -224,6 +224,9 @@ pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(depth) = num_param(p, "depth")? {
         label.depth = depth;
+    }
+    if let Some(margin) = num_param(p, "margin")? {
+        label.margin = margin;
     }
     s.scene.set_label(id, Some(label.clone()))?;
     Ok(json!({ "id": id, "label": label }))

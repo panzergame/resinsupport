@@ -527,9 +527,9 @@ fn hostile_params_never_panic() {
         json!({ "path": "plate.ctb", "format": ["v2"], "printer": { "ctb_format": 2 } }),
         json!({ "ids": [1, 2], "pattern": "spiral", "pairing": 3, "angle": 1e308, "diameter_ratio": -1, "max_distance": 0, "braces": "all" }),
         json!({ "ids": [u64::MAX, 0], "pattern": null, "pairing": "all", "angle": 90, "head_gap": 1e300, "foot_gap": -0.0, "braces": [u64::MAX, -1] }),
-        json!({ "id": 1, "text": "x".repeat(100_000), "side": "up", "size": 1e308, "depth": -1 }),
-        json!({ "id": 1, "text": ["a"], "side": 3, "size": "5", "depth": null }),
-        json!({ "id": 1, "text": "\u{0}\r\u{1b}", "side": null, "size": 0, "depth": 1e-300 }),
+        json!({ "id": 1, "text": "x".repeat(100_000), "side": "up", "size": 1e308, "depth": -1, "margin": 1e308 }),
+        json!({ "id": 1, "text": ["a"], "side": 3, "size": "5", "depth": null, "margin": "1" }),
+        json!({ "id": 1, "text": "\u{0}\r\u{1b}", "side": null, "size": 0, "depth": 1e-300, "margin": -0.0 }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -972,7 +972,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "file.save" => Some(json!({ "path": f.project.with_file_name("saved.rsup") })),
         "model.arrange" => Some(json!({})),
         "model.delete" => Some(json!({ "id": a })),
-        "model.label" => Some(json!({ "id": b, "text": "B\n2", "side": "left", "size": 4 })),
+        "model.label" => Some(json!({ "id": b, "text": "B\n2", "side": "left", "size": 4, "margin": 2 })),
         "model.label.delete" => Some(json!({ "id": f.labelled })),
         "model.lift" => Some(json!({ "lifted": true })),
         "model.list" | "support.list" | "scene.clear" => Some(json!({})),
@@ -1104,7 +1104,14 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     let label = |s: &Session, id: u64| s.scene.model(id).unwrap().label.clone();
     s.execute("model.select", &json!({ "ids": [a, b] })).unwrap();
     assert!(s.execute("model.label", &json!({})).is_err(), "two models selected");
-    for bad in [json!({ "size": 0.5 }), json!({ "depth": 20 }), json!({ "side": "up" }), json!({ "text": "a\tb" }), json!({ "font": "x" })] {
+    for bad in [
+        json!({ "size": 0.5 }),
+        json!({ "depth": 20 }),
+        json!({ "margin": -1 }),
+        json!({ "side": "up" }),
+        json!({ "text": "a\tb" }),
+        json!({ "font": "x" }),
+    ] {
         let mut p = bad.clone();
         p["id"] = json!(a);
         assert!(s.execute("model.label", &p).is_err(), "{p}");
@@ -1114,11 +1121,11 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     s.execute("model.select", &json!({ "ids": [a] })).unwrap();
     let depth = s.undo_depth();
     let r = s.execute("model.label", &json!({})).unwrap();
-    assert_eq!(r["label"], json!({ "text": "1", "side": "front", "size": 2.0, "depth": 0.5 }), "the first model's number");
+    assert_eq!(r["label"], json!({ "text": "1", "side": "front", "size": 2.0, "depth": 0.5, "margin": 1.0 }), "the first model's number");
     assert_eq!(s.undo_depth(), depth + 1);
-    s.execute("model.label", &json!({ "side": "back", "size": 6 })).unwrap();
+    s.execute("model.label", &json!({ "side": "back", "size": 6, "margin": 1.8 })).unwrap();
     s.execute("model.label", &json!({ "text": "A\n1" })).unwrap();
-    let want = resin_geom::Label { text: "A\n1".into(), side: resin_geom::LabelSide::Back, size: 6.0, depth: 0.5 };
+    let want = resin_geom::Label { text: "A\n1".into(), side: resin_geom::LabelSide::Back, size: 6.0, depth: 0.5, margin: 1.8 };
     assert_eq!(label(&s, a), Some(want.clone()), "what is left out is kept");
     let depth = s.undo_depth();
     s.execute("model.label", &json!({ "size": 6 })).unwrap();
@@ -1140,15 +1147,15 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     );
     let b0 = resin_geom::Mesh::new(label_triangles(&sites[..1], &preset)).bounds();
     let foot = route(&s.scene, &s.scene.supports()[0], &preset).body.last().copied().unwrap();
-    let r = preset.base.diameter / 2.0 + preset.raft.margin;
-    // The letters start their margin (1.8 mm, 0.3 of their height) past the disc, less 1 mm.
-    assert!((b0.min.y - (foot.y + r - 1.0 + 1.8)).abs() < 0.05, "{b0:?} {foot:?}");
+    let r = preset.base.diameter / 2.0;
+    // The letters start their margin (1.8 mm) past the base.
+    assert!((b0.min.y - (foot.y + r + 1.8)).abs() < 0.05, "{b0:?} {foot:?}");
     assert!((b0.min.z - preset.raft.thickness / 2.0).abs() < 1e-4 && (b0.max.z - (preset.raft.thickness + 0.5)).abs() < 1e-4, "{b0:?}");
     // The raft comes just before the letters.
     let at = input.solids.iter().position(|x| x.triangles == all).unwrap();
     let raft = &input.solids[at - 1];
     let rb = resin_geom::Mesh::new(raft.triangles.clone()).bounds();
-    assert!(rb.max.y > b0.max.y + 1.4, "the raft reaches round the letters: {rb:?} {b0:?}");
+    assert!(rb.max.y > b0.max.y + 0.95, "the raft reaches round the letters: {rb:?} {b0:?}");
     let before = input.solids.len();
     s.execute("support.configure", &json!({ "raft": { "enabled": false } })).unwrap();
     assert_eq!(s.slice_input().0.solids.len(), before - 2, "neither raft nor label without a raft");
