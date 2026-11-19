@@ -42,14 +42,18 @@ impl SliceSource {
 
     /// The slicer's input: each model placed, each support that reaches the plate (a branch: through
     /// its parent) as its closed solids, the raft under them; and how many supports do not reach
-    /// it, which are left out.
+    /// it, which are left out. A model with slicing settings of its own takes them, and so do its
+    /// supports and the braces between them; the raft keeps the plate's.
     pub fn input(&self) -> (SliceInput, usize) {
         let models = self.scene.models();
+        let plate = self.config.settings.slicing;
+        let own = |model: u64| models.iter().find(|m| m.id == model).filter(|m| !m.slicing.is_empty()).map(|m| m.slicing.apply(&plate));
         let mut solids: Vec<Solid> = models
             .iter()
             .map(|m| Solid {
                 kind: SolidKind::Model,
                 triangles: m.mesh.triangles.iter().map(|t| t.map(|v| m.transform.point(Vec3::from(v)).to_f32())).collect(),
+                slicing: own(m.id),
             })
             .collect();
         let mut unreachable = 0;
@@ -64,23 +68,25 @@ impl SliceSource {
             }
             let mut triangles = Vec::new();
             tess.triangles(&r, &self.preset, &mut triangles);
-            solids.push(Solid { kind: SolidKind::Support, triangles });
-            printed.insert(s.id, r);
+            solids.push(Solid { kind: SolidKind::Support, triangles, slicing: own(s.model) });
+            printed.insert(s.id, (r, s.model));
         }
         // Only between printed supports: a brace to one left out would hang in the air.
         for b in self.scene.braces() {
-            let (Some(ra), Some(rb)) = (printed.get(&b.a), printed.get(&b.b)) else { continue };
+            let (Some((ra, ma)), Some((rb, mb))) = (printed.get(&b.a), printed.get(&b.b)) else { continue };
             let (struts, _) = brace_solids(&self.scene, ra, rb, &b.params, &self.preset);
             if struts.is_empty() {
                 continue;
             }
             let mut triangles = Vec::new();
             tess.strut_triangles(&struts, b.params.diameter_ratio, &self.preset, &mut triangles);
-            solids.push(Solid { kind: SolidKind::Support, triangles });
+            // Between two models' supports it is neither's: the plate's.
+            let slicing = if ma == mb { own(*ma) } else { None };
+            solids.push(Solid { kind: SolidKind::Support, triangles, slicing });
         }
-        let raft = raft_triangles(&raft_feet(printed.values()), &self.preset);
+        let raft = raft_triangles(&raft_feet(printed.values().map(|(r, _)| r)), &self.preset);
         if !raft.is_empty() {
-            solids.push(Solid { kind: SolidKind::Support, triangles: raft });
+            solids.push(Solid { kind: SolidKind::Support, triangles: raft, slicing: None });
         }
         let input = SliceInput { solids, profile: self.config.printer.clone(), settings: self.config.settings, stamp: self.stamp };
         (input, unreachable)

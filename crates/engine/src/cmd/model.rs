@@ -3,6 +3,8 @@ use serde_json::{Value, json};
 use resin_geom::{Affine3, Placement, Vec3};
 
 use super::{ids_param, num_param, select_ids, str_param, vec3_param};
+use resin_slice::{SLICING_KEYS, field};
+
 use crate::{EngineError, Result, SCALE_RANGE, Session};
 
 fn bool_param(p: &Value, key: &str) -> Result<Option<bool>> {
@@ -94,6 +96,7 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
                 "bounds": { "min": m.bounds.min, "max": m.bounds.max },
                 "placement": m.placement,
                 "lifted": m.lifted,
+                "slicing": m.slicing,
                 "selected": s.scene.selected_models.contains(&m.id),
             })
         })
@@ -113,6 +116,64 @@ pub(crate) fn select(s: &mut Session, p: &Value) -> Result<Value> {
     check_known(s, &ids)?;
     select_ids(&mut s.scene.selected_models, ids, p)?;
     Ok(json!({ "selected": s.scene.selected_models }))
+}
+
+/// `ids?` (default the selected models), `set?: { key: value }`, `clear?: [key] | "all"`: the
+/// clearing first, then the setting, for each model; all or nothing.
+pub(crate) fn slicing(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = targets(s, p)?;
+    if let Value::Object(o) = p
+        && let Some(k) = o.keys().find(|k| !["ids", "set", "clear"].contains(&k.as_str()))
+    {
+        return Err(EngineError::BadParams(format!("unknown parameter `{k}`")));
+    }
+    let clear: Vec<&str> = match p.get("clear") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(all)) if all == "all" => SLICING_KEYS.to_vec(),
+        Some(Value::Array(keys)) => keys
+            .iter()
+            .map(|k| {
+                k.as_str().filter(|k| SLICING_KEYS.contains(k)).ok_or_else(|| EngineError::BadParams(format!("`clear`: {k} is no slicing setting")))
+            })
+            .collect::<Result<_>>()?,
+        Some(_) => return Err(EngineError::BadParams("`clear` must be an array of setting keys or \"all\"".into())),
+    };
+    let set = match p.get("set") {
+        None | Some(Value::Null) => serde_json::Map::new(),
+        Some(Value::Object(o)) => o.clone(),
+        Some(_) => return Err(EngineError::BadParams("`set` must be an object of settings".into())),
+    };
+    let mut edits = Vec::with_capacity(ids.len());
+    for id in ids {
+        let Some(mut o) = s.scene.model(id).map(|m| m.slicing) else { continue };
+        for k in &clear {
+            o.clear(k);
+        }
+        for (k, v) in &set {
+            let ok = match v {
+                Value::Bool(on) => o.set_switch(k, *on),
+                Value::Number(n) => n.as_f64().is_some_and(|x| o.set_number(k, x)),
+                _ => false,
+            };
+            if !ok {
+                let why = field("slicing", k).filter(|f| SLICING_KEYS.contains(&f.key)).map_or_else(
+                    || {
+                        if SLICING_KEYS.contains(&k.as_str()) {
+                            format!("`slicing.{k}` must be true or false")
+                        } else {
+                            format!("unknown setting `{k}`")
+                        }
+                    },
+                    |f| f.describe(),
+                );
+                return Err(EngineError::BadParams(why));
+            }
+        }
+        edits.push((id, o));
+    }
+    s.scene.set_slicing(&edits)?;
+    let models: Vec<Value> = edits.iter().map(|(id, o)| json!({ "id": id, "slicing": o })).collect();
+    Ok(json!({ "models": models }))
 }
 
 fn check_known(s: &Session, ids: &[u64]) -> Result<()> {

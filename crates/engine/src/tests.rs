@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 
 use crate::{EngineError, Session, commands};
 use resin_geom::Vec3;
+use resin_slice::{Slicing, SlicingOverride, SolidKind};
 
 fn write_cube_stl(dir: &std::path::Path) -> std::path::PathBuf {
     let s = |x: f32| x * 10.0;
@@ -518,6 +519,9 @@ fn hostile_params_never_panic() {
         json!({ "layers": { "bottom_count": 200, "transition_count": 200 }, "printer": { "build_height": 1 }, "estimates": { "bottle_cost": -0.0 } }),
         json!({ "slicing": { "anti_aliasing": 3 }, "estimates": { "resin_density": 1e308, "bottle_volume": "1" }, "printer": { "name": "\u{0}" } }),
         json!({ "printer": { "name": "x".repeat(10_000), "display_x": 1, "resolution_x": 32768 }, "from_the_future": {} }),
+        json!({ "set": { "gamma": 1e308, "dither_z": 1, "nope": null }, "clear": "some" }),
+        json!({ "set": [], "clear": [1, "gamma"], "ids": [u64::MAX] }),
+        json!({ "set": { "anti_aliasing": 3, "blur_radius": -1, "exact": "yes" }, "clear": "all", "unknown": true }),
         json!({ "path": "/", "encryption_key": -1 }),
         json!({ "path": "plate.CTB.stl", "encryption_key": u64::MAX }),
         json!({ "path": "plate.ctb", "format": ["v2"], "printer": { "ctb_format": 2 } }),
@@ -536,7 +540,7 @@ fn hostile_params_never_panic() {
 
 /// What a step must put back, selection aside: the models, where they are, their supports.
 fn content(s: &Session) -> String {
-    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted)).collect();
+    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted, m.slicing)).collect();
     format!("{models:?} {:?} {:?} {}", s.scene.supports(), s.scene.braces(), s.scene.lift_height())
 }
 
@@ -970,6 +974,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "model.rotate" => Some(json!({ "degrees": [0, 90, 0] })),
         "model.scale" => Some(json!({ "factors": 1.5 })),
         "model.select" => Some(json!({ "ids": [b] })),
+        "model.slicing" => Some(json!({ "ids": [a, b], "set": { "blur_passes": 2, "dither_xy": true } })),
         "print.configure" => {
             Some(json!({ "printer": { "name": "Other", "mirror_x": true }, "layers": { "height": 0.03 }, "slicing": { "anti_aliasing": 4 } }))
         }
@@ -1026,6 +1031,57 @@ fn every_scene_change_is_undoable() {
         s.execute("edit.redo", &json!({})).unwrap();
         assert_eq!(fingerprint(s), after, "{}: redo did not make it again", spec.id);
     }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A model's own slicing settings: set and cleared by key, refused out of range, kept with copies
+/// and in project files, and given to the slicer with its supports'.
+#[test]
+fn a_models_slicing_settings_go_with_it_and_its_supports() {
+    let dir = temp_dir("model-slicing");
+    let f = fixture(&dir);
+    let (mut s, a, b) = (f.session, f.a, f.b);
+    let own = |s: &Session, id: u64| s.scene.model(id).unwrap().slicing;
+    assert!(s.execute("model.slicing", &json!({ "ids": [a], "set": { "anti_aliasing": 3 } })).is_err());
+    assert!(s.execute("model.slicing", &json!({ "ids": [a], "set": { "dither_z": 1 } })).is_err());
+    assert!(s.execute("model.slicing", &json!({ "ids": [a], "clear": ["height"] })).is_err());
+    assert!(own(&s, a).is_empty(), "a refused edit changes nothing");
+
+    let stamp = s.slice_stamp();
+    let r = s.execute("model.slicing", &json!({ "set": { "blur_passes": 2, "dither_xy": true, "gamma": 0.5 } })).unwrap();
+    assert_eq!(r["models"], json!([{ "id": a, "slicing": { "blur_passes": 2, "dither_xy": true, "gamma": 0.5 } }]), "the selected model");
+    assert_ne!(s.slice_stamp(), stamp, "a job sliced before is stale");
+    let depth = s.undo_depth();
+    s.execute("model.slicing", &json!({ "ids": [a], "set": { "gamma": 0.5 } })).unwrap();
+    assert_eq!(s.undo_depth(), depth, "the same again is no step");
+    s.execute("model.slicing", &json!({ "ids": [a], "clear": ["gamma"] })).unwrap();
+    assert_eq!(own(&s, a).keys().collect::<Vec<_>>(), ["blur_passes", "dither_xy"]);
+    assert!(own(&s, b).is_empty());
+    assert_eq!(s.execute("model.list", &json!({})).unwrap()["models"][0]["slicing"], json!({ "blur_passes": 2, "dither_xy": true }));
+
+    // The model and its support take them; the other model, the slab and its braced supports the
+    // plate's. Lifted, so the support under it reaches the plate and is printed.
+    s.execute("model.lift", &json!({ "ids": [a], "lifted": true })).unwrap();
+    let (input, _) = s.slice_input();
+    let plate = s.print_config().settings.slicing;
+    let mine = SlicingOverride { blur_passes: Some(2), dither_xy: Some(true), ..SlicingOverride::default() }.apply(&plate);
+    let kinds: Vec<(SolidKind, Option<Slicing>)> = input.solids.iter().map(|x| (x.kind, x.slicing)).collect();
+    assert_eq!(kinds.iter().filter(|k| k.1 == Some(mine)).map(|k| k.0).collect::<Vec<_>>(), [SolidKind::Model, SolidKind::Support]);
+    assert!(kinds.iter().filter(|k| k.1 != Some(mine)).all(|k| k.1.is_none()));
+
+    // A copy has them, so has a saved and reopened project.
+    s.execute("edit.copy", &json!({ "ids": [a] })).unwrap();
+    let copy = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(own(&s, copy), own(&s, a));
+    let path = dir.join("slicing.rsup");
+    s.execute("file.save", &json!({ "path": path })).unwrap();
+    let mut t = Session::new();
+    t.execute("file.open", &json!({ "path": path })).unwrap();
+    let kept: Vec<SlicingOverride> = t.scene.models().iter().map(|m| m.slicing).filter(|o| !o.is_empty()).collect();
+    assert_eq!(kept, [own(&s, a), own(&s, a)]);
+
+    s.execute("model.slicing", &json!({ "ids": [a, copy], "clear": "all" })).unwrap();
+    assert!(own(&s, a).is_empty() && own(&s, copy).is_empty());
     std::fs::remove_dir_all(dir).ok();
 }
 

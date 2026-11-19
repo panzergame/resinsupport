@@ -14,6 +14,7 @@ pub mod layer_preview;
 pub mod layer_view;
 pub mod navigation;
 pub mod object_settings;
+pub mod object_slicing;
 pub mod objects;
 pub mod preferences;
 pub mod prefs;
@@ -118,6 +119,8 @@ pub struct ResinApp {
     pub(crate) slicer: slice_runner::SliceRunner,
     /// The print settings' Restore defaults was clicked: its confirmation is open.
     pub(crate) confirm_print_reset: bool,
+    /// The selected model's own slicing settings card is open.
+    pub(crate) object_slicing: bool,
     /// The layers shown in Slice edition, and how.
     pub(crate) preview: layer_preview::LayerPreview,
     /// The device's largest texture side: a layer is cut into tiles no bigger.
@@ -192,6 +195,7 @@ impl ResinApp {
             print_tab: 0,
             slicer: Default::default(),
             confirm_print_reset: false,
+            object_slicing: false,
             preview: Default::default(),
             max_texture: DEFAULT_MAX_TEXTURE,
             prefs_writer: writer,
@@ -623,8 +627,13 @@ impl ResinApp {
             self.run("model.delete", json!({ "id": id }));
         }
         if let Some(id) = select {
-            self.set_mode(EditMode::Object);
-            self.run("model.select", json!({ "ids": [id], "mode": if shift { "toggle" } else { "replace" } }));
+            // Slice edition picks one model at a time, for its own slicing settings.
+            if self.mode == EditMode::Slice {
+                self.run("model.select", json!({ "ids": [id] }));
+            } else {
+                self.set_mode(EditMode::Object);
+                self.run("model.select", json!({ "ids": [id], "mode": if shift { "toggle" } else { "replace" } }));
+            }
         }
     }
 
@@ -635,9 +644,8 @@ impl ResinApp {
             ui.label(i18n::tr(self.mode.label()));
             ui.separator();
             let selected = match self.mode {
-                EditMode::Object => scene.selected_models.len(),
+                EditMode::Object | EditMode::Slice => scene.selected_models.len(),
                 EditMode::Support => scene.selected.len() + scene.selected_parts.len() + scene.selected_braces.len(),
-                EditMode::Slice => 0,
             };
             ui.label(i18n::format(
                 "status.summary",
@@ -983,6 +991,7 @@ impl eframe::App for ResinApp {
         object_settings::panel(self, &ctx);
         support_settings::panel(self, &ctx);
         print_settings::panel(self, &ctx);
+        object_slicing::panel(self, &ctx);
         layer_preview::card(self, &ctx);
         preferences::window(self, &ctx);
         self.confirm_open(&ctx, &tokens);

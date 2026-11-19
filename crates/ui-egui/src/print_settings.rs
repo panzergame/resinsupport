@@ -1,6 +1,7 @@
 //! The print settings card: the printer profile and how the resin is exposed and the plate moves,
-//! on four tabs (Printer, with the layer height; Bottom Layers; Regular Layers; Slicing, with the
-//! gamma's curve), and Restore defaults. The
+//! on five tabs (Printer, with the layer height; Bottom Layers; Regular Layers; Slicing, with the
+//! gamma's curve and the selected model's own slicing settings; Resin, for the estimates), and
+//! Restore defaults. The
 //! plate's travel shows each phase's value side by side, fast then slow. Every edit runs
 //! `print.configure` at once; the configuration is not an undo step, and `ResinApp::run` keeps it
 //! in the preferences. Shown for as long as the Slice edit mode lasts, and only then: nothing
@@ -8,7 +9,7 @@
 
 use egui::{DragValue, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::PrintConfig;
-use resin_engine::slice::{ANTI_ALIASING, CtbFormat, GROUPS, MAX_NAME_CHARS, Motion, field};
+use resin_engine::slice::{ANTI_ALIASING, CtbFormat, GROUPS, MAX_NAME_CHARS, Motion, SlicingOverride, field};
 use serde_json::{Value, json};
 
 use crate::theme::Tokens;
@@ -17,10 +18,11 @@ use crate::ui_kit::{self, Action, Buttons, Card, Confirm};
 use crate::{EditMode, ResinApp, i18n};
 
 /// The card's tabs: the catalog ids of their names, in order.
-pub const TABS: [&str; 4] = ["printing.tab.printer", "printing.tab.bottom", "printing.tab.regular", "printing.tab.slicing"];
+pub const TABS: [&str; 5] = ["printing.tab.printer", "printing.tab.bottom", "printing.tab.regular", "printing.tab.slicing", "printing.tab.resin"];
 const PRINTER: usize = 0;
 const BOTTOM: usize = 1;
 const REGULAR: usize = 2;
+const SLICING: usize = 3;
 
 /// The anti-aliasing choices' names: the levels, as [`ANTI_ALIASING`], then exact coverage.
 const ANTI_ALIASING_NAMES: [(&str, &str); 5] = [
@@ -64,6 +66,8 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let mut c = before.clone();
     let mut tab = app.print_tab.min(TABS.len() - 1);
     let mut reset = false;
+    let mut overrides = false;
+    let one_model = crate::object_slicing::target(app).is_some();
     let card = Card {
         id: egui::Id::new(CARD_ID),
         title: i18n::tr("printing.title"),
@@ -79,14 +83,24 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         match tab {
             PRINTER => printer_rows(ui, &t, &mut c),
             BOTTOM => {
-                rows(ui, &t, &mut c, BOTTOM_ROWS);
+                rows(ui, &t, &mut c, BOTTOM_ROWS, &mut Marks::default());
                 pairs(ui, &t, &mut c, BOTTOM_MOTION);
             }
             REGULAR => {
-                rows(ui, &t, &mut c, REGULAR_ROWS);
+                rows(ui, &t, &mut c, REGULAR_ROWS, &mut Marks::default());
                 pairs(ui, &t, &mut c, REGULAR_MOTION);
             }
-            _ => slicing_rows(ui, &t, &mut c),
+            SLICING => {
+                slicing_rows(ui, &t, &mut c, &mut Marks::default());
+                ui.add_enabled_ui(one_model, |ui| {
+                    let help = if one_model { i18n::tr("printing.object.open.help") } else { i18n::tr("reason.select_one_model") };
+                    let open = ui_kit::button(ui, i18n::tr("printing.object.open"));
+                    if open.on_hover_text(help).on_disabled_hover_text(help).clicked() {
+                        overrides = true;
+                    }
+                });
+            }
+            _ => rows(ui, &t, &mut c, RESIN_ROWS, &mut Marks::default()),
         }
         if ui_kit::button(ui, i18n::tr("ui.restore_defaults")).clicked() {
             reset = true;
@@ -94,6 +108,9 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         ui_kit::hint(ui, &t, i18n::tr("printing.hint"));
     });
     app.print_tab = tab;
+    if overrides {
+        app.object_slicing = true;
+    }
     if let Some(edit) = changes(&before, &c) {
         configure(app, edit);
     }
@@ -161,21 +178,23 @@ impl Num {
     }
 
     /// A row with the setting's drag field, in its range.
-    fn row(&self, ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
+    fn row(&self, ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, marks: &mut Marks) {
         let Some(f) = field(self.group, self.key) else { return };
         let Some(mut v) = f.get(&c.printer, &c.settings) else { return };
         let enabled = self.when.is_none_or(|when| when(c));
-        let changed = ui_kit::wide_row(ui, t, i18n::tr(self.label), |ui| {
-            let mut drag = DragValue::new(&mut v).range(f.min..=f.max).speed(self.speed).suffix(self.suffix).max_decimals(self.decimals);
-            if f.integer {
-                drag = drag.fixed_decimals(0);
-            }
-            let response = ui.add_enabled_ui(enabled, |ui| ui.add_sized([ui.available_width(), CONTROL_HEIGHT], drag)).inner;
-            let changed = response.changed();
-            if let Some(help) = self.help {
-                response.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help));
-            }
-            changed
+        let changed = marks.row(ui, t, &[self.key], |ui| {
+            ui_kit::wide_row(ui, t, i18n::tr(self.label), |ui| {
+                let mut drag = DragValue::new(&mut v).range(f.min..=f.max).speed(self.speed).suffix(self.suffix).max_decimals(self.decimals);
+                if f.integer {
+                    drag = drag.fixed_decimals(0);
+                }
+                let response = ui.add_enabled_ui(enabled, |ui| ui.add_sized([ui.available_width(), CONTROL_HEIGHT], drag)).inner;
+                let changed = response.changed();
+                if let Some(help) = self.help {
+                    response.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help));
+                }
+                changed
+            })
         });
         if changed {
             f.set(&mut c.printer, &mut c.settings, if f.integer { v.round() } else { v });
@@ -344,6 +363,10 @@ const SLICING_ROWS: &[Num] = &[
     num("printing.dither_floor", "slicing", "dither_floor", " %", 0, 0.2).help("printing.dither_floor.help").when(dithers),
     num("printing.dither_max_angle", "slicing", "dither_max_angle", "°", 1, 0.2).help("printing.dither_max_angle.help").when(dithers),
     num("printing.gamma", "slicing", "gamma", "", 2, 0.01).help("printing.gamma.help"),
+];
+
+/// The resin, for the volume and cost estimates: no slicing setting, so a model never has its own.
+const RESIN_ROWS: &[Num] = &[
     num("printing.estimates.resin_density", "estimates", "resin_density", " g/ml", 2, 0.01),
     num("printing.estimates.bottle_volume", "estimates", "bottle_volume", " ml", 0, 10.0),
     num("printing.estimates.bottle_cost", "estimates", "bottle_cost", "", 2, 0.5),
@@ -357,16 +380,21 @@ fn dithers(c: &PrintConfig) -> bool {
     c.settings.slicing.dither_z || c.settings.slicing.dither_xy
 }
 
-fn rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, rows: &[Num]) {
+fn rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, rows: &[Num], marks: &mut Marks) {
     for r in rows {
         if (r.group, r.key) == ("slicing", "dither_floor") {
             let s = &mut c.settings.slicing;
-            ui_kit::check_row(ui, t, i18n::tr("printing.dither_z"), i18n::tr("printing.dither_z.help"), &mut s.dither_z);
-            ui_kit::check_row(ui, t, i18n::tr("printing.dither_xy"), i18n::tr("printing.dither_xy.help"), &mut s.dither_xy);
+            marks.row(ui, t, &["dither_z"], |ui| {
+                ui_kit::check_row(ui, t, i18n::tr("printing.dither_z"), i18n::tr("printing.dither_z.help"), &mut s.dither_z);
+            });
+            marks.row(ui, t, &["dither_xy"], |ui| {
+                ui_kit::check_row(ui, t, i18n::tr("printing.dither_xy"), i18n::tr("printing.dither_xy.help"), &mut s.dither_xy);
+            });
         }
-        r.row(ui, t, c);
+        r.row(ui, t, c, marks);
         if (r.group, r.key) == ("slicing", "gamma") {
-            gamma_curve(ui, t, &c.settings.slicing.gamma_table());
+            // Under the gamma row, in step with its control column.
+            marks.row(ui, t, &[], |ui| gamma_curve(ui, t, &c.settings.slicing.gamma_table()));
         }
     }
 }
@@ -397,7 +425,7 @@ fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
         )
         .on_hover_text(i18n::tr("printing.printer.name.help"));
     });
-    rows(ui, t, c, PRINTER_ROWS);
+    rows(ui, t, c, PRINTER_ROWS, &mut Marks::default());
     let p = &mut c.printer;
     ui_kit::check_row(ui, t, i18n::tr("printing.printer.mirror_x"), i18n::tr("printing.printer.mirror.help"), &mut p.mirror_x);
     ui_kit::check_row(ui, t, i18n::tr("printing.printer.mirror_y"), i18n::tr("printing.printer.mirror.help"), &mut p.mirror_y);
@@ -412,10 +440,13 @@ fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
     ui_kit::hint(ui, t, &i18n::format("printing.printer.pixel", &[("x", &microns(x)), ("y", &microns(y))]));
 }
 
-fn slicing_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
+/// The Slicing tab's settings, the plate's or (with `marks` on a model's own settings) a model's.
+pub(crate) fn slicing_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, marks: &mut Marks) {
     let s = &mut c.settings.slicing;
     let mut aa = if s.exact { EXACT.to_owned() } else { s.anti_aliasing.to_string() };
-    ui_kit::choice_row(ui, t, i18n::tr("printing.anti_aliasing"), "anti_aliasing", &mut aa, &ANTI_ALIASING_NAMES);
+    marks.row(ui, t, &["anti_aliasing", "exact"], |ui| {
+        ui_kit::choice_row(ui, t, i18n::tr("printing.anti_aliasing"), "anti_aliasing", &mut aa, &ANTI_ALIASING_NAMES);
+    });
     if aa == EXACT {
         s.exact = true;
     } else if let Some(level) = ANTI_ALIASING.iter().find(|a| a.to_string() == aa) {
@@ -423,11 +454,60 @@ fn slicing_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
     }
     let mut z = s.anti_aliasing_z.to_string();
     let help = i18n::tr("printing.anti_aliasing_z.help");
-    ui_kit::choice_row_help(ui, t, i18n::tr("printing.anti_aliasing_z"), Some(help), "anti_aliasing_z", &mut z, &ANTI_ALIASING_Z_NAMES);
+    marks.row(ui, t, &["anti_aliasing_z"], |ui| {
+        ui_kit::choice_row_help(ui, t, i18n::tr("printing.anti_aliasing_z"), Some(help), "anti_aliasing_z", &mut z, &ANTI_ALIASING_Z_NAMES);
+    });
     if let Some(level) = ANTI_ALIASING.iter().find(|a| a.to_string() == z) {
         s.anti_aliasing_z = *level;
     }
-    rows(ui, t, c, SLICING_ROWS);
+    rows(ui, t, c, SLICING_ROWS, marks);
+}
+
+/// What the Slicing tab's rows show of a model's own settings: with `own`, each row leaves room
+/// on its right for a button back to the plate's value, and a row the model sets for itself is
+/// highlighted with that button shown. `cleared` collects the keys whose button was clicked.
+#[derive(Default)]
+pub(crate) struct Marks<'a> {
+    pub(crate) own: Option<&'a SlicingOverride>,
+    pub(crate) cleared: Vec<&'static str>,
+}
+
+impl Marks<'_> {
+    /// `add`'s row, for the settings `keys`.
+    fn row<R>(&mut self, ui: &mut egui::Ui, t: &Tokens, keys: &[&'static str], add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let Some(own) = self.own else { return add(ui) };
+        let set = keys.iter().any(|k| own.has(k));
+        // The highlight goes under the row, which is only measured once it is laid out.
+        let under = ui.painter().add(egui::Shape::Noop);
+        let laid = ui.horizontal(|ui| {
+            let width = (ui.available_width() - CONTROL_HEIGHT - SPACE_4).max(0.0);
+            let inner = ui.allocate_ui_with_layout(vec2(width, CONTROL_HEIGHT), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(width);
+                add(ui)
+            });
+            let (rect, response) = ui.allocate_exact_size(vec2(CONTROL_HEIGHT, CONTROL_HEIGHT), if set { Sense::click() } else { Sense::hover() });
+            if set {
+                if response.hovered() {
+                    ui.painter().rect_filled(rect, RADIUS_SM, t.hover);
+                }
+                crate::icons::paint(ui.painter(), rect.shrink(SPACE_6), "undo", t.dark, 1.0);
+            }
+            (inner.inner, set && response.on_hover_text(i18n::tr("printing.object.use_plate")).clicked())
+        });
+        let (inner, back) = laid.inner;
+        if set {
+            let rect = laid.response.rect.expand2(vec2(SPACE_4, SPACE_2));
+            let bar = Rect::from_min_size(rect.min, vec2(SPACE_3, rect.height()));
+            ui.painter().set(
+                under,
+                egui::Shape::Vec(vec![egui::Shape::rect_filled(rect, RADIUS_SM, t.selected_bg), egui::Shape::rect_filled(bar, RADIUS_SM, t.accent)]),
+            );
+        }
+        if back {
+            self.cleared.extend_from_slice(keys);
+        }
+        inner
+    }
 }
 
 #[cfg(test)]
@@ -526,7 +606,7 @@ mod tests {
 
     #[test]
     fn every_number_setting_is_on_exactly_one_tab() {
-        let all = [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS];
+        let all = [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS, RESIN_ROWS];
         let mut shown: Vec<(&str, &str)> = all.iter().flat_map(|rows| rows.iter().map(|r| (r.group, r.key))).collect();
         for p in [BOTTOM_MOTION, REGULAR_MOTION].into_iter().flatten() {
             for phase in [p.fast, p.slow] {
@@ -558,6 +638,18 @@ mod tests {
             assert!(matches!(retract.fast, Phase::Derived(_)));
             assert_eq!(retract.slow_max.map(|max| max(&m)), Some(lift));
         }
+    }
+
+    /// A model's own settings are the Slicing tab's, every one of them, and nothing else is.
+    #[test]
+    fn the_slicing_tab_shows_every_setting_a_model_may_have_of_its_own() {
+        let mut keys: Vec<&str> =
+            SLICING_ROWS.iter().map(|r| r.key).chain(["anti_aliasing", "exact", "anti_aliasing_z", "dither_z", "dither_xy"]).collect();
+        assert!(SLICING_ROWS.iter().all(|r| r.group == "slicing"));
+        keys.sort_unstable();
+        let mut own = resin_engine::slice::SLICING_KEYS.to_vec();
+        own.sort_unstable();
+        assert_eq!(keys, own);
     }
 
     #[test]
@@ -595,7 +687,7 @@ mod tests {
         {
             assert!(i18n::has(id), "{id}");
         }
-        for r in [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS].into_iter().flatten() {
+        for r in [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS, RESIN_ROWS].into_iter().flatten() {
             assert!(i18n::has(r.label) && r.help.is_none_or(i18n::has), "{}", r.label);
         }
         for p in [BOTTOM_MOTION, REGULAR_MOTION].into_iter().flatten() {

@@ -68,8 +68,10 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
             objects::handle(app, ui, &proj, &resp);
         }
         EditMode::Support => supports::handle(app, ui, &proj, &resp),
-        // Nothing is picked: the view only navigates.
-        EditMode::Slice => app.supports.clear(),
+        EditMode::Slice => {
+            app.supports.clear();
+            objects::handle(app, ui, &proj, &resp);
+        }
     }
     support_line::refresh(app);
     support_brace::refresh(app);
@@ -264,7 +266,7 @@ fn plate_outline(x: f64, y: f64, color: [f32; 4]) -> [Line; 4] {
     [0, 1, 2, 3].map(|i| Line { a: c[i], b: c[(i + 1) % 4], color })
 }
 
-/// Every model, the selected ones in their own colour while in Object mode; in Support mode,
+/// Every model, the selected ones in their own colour while in Object or Slice mode; in Support mode,
 /// with the faces that need supports tinted.
 fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
     let scene = &app.session.scene;
@@ -273,7 +275,7 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
         .models()
         .iter()
         .map(|m| {
-            let picked = app.mode == EditMode::Object && scene.selected_models.contains(&m.id);
+            let picked = app.mode != EditMode::Support && scene.selected_models.contains(&m.id);
             ModelDraw {
                 id: m.id,
                 mesh: Arc::clone(&m.mesh),

@@ -70,6 +70,37 @@ pub(crate) fn average(layers: &[Vec<Run>], pixels: u64) -> Vec<Run> {
     out
 }
 
+/// Two layers of the same pixels as one, each pixel the brighter of its two greys. Where one
+/// stops short, the other's pixels are kept as they are.
+pub(crate) fn brightest(a: &[Run], b: &[Run]) -> Vec<Run> {
+    let mut out = Vec::with_capacity(a.len().max(b.len()));
+    let (mut ia, mut ib) = (a.iter().copied(), b.iter().copied());
+    let (mut ra, mut rb) = (ia.next(), ib.next());
+    loop {
+        match (&mut ra, &mut rb) {
+            (Some(x), Some(y)) => {
+                let len = x.len.min(y.len);
+                push(&mut out, len, x.grey.max(y.grey));
+                x.len -= len;
+                y.len -= len;
+                if x.len == 0 {
+                    ra = ia.next();
+                }
+                if y.len == 0 {
+                    rb = ib.next();
+                }
+            }
+            // One has ended: the other's pixels as they are. Its iterator stays at its end.
+            (Some(r), None) | (None, Some(r)) => {
+                push(&mut out, r.len, r.grey);
+                (ra, rb) = (ia.next(), ib.next());
+            }
+            (None, None) => break,
+        }
+    }
+    out
+}
+
 /// `runs` with every grey looked up in `table`, neighbours of one grey merged.
 pub(crate) fn regrey(runs: &[Run], table: &[u8; 256]) -> Vec<Run> {
     let mut out = Vec::with_capacity(runs.len());
@@ -184,6 +215,16 @@ mod tests {
         assert_eq!((bright[0], bright[64], bright[255]), (0, 128, 255));
         let runs = [Run { len: 2, grey: 0 }, Run { len: 1, grey: 100 }, Run { len: 3, grey: 200 }, Run { len: 1, grey: 255 }];
         assert_eq!(regrey(&runs, &cut), [Run { len: 3, grey: 0 }, Run { len: 4, grey: 255 }]);
+    }
+
+    #[test]
+    fn the_brightest_grey_of_two_layers_wins() {
+        let a = [Run { len: 3, grey: 0 }, Run { len: 2, grey: 200 }, Run { len: 1, grey: 10 }];
+        let b = [Run { len: 1, grey: 50 }, Run { len: 3, grey: 0 }, Run { len: 2, grey: 255 }];
+        let both = brightest(&a, &b);
+        assert_eq!(both, [Run { len: 1, grey: 50 }, Run { len: 2, grey: 0 }, Run { len: 1, grey: 200 }, Run { len: 2, grey: 255 }]);
+        assert_eq!(brightest(&a, &[]), a);
+        assert_eq!(total(&brightest(&[Run { len: 2, grey: 9 }], &b)), 6, "the longer one's tail is kept");
     }
 
     #[test]

@@ -1,6 +1,8 @@
 //! The 2D layer view: the shown layer's image as the printer will expose it, grey as is, at the
 //! plate's aspect ratio inside its outline. The mouse mapping's pan and zoom move it (it has no
-//! orbit), F fits it, and the status bar reads the pixel under the pointer.
+//! orbit), F fits it, and the status bar reads the pixel under the pointer. A click selects the
+//! model seen there from above, alone (or none), as in the 3D view; the selected one is framed by
+//! its bounds.
 
 use std::sync::Arc;
 
@@ -10,7 +12,7 @@ use crate::gpu::{LayerFrame, LayerViewCallback};
 use crate::layer_image::LayerImage;
 use crate::layer_preview::{self, PixelProbe, View2d};
 use crate::theme::{Tokens, linear};
-use crate::{ResinApp, navigation};
+use crate::{ResinApp, navigation, objects, supports};
 
 /// The fitted image's share of the view.
 const FIT_MARGIN: f64 = 0.92;
@@ -48,6 +50,19 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, rect: Rect, resp: &egui::Resp
     }
     let v = *v;
     paint(ui, rect, &image, &v, dim, t);
+    frame_selection(app, ui, rect, &v, &image.plate, t);
+    if let Some((at, _)) = supports::picking_press(app, ui, resp) {
+        let mm = to_image(&v, rect, at);
+        let (x, y) = plate.to_plate(mm[0] / kx, mm[1] / ky);
+        let top = app.session.scene.bounds().max.z;
+        // Straight down from above everything: the model seen there from above.
+        let hit = top
+            .is_finite()
+            .then(|| app.session.scene.ray_hit(resin_engine::geom::Vec3::new(x, y, top + 1.0), resin_engine::geom::Vec3::new(0.0, 0.0, -1.0)))
+            .flatten()
+            .map(|(id, _)| id);
+        objects::pick_one(app, hit);
+    }
 
     if let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| rect.contains(*p) && resp.contains_pointer()) {
         let mm = to_image(&v, rect, p);
@@ -77,6 +92,17 @@ pub fn paint(ui: &egui::Ui, rect: Rect, image: &Arc<LayerImage>, v: &View2d, dim
     painter.add(egui_wgpu::Callback::new_paint_callback(rect, LayerViewCallback(frame)));
     let outline = Rect::from_two_pos(to_screen(v, rect, [0.0, 0.0]), to_screen(v, rect, [size.0, size.1]));
     painter.rect_stroke(outline, 0.0, Stroke::new(1.0, t.grid_major), egui::StrokeKind::Outside);
+}
+
+/// Each selected model's bounds, seen from above, on the image.
+fn frame_selection(app: &ResinApp, ui: &egui::Ui, rect: Rect, v: &View2d, plate: &crate::layer_image::PlateMap, t: &Tokens) {
+    let painter = ui.painter_at(rect);
+    let scene = &app.session.scene;
+    for m in scene.models().iter().filter(|m| scene.selected_models.contains(&m.id) && !m.bounds.is_empty()) {
+        let (a, b) = (plate.to_image_mm(m.bounds.min.x, m.bounds.min.y), plate.to_image_mm(m.bounds.max.x, m.bounds.max.y));
+        let frame = Rect::from_two_pos(to_screen(v, rect, a), to_screen(v, rect, b));
+        painter.rect_stroke(frame, 0.0, Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
+    }
 }
 
 /// The whole of `image` fitted in `rect`.

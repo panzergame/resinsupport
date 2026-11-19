@@ -292,6 +292,140 @@ impl Slicing {
     }
 }
 
+/// The [`Slicing`] settings one model may set for itself, in place of the plate's: every one of
+/// them, by key. A model's supports go with it.
+pub const SLICING_KEYS: [&str; 10] =
+    ["anti_aliasing", "anti_aliasing_z", "blur_passes", "blur_radius", "dither_floor", "dither_max_angle", "dither_xy", "dither_z", "exact", "gamma"];
+
+/// The [`Slicing`] settings a model sets for itself; `None` takes the plate's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SlicingOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anti_aliasing: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anti_aliasing_z: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gamma: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur_radius: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur_passes: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dither_z: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dither_xy: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dither_floor: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dither_max_angle: Option<f64>,
+}
+
+impl SlicingOverride {
+    /// `plate` with these settings in place of its own.
+    pub fn apply(&self, plate: &Slicing) -> Slicing {
+        Slicing {
+            anti_aliasing: self.anti_aliasing.unwrap_or(plate.anti_aliasing),
+            anti_aliasing_z: self.anti_aliasing_z.unwrap_or(plate.anti_aliasing_z),
+            exact: self.exact.unwrap_or(plate.exact),
+            gamma: self.gamma.unwrap_or(plate.gamma),
+            blur_radius: self.blur_radius.unwrap_or(plate.blur_radius),
+            blur_passes: self.blur_passes.unwrap_or(plate.blur_passes),
+            dither_z: self.dither_z.unwrap_or(plate.dither_z),
+            dither_xy: self.dither_xy.unwrap_or(plate.dither_xy),
+            dither_floor: self.dither_floor.unwrap_or(plate.dither_floor),
+            dither_max_angle: self.dither_max_angle.unwrap_or(plate.dither_max_angle),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == SlicingOverride::default()
+    }
+
+    /// Whether it sets `key`, one of [`SLICING_KEYS`].
+    pub fn has(&self, key: &str) -> bool {
+        match key {
+            "anti_aliasing" => self.anti_aliasing.is_some(),
+            "anti_aliasing_z" => self.anti_aliasing_z.is_some(),
+            "exact" => self.exact.is_some(),
+            "gamma" => self.gamma.is_some(),
+            "blur_radius" => self.blur_radius.is_some(),
+            "blur_passes" => self.blur_passes.is_some(),
+            "dither_z" => self.dither_z.is_some(),
+            "dither_xy" => self.dither_xy.is_some(),
+            "dither_floor" => self.dither_floor.is_some(),
+            "dither_max_angle" => self.dither_max_angle.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The keys it sets, in [`SLICING_KEYS`]' order.
+    pub fn keys(&self) -> impl Iterator<Item = &'static str> + '_ {
+        SLICING_KEYS.into_iter().filter(|k| self.has(k))
+    }
+
+    /// Set number `key` to `x` if [`Field::accepts`] it. Whether it was set.
+    pub fn set_number(&mut self, key: &str, x: f64) -> bool {
+        if !field("slicing", key).is_some_and(|f| f.accepts(x)) {
+            return false;
+        }
+        match key {
+            "anti_aliasing" => self.anti_aliasing = Some(x as u8),
+            "anti_aliasing_z" => self.anti_aliasing_z = Some(x as u8),
+            "gamma" => self.gamma = Some(x),
+            "blur_radius" => self.blur_radius = Some(x as u32),
+            "blur_passes" => self.blur_passes = Some(x as u8),
+            "dither_floor" => self.dither_floor = Some(x as u8),
+            "dither_max_angle" => self.dither_max_angle = Some(x),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Set switch `key` (`exact`, `dither_z`, `dither_xy`). Whether there is one.
+    pub fn set_switch(&mut self, key: &str, on: bool) -> bool {
+        match key {
+            "exact" => self.exact = Some(on),
+            "dither_z" => self.dither_z = Some(on),
+            "dither_xy" => self.dither_xy = Some(on),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Take the plate's `key` again. Whether there is one.
+    pub fn clear(&mut self, key: &str) -> bool {
+        match key {
+            "anti_aliasing" => self.anti_aliasing = None,
+            "anti_aliasing_z" => self.anti_aliasing_z = None,
+            "exact" => self.exact = None,
+            "gamma" => self.gamma = None,
+            "blur_radius" => self.blur_radius = None,
+            "blur_passes" => self.blur_passes = None,
+            "dither_z" => self.dither_z = None,
+            "dither_xy" => self.dither_xy = None,
+            "dither_floor" => self.dither_floor = None,
+            "dither_max_angle" => self.dither_max_angle = None,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Every number it sets in its [`FIELDS`] range: the error names the first that is not.
+    pub fn validate(&self) -> Result<(), String> {
+        // Over any plate: each number it sets replaces the plate's.
+        let s = PrintSettings { slicing: self.apply(&PrintSettings::default().slicing), ..PrintSettings::default() };
+        for f in FIELDS.iter().filter(|f| f.group == "slicing" && self.has(f.key)) {
+            if !s.number(f.group, f.key).is_some_and(|x| f.accepts(x)) {
+                return Err(f.describe());
+            }
+        }
+        Ok(())
+    }
+}
+
 fn one_px() -> u32 {
     1
 }
@@ -890,6 +1024,31 @@ mod tests {
         assert_eq!((t.lift_distance_slow, t.lift_distance_fast, t.retract_distance_slow), (5.0, 2.0, 4.0));
         assert_eq!((t.retract_speed_slow, t.retract_distance_fast()), (180.0, 3.0));
         assert_eq!(s.layer_motion(bottom + 1).travel, s.motion.regular());
+    }
+
+    #[test]
+    fn an_override_replaces_only_what_it_sets_and_keeps_to_the_ranges() {
+        let plate = PrintSettings::default().slicing;
+        let mut o = SlicingOverride::default();
+        assert!(o.is_empty() && o.apply(&plate) == plate);
+        assert!(o.set_number("blur_passes", 2.0) && o.set_switch("dither_xy", true));
+        assert!(!o.set_number("anti_aliasing", 3.0) && !o.set_number("gamma", f64::NAN) && !o.set_number("dither_xy", 1.0));
+        assert!(!o.set_switch("gamma", true) && !o.clear("height"));
+        let s = o.apply(&plate);
+        assert_eq!((s.blur_passes, s.dither_xy, s.gamma), (2, true, plate.gamma));
+        assert_eq!(o.keys().collect::<Vec<_>>(), ["blur_passes", "dither_xy"]);
+        assert_eq!(o.validate(), Ok(()));
+        assert_eq!(serde_json::to_value(o).unwrap(), serde_json::json!({ "blur_passes": 2, "dither_xy": true }));
+        o.blur_radius = Some(99);
+        assert!(o.validate().unwrap_err().contains("slicing.blur_radius"));
+        for k in SLICING_KEYS {
+            assert!(o.clear(k), "{k}");
+        }
+        assert!(o.is_empty());
+        // Every key is a slicing setting the plate has.
+        for k in SLICING_KEYS {
+            assert!(field("slicing", k).is_some() || o.set_switch(k, true), "{k}");
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use resin_geom::{Aabb3, Affine3, Item, Mesh, MeshIndex, Placement, RayHit, Rect, Vec3};
 use resin_io::{Project, ProjectBrace, ProjectModel, ProjectSupport};
 use resin_render::Camera;
+use resin_slice::SlicingOverride;
 use serde_json::Value;
 
 use crate::{Brace, BraceParams, CommandSpec, EngineError, PrintConfig, Result, SupportPreset, SupportSettings, cmd};
@@ -43,6 +44,8 @@ pub struct Model {
     /// Its lowest point is kept at [`Scene::lift_height`]: placing it any way but moving it up or
     /// down puts it back there.
     pub lifted: bool,
+    /// The slicing settings it and its supports take in place of the plate's.
+    pub slicing: SlicingOverride,
 }
 
 impl Model {
@@ -232,8 +235,30 @@ impl Scene {
             transform: Affine3::IDENTITY,
             bounds,
             lifted: false,
+            slicing: SlicingOverride::default(),
         });
         self.next_id
+    }
+    /// Give each listed model its slicing settings. All or nothing: an unknown model or a
+    /// setting out of its range changes nothing.
+    pub(crate) fn set_slicing(&mut self, edits: &[(u64, SlicingOverride)]) -> Result<()> {
+        for (id, o) in edits {
+            if self.model(*id).is_none() {
+                return Err(EngineError::BadParams(format!("no model {id}")));
+            }
+            o.validate().map_err(|e| EngineError::BadParams(format!("model {id}: {e}")))?;
+        }
+        // Setting what is already there must not bump: it would make an empty undo step.
+        if edits.iter().all(|(id, o)| self.model(*id).is_some_and(|m| m.slicing == *o)) {
+            return Ok(());
+        }
+        self.revision += 1;
+        for (id, o) in edits {
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == *id) {
+                m.slicing = *o;
+            }
+        }
+        Ok(())
     }
     /// Give each listed model its placement and, when given, whether it is lifted (`None` keeps
     /// what it is), carrying its supports along. A lifted model's Z is then moved to the lift
@@ -511,7 +536,7 @@ impl Scene {
         let braces = &self.braces;
         self.selected_braces.retain(|id| braces.iter().any(|b| b.id == *id));
     }
-    /// What a project file keeps: each model's mesh, name and placement, each support's tip and
+    /// What a project file keeps: each model's mesh, name, placement and slicing settings, each support's tip and
     /// normal on its model and placed corners, and the braces. Not the lift (a model setting), ids
     /// or the selection.
     pub fn project(&self) -> Project {
@@ -520,7 +545,8 @@ impl Scene {
     /// [`Scene::project`] for the models `keep` takes, and their supports.
     pub(crate) fn project_of(&self, keep: impl Fn(u64) -> bool) -> Project {
         let kept: Vec<&Model> = self.models.iter().filter(|m| keep(m.id)).collect();
-        let models = kept.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement }).collect();
+        let models =
+            kept.iter().map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement, slicing: m.slicing }).collect();
         // A branch goes with the support it joins: a parent always comes before its branches, so
         // it is already kept, or left out, by the time they come.
         let mut kept_supports: Vec<u64> = Vec::new();
@@ -574,6 +600,7 @@ impl Scene {
     pub(crate) fn append(&mut self, p: Project) -> Result<Vec<u64>> {
         let mut ids = Vec::with_capacity(p.models.len());
         for pm in p.models {
+            pm.slicing.validate().map_err(|e| EngineError::Failed(format!("model {}: {e}", pm.name)))?;
             let id = self.add_shared(pm.name, pm.mesh);
             let m = self.model(id).ok_or_else(|| EngineError::Internal(format!("model {id} went missing")))?;
             let (placement, transform, bounds) = m.placed(pm.placement, None)?;
@@ -581,6 +608,7 @@ impl Scene {
                 m.placement = placement;
                 m.transform = transform;
                 m.bounds = bounds;
+                m.slicing = pm.slicing;
             }
             ids.push(id);
         }

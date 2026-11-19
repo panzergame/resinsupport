@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use crate::raster::{self, Segment, Segments1D};
-use crate::{JobStats, Layer, PrintSettings, PrinterProfile, SlicedJob, Stamp, validate};
+use crate::{JobStats, Layer, PrintSettings, PrinterProfile, Run, SlicedJob, Slicing, Stamp, validate};
 
 /// What a solid is, for the statistics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +24,9 @@ pub enum SolidKind {
 pub struct Solid {
     pub kind: SolidKind,
     pub triangles: Vec<[[f32; 3]; 3]>,
+    /// Its own slicing settings, in place of the job's: a model set to slice otherwise, and its
+    /// supports. Each set of settings is sliced apart, then the brightest grey of any is kept.
+    pub slicing: Option<Slicing>,
 }
 
 /// Everything a slice needs: plain data, so it can go to another thread.
@@ -158,40 +161,40 @@ pub fn slice_with(
 ) -> Result<SlicedJob, SliceError> {
     let (profile, settings) = (&input.profile, &input.settings);
     validate(profile, settings).map_err(SliceError::BadInput)?;
-    let exact = settings.slicing.exact;
-    let aa = if exact { 1 } else { u32::from(settings.slicing.anti_aliasing.max(1)) };
-    let planes = settings.slicing.anti_aliasing_z.max(1);
-    let (radius, passes) = (settings.slicing.blur_radius, settings.slicing.blur_passes);
-    let gamma = (settings.slicing.gamma != 1.0).then(|| raster::gamma_table(settings.slicing.gamma));
-    let s = &settings.slicing;
-    let dither = (s.dither_z || s.dither_xy).then(|| raster::Dither {
-        z: s.dither_z,
-        xy: s.dither_xy,
-        floor: raster::coverage_floor(gamma.as_ref(), s.dither_floor_grey()),
-    });
     let res = (profile.resolution_x, profile.resolution_y);
-    let place = Placement::new(profile, aa);
     let h = settings.layers.height;
-    let (px, py) = profile.pixel_pitch();
-    let steep_grey = dither.and_then(|_| raster::steep_grey(s.dither_max_angle, h, planes, (px + py) / 2.0));
+    let pixels = u64::from(res.0) * u64::from(res.1);
 
     let mut clipped = 0;
-    let mut top = 0.0f64;
-    let mut solids = Vec::with_capacity(input.solids.len());
+    // The plate's settings first, so a job without a model of its own slices as one group.
+    let mut groups = vec![Group::new(profile, settings, settings.slicing)];
     for s in &input.solids {
-        let (placed, outside, high) = place.solid(&s.triangles, profile.build_height);
+        let slicing = s.slicing.unwrap_or(settings.slicing);
+        let at = match groups.iter().position(|g| g.slicing == slicing) {
+            Some(at) => at,
+            None => {
+                validate(profile, &PrintSettings { slicing, ..*settings }).map_err(SliceError::BadInput)?;
+                groups.push(Group::new(profile, settings, slicing));
+                groups.len() - 1
+            }
+        };
+        let Some(g) = groups.get_mut(at) else { continue };
+        let (placed, outside, high) = g.place.solid(&s.triangles, profile.build_height);
         clipped += u32::from(outside);
-        top = top.max(high);
+        g.top = g.top.max(high);
         if !placed.0.is_empty() {
-            solids.push(Segments1D::new(placed.0, placed.1));
+            g.solids.push(Segments1D::new(placed.0, placed.1));
         }
     }
-    // Layer `i`'s plane `j` of `n` samples `(i + (j + 0.5) / n) · h`: a layer exists while its
-    // lowest plane is under the top.
     let fit = (profile.build_height / h + 1e-6).floor();
-    let lowest = 0.5 / f64::from(planes);
-    let count = (top.min(profile.build_height) / h - lowest - 1e-9).ceil().clamp(0.0, fit) as usize;
-    let pixels = u64::from(res.0) * u64::from(res.1);
+    for g in &mut groups {
+        // Layer `i`'s plane `j` of `n` samples `(i + (j + 0.5) / n) · h`: a layer exists while
+        // its lowest plane is under the top.
+        let lowest = 0.5 / f64::from(g.planes);
+        g.count = (g.top.min(profile.build_height) / h - lowest - 1e-9).ceil().clamp(0.0, fit) as usize;
+    }
+    groups.retain(|g| g.count > 0);
+    let count = groups.iter().map(|g| g.count).max().unwrap_or(0);
 
     progress.reset_layers(count);
     progress.begin(count);
@@ -199,38 +202,21 @@ pub fn slice_with(
     let next = AtomicUsize::new(0);
     let claim = |i: usize| claimed.get(i).is_some_and(|c| !c.swap(true, Ordering::Relaxed));
     let layer = |i: usize| {
-        if cancel.is_cancelled() {
-            return;
-        }
-        let mut segments: Vec<Segment> = Vec::new();
-        let mut cuts = Vec::with_capacity(usize::from(planes));
+        let mut runs: Option<Vec<Run>> = None;
         let mut open = 0;
-        for j in 0..planes {
-            if cancel.is_cancelled() {
-                return;
-            }
-            let z = ((i as f64 + (f64::from(j) + 0.5) / f64::from(planes)) * h) as f32;
-            segments.clear();
-            for s in &solids {
-                s.intersect_plane(z, &mut segments);
-            }
-            let (runs, o) = if exact { raster::exact_layer(res, &segments, cancel) } else { raster::layer(aa, res, &segments, cancel) };
+        // Each group through its own settings, then the brightest grey of any: where solids of
+        // two groups meet, the one that lights a pixel more wins it.
+        for g in groups.iter().filter(|g| i < g.count) {
+            let Some((r, o)) = g.layer(i, h, res, pixels, cancel) else { return };
             open = open.max(o);
-            cuts.push(runs);
+            runs = Some(match runs {
+                Some(before) => raster::brightest(&before, &r),
+                None => r,
+            });
         }
-        let steep = steep_grey.map(|t| {
-            let mask = raster::steep(&cuts, pixels, t);
-            if passes > 0 { raster::dilate(&mask, res, u64::from(radius) * u64::from(passes), cancel) } else { mask }
-        });
-        let mut runs = if cuts.len() == 1 { cuts.pop().unwrap_or_default() } else { raster::average(&cuts, pixels) };
-        if passes > 0 {
-            runs = raster::blur(&runs, res, radius, passes, cancel);
-        }
-        if let Some(d) = dither {
-            runs = raster::dither(&runs, res.0, i as u32, d, steep.as_deref(), cancel);
-        }
-        if let Some(table) = &gamma {
-            runs = raster::regrey(&runs, table);
+        let mut runs = runs.unwrap_or_default();
+        if runs.is_empty() {
+            raster::push(&mut runs, pixels, 0);
         }
         let grey: u64 = runs.iter().map(|r| r.len * u64::from(r.grey)).sum();
         let motion = settings.layer_motion(i as u32);
@@ -278,6 +264,94 @@ pub fn slice_with(
         return Err(SliceError::Incomplete);
     }
     Ok(SlicedJob { layers, profile: profile.clone(), settings: *settings, stats, stamp: input.stamp })
+}
+
+/// The solids sliced with one set of [`Slicing`] settings, and those settings worked out.
+struct Group {
+    slicing: Slicing,
+    exact: bool,
+    /// Sub-samples per pixel side.
+    aa: u32,
+    planes: u8,
+    radius: u32,
+    passes: u8,
+    gamma: Option<[u8; 256]>,
+    dither: Option<raster::Dither>,
+    steep_grey: Option<f64>,
+    place: Placement,
+    solids: Vec<Segments1D>,
+    /// mm.
+    top: f64,
+    /// Layers the group reaches.
+    count: usize,
+}
+
+impl Group {
+    fn new(profile: &PrinterProfile, settings: &PrintSettings, s: Slicing) -> Group {
+        let exact = s.exact;
+        let aa = if exact { 1 } else { u32::from(s.anti_aliasing.max(1)) };
+        let planes = s.anti_aliasing_z.max(1);
+        let gamma = (s.gamma != 1.0).then(|| raster::gamma_table(s.gamma));
+        let dither = (s.dither_z || s.dither_xy).then(|| raster::Dither {
+            z: s.dither_z,
+            xy: s.dither_xy,
+            floor: raster::coverage_floor(gamma.as_ref(), s.dither_floor_grey()),
+        });
+        let (px, py) = profile.pixel_pitch();
+        let steep_grey = dither.and_then(|_| raster::steep_grey(s.dither_max_angle, settings.layers.height, planes, (px + py) / 2.0));
+        Group {
+            slicing: s,
+            exact,
+            aa,
+            planes,
+            radius: s.blur_radius,
+            passes: s.blur_passes,
+            gamma,
+            dither,
+            steep_grey,
+            place: Placement::new(profile, aa),
+            solids: Vec::new(),
+            top: 0.0,
+            count: 0,
+        }
+    }
+
+    /// Layer `i` of this group's solids, `h` mm high, on a screen of `res` (`pixels`) pixels: its
+    /// runs and how many rows did not close. Nothing once cancelled.
+    fn layer(&self, i: usize, h: f64, res: (u32, u32), pixels: u64, cancel: &Cancel) -> Option<(Vec<Run>, u64)> {
+        let mut segments: Vec<Segment> = Vec::new();
+        let mut cuts = Vec::with_capacity(usize::from(self.planes));
+        let mut open = 0;
+        for j in 0..self.planes {
+            if cancel.is_cancelled() {
+                return None;
+            }
+            let z = ((i as f64 + (f64::from(j) + 0.5) / f64::from(self.planes)) * h) as f32;
+            segments.clear();
+            for s in &self.solids {
+                s.intersect_plane(z, &mut segments);
+            }
+            let (runs, o) = if self.exact { raster::exact_layer(res, &segments, cancel) } else { raster::layer(self.aa, res, &segments, cancel) };
+            open = open.max(o);
+            cuts.push(runs);
+        }
+        let (radius, passes) = (self.radius, self.passes);
+        let steep = self.steep_grey.map(|t| {
+            let mask = raster::steep(&cuts, pixels, t);
+            if passes > 0 { raster::dilate(&mask, res, u64::from(radius) * u64::from(passes), cancel) } else { mask }
+        });
+        let mut runs = if cuts.len() == 1 { cuts.pop().unwrap_or_default() } else { raster::average(&cuts, pixels) };
+        if passes > 0 {
+            runs = raster::blur(&runs, res, radius, passes, cancel);
+        }
+        if let Some(d) = self.dither {
+            runs = raster::dither(&runs, res.0, i as u32, d, steep.as_deref(), cancel);
+        }
+        if let Some(table) = &self.gamma {
+            runs = raster::regrey(&runs, table);
+        }
+        (!cancel.is_cancelled()).then_some((runs, open))
+    }
 }
 
 /// From scene millimetres to (anti-aliased) pixels: the plate's centre is the image's, row 0 its
@@ -343,7 +417,7 @@ mod tests {
 
     fn input(solids: Vec<Vec<[[f32; 3]; 3]>>) -> SliceInput {
         SliceInput {
-            solids: solids.into_iter().map(|triangles| Solid { kind: SolidKind::Model, triangles }).collect(),
+            solids: solids.into_iter().map(|triangles| Solid { kind: SolidKind::Model, triangles, slicing: None }).collect(),
             profile: PrinterProfile::default(),
             settings: PrintSettings::default(),
             stamp: Stamp::default(),
@@ -668,6 +742,49 @@ mod tests {
         // A runner that skips layers is caught.
         let r = slice_with(&i, &Progress::default(), &Cancel::default(), &|_, _| {});
         assert_eq!(r, Err(SliceError::Incomplete));
+    }
+
+    #[test]
+    fn a_solid_with_its_own_settings_slices_with_them_and_the_others_with_the_jobs() {
+        let (left, right) = (cuboid([-15.0, -5.0, 0.0], [-5.0, 5.0, 2.0]), cuboid([5.0, -5.0, 0.0], [15.0, 5.0, 2.0]));
+        let plain = input(vec![left.clone(), right.clone()]);
+        let mut blurred_all = plain.clone();
+        blurred_all.settings.slicing.blur_passes = 2;
+        let mut blurred_right = plain.clone();
+        blurred_right.solids[1].slicing = Some(blurred_all.settings.slicing);
+        let width = u64::from(plain.profile.resolution_x);
+        // Each layer's left half from one job and right half from another.
+        let halves = |job: &SlicedJob, right: bool| -> Vec<Vec<u8>> {
+            job.layers
+                .iter()
+                .map(|l| {
+                    let mut bitmap = Vec::new();
+                    l.decode_into(job.profile.resolution_x, job.profile.resolution_y, &mut bitmap);
+                    bitmap.iter().enumerate().filter(|(p, _)| (*p as u64 % width >= width / 2) == right).map(|(_, &g)| g).collect()
+                })
+                .collect()
+        };
+        let (plain, blurred_all, mixed) = (run(&plain), run(&blurred_all), run(&blurred_right));
+        assert_eq!(mixed.layers.len(), plain.layers.len());
+        assert_eq!(halves(&mixed, false), halves(&plain, false), "the left cube keeps the job's settings");
+        assert_eq!(halves(&mixed, true), halves(&blurred_all, true), "the right one is blurred");
+        assert_ne!(halves(&mixed, true), halves(&plain, true));
+        assert_eq!(mixed.settings, plain.settings, "the job keeps the plate's");
+
+        // Its own settings the same as the job's: one group, the same job.
+        let mut same = input(vec![left.clone(), right.clone()]);
+        same.solids[1].slicing = Some(same.settings.slicing);
+        assert_eq!(run(&same).layers, plain.layers);
+
+        // A taller solid with more Z cuts: the layers reach its top; a bad setting is refused.
+        let mut tall = input(vec![left, cuboid([5.0, -5.0, 0.0], [15.0, 5.0, 3.0])]);
+        let mut z = tall.settings.slicing;
+        z.anti_aliasing_z = 4;
+        tall.solids[1].slicing = Some(z);
+        assert_eq!(run(&tall).layers.len(), 60);
+        z.anti_aliasing_z = 3;
+        tall.solids[1].slicing = Some(z);
+        assert!(matches!(slice(&tall, &Progress::default(), &Cancel::default()), Err(SliceError::BadInput(_))));
     }
 
     #[test]

@@ -66,6 +66,14 @@ impl PlateMap {
         }
         (x, y)
     }
+
+    /// The plate's point `(x, y)`, mm, in image millimetres from the image's top left corner,
+    /// Y down: [`PlateMap::to_plate`] the other way, in millimetres rather than pixels.
+    pub fn to_image_mm(&self, x: f64, y: f64) -> [f64; 2] {
+        let x = if self.mirror_x { -x } else { x };
+        let y = if self.mirror_y { -y } else { y };
+        [x + self.display_x / 2.0, self.display_y / 2.0 - y]
+    }
 }
 
 pub struct LayerImage {
@@ -151,6 +159,19 @@ fn mips(pixels: &[u8], stride: u32, rect: TileRect) -> Vec<(u32, u32, Vec<u8>)> 
 mod tests {
     use super::*;
     use resin_engine::slice::Run;
+
+    #[test]
+    fn plate_and_image_millimetres_map_both_ways_under_the_mirrors() {
+        for (mirror_x, mirror_y) in [(false, false), (true, false), (false, true), (true, true)] {
+            let p = PlateMap { width: 200, height: 100, display_x: 20.0, display_y: 10.0, mirror_x, mirror_y };
+            let (kx, ky) = p.pitch();
+            let [mx, my] = p.to_image_mm(3.0, -2.0);
+            let (x, y) = p.to_plate(mx / kx, my / ky);
+            assert!((x - 3.0).abs() < 1e-9 && (y + 2.0).abs() < 1e-9, "{mirror_x} {mirror_y}: {x} {y}");
+        }
+        let p = PlateMap { width: 200, height: 100, display_x: 20.0, display_y: 10.0, mirror_x: false, mirror_y: false };
+        assert_eq!(p.to_image_mm(-10.0, 5.0), [0.0, 0.0], "the plate's −X, +Y corner is the image's top left");
+    }
 
     #[test]
     fn a_wide_layer_splits_into_columns_that_join() {

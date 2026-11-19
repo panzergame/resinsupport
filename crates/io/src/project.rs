@@ -5,8 +5,8 @@
 //!
 //! A project is a ZIP with nothing in front of it:
 //! - `container.json`: `{"format": "resinsupport-container/1"}`, the package layout;
-//! - `document.json`: `{"format": "resinsupport/2", "models": […], "supports": […], "braces": […]}`,
-//!   Deflated (`resinsupport/1`, read too, has no braces);
+//! - `document.json`: `{"format": "resinsupport/3", "models": […], "supports": […], "braces": […]}`,
+//!   Deflated (`resinsupport/1` and `/2`, read too, have no braces and no model slicing settings);
 //! - `blobs/<lowercase SHA-256>.mesh`: each distinct mesh once, stored, hashed over its bytes.
 //!
 //! A mesh blob is `RSMESH01`, a little-endian `u64` triangle count, then nine little-endian `f32`
@@ -25,6 +25,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use resin_geom::{Mesh, Placement, Vec3};
+use resin_slice::SlicingOverride;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -35,7 +36,7 @@ use crate::stl::MAX_TRIANGLES;
 pub const EXTENSION: &str = "rsup";
 const CONTAINER_FORMAT: &str = "resinsupport-container/1";
 const FORMAT_NAME: &str = "resinsupport/";
-const FORMAT_VERSION: u64 = 2;
+const FORMAT_VERSION: u64 = 3;
 const MESH_MAGIC: &[u8; 8] = b"RSMESH01";
 const MESH_HEADER: usize = 16;
 const TRIANGLE_BYTES: usize = 36;
@@ -61,6 +62,8 @@ pub struct ProjectModel {
     pub mesh: Arc<Mesh>,
     /// Measured from the mesh as imported.
     pub placement: Placement,
+    /// The slicing settings it takes in place of the plate's.
+    pub slicing: SlicingOverride,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -133,6 +136,8 @@ struct ModelEntry {
     name: String,
     placement: Placement,
     mesh_blob: String,
+    #[serde(default, skip_serializing_if = "SlicingOverride::is_empty")]
+    slicing: SlicingOverride,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -255,6 +260,7 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
         if !m.placement.is_finite() {
             return Err(invalid(format!("model {} has a non-finite placement", m.name)));
         }
+        m.slicing.validate().map_err(|e| invalid(format!("model {}: {e}", m.name)))?;
         let key = Arc::as_ptr(&m.mesh);
         let blob = match written.iter().find(|(k, _)| *k == key) {
             Some((_, name)) => name.clone(),
@@ -264,7 +270,7 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
                 name
             }
         };
-        models.push(ModelEntry { name: m.name.clone(), placement: m.placement, mesh_blob: blob });
+        models.push(ModelEntry { name: m.name.clone(), placement: m.placement, mesh_blob: blob, slicing: m.slicing });
     }
     let mut supports = Vec::with_capacity(project.supports.len());
     for (i, s) in project.supports.iter().enumerate() {
@@ -423,7 +429,8 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, IoError> {
                 mesh
             }
         };
-        models.push(ProjectModel { name: m.name, mesh, placement: m.placement });
+        m.slicing.validate().map_err(|e| invalid(format!("model {}: {e}", m.name)))?;
+        models.push(ProjectModel { name: m.name, mesh, placement: m.placement, slicing: m.slicing });
     }
     let supports: Vec<ProjectSupport> = document
         .supports
@@ -470,8 +477,18 @@ mod tests {
         moved.scale = Vec3::new(1.5, 1.0, 0.1);
         Project {
             models: vec![
-                ProjectModel { name: "cube".into(), mesh: mesh.clone(), placement: Placement::at(Vec3::new(5.0, 5.0, 5.0)) },
-                ProjectModel { name: "copy é".into(), mesh, placement: moved },
+                ProjectModel {
+                    name: "cube".into(),
+                    mesh: mesh.clone(),
+                    placement: Placement::at(Vec3::new(5.0, 5.0, 5.0)),
+                    slicing: SlicingOverride::default(),
+                },
+                ProjectModel {
+                    name: "copy é".into(),
+                    mesh,
+                    placement: moved,
+                    slicing: SlicingOverride { blur_passes: Some(2), dither_xy: Some(true), gamma: Some(0.5), ..SlicingOverride::default() },
+                },
             ],
             supports: vec![
                 ProjectSupport { model: 0, tip: Vec3::new(5.0, 5.0, 0.0), normal: Vec3::new(0.0, 0.0, -1.0), corners: None, parent: None },
@@ -553,7 +570,7 @@ mod tests {
     #[test]
     fn newer_formats_are_refused_with_a_reason() {
         let mut d = document();
-        d["format"] = "resinsupport/3".into();
+        d["format"] = "resinsupport/4".into();
         assert!(refused(&with_document(&d)).contains("newer"));
         let bytes = write_project(&sample()).unwrap();
         let mut list: Vec<(String, Vec<u8>)> = parts(&bytes).into_iter().filter(|(n, _)| n != "container.json").collect();
@@ -572,6 +589,15 @@ mod tests {
 
     #[test]
     fn hostile_documents_are_refused() {
+        let mut d = document();
+        d["models"][1]["slicing"]["anti_aliasing"] = 3.into();
+        assert!(refused(&with_document(&d)).contains("slicing.anti_aliasing"));
+        let mut d = document();
+        d["models"][1]["slicing"]["blur_passes"] = 300.into();
+        refused(&with_document(&d));
+        let mut d = document();
+        d["models"][1]["slicing"]["thickness"] = 1.into();
+        refused(&with_document(&d));
         let mut d = document();
         d["supports"][0]["model"] = 7.into();
         refused(&with_document(&d));
