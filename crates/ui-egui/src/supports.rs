@@ -641,7 +641,7 @@ mod tests {
             }
         };
         let tip_drawn = |app: &mut ResinApp| {
-            let mesh = app.routes.mesh(&app.session.scene, &preset, true, app.supports.moving);
+            let mesh = app.routes.mesh(&app.session.scene, &preset, crate::support_routes::Selection::Supports, app.supports.moving);
             let contact = Vec3::from(mesh.vertices.iter().map(|v| v.pos).fold([0.0f32; 3], |a, p| if p[2] > a[2] { p } else { a }));
             (contact.z - 10.0).abs() < 1.0
         };

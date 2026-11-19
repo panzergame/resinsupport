@@ -4,12 +4,13 @@
 // drag and the model and support tests are ours.
 //! Box selection, in Object and Support edition: a plain left drag from empty space draws a box.
 //! Dragged rightwards it takes what lies wholly inside (window), leftwards what it touches
-//! (crossing). Shift adds to the selection, else the box replaces it. Through `model.select`
-//! and `support.select`.
+//! (crossing). Shift adds to the selection, else the box replaces it. In Object edition a model
+//! and its supports are one object: wholly inside means the supports too, touching one touches the
+//! model. Through `model.select` and `support.select`.
 
 use egui::{Pos2, Rect, Shape, Stroke};
-use resin_engine::Model;
 use resin_engine::geom::Vec3;
+use resin_engine::{Model, Support};
 use serde_json::json;
 
 use crate::navigation::Proj;
@@ -113,31 +114,36 @@ pub fn apply(app: &mut ResinApp, proj: &Proj, bx: BoxSel, add: bool) {
     let mode = if add { "add" } else { "replace" };
     match app.mode {
         EditMode::Object => {
-            let ids: Vec<u64> = app.session.scene.models().iter().filter(|m| takes_model(&bx, proj, m)).map(|m| m.id).collect();
+            let scene = &app.session.scene;
+            let ids: Vec<u64> = scene
+                .models()
+                .iter()
+                .filter(|m| {
+                    let mut supports = scene.supports().iter().filter(|s| s.model == m.id).map(|s| takes_support(app, &bx, proj, s));
+                    if bx.crossing { supports.any(|t| t) || takes_model(&bx, proj, m) } else { supports.all(|t| t) && takes_model(&bx, proj, m) }
+                })
+                .map(|m| m.id)
+                .collect();
             app.run("model.select", json!({ "ids": ids, "mode": mode }));
         }
         EditMode::Support => {
-            let ids: Vec<u64> = app
-                .session
-                .scene
-                .supports()
-                .iter()
-                .filter(|s| {
-                    // The tip and the body down to the foot; the contact alone until the route is in.
-                    let mut pts = vec![s.tip];
-                    if let Some(r) = app.routes.route(s.id) {
-                        pts.push(r.head);
-                        pts.extend(r.body.iter().skip(1));
-                    }
-                    let screen: Option<Vec<Pos2>> = pts.iter().map(|p| proj.to_screen(*p)).collect();
-                    screen.is_some_and(|s| bx.takes(&s))
-                })
-                .map(|s| s.id)
-                .collect();
+            let ids: Vec<u64> = app.session.scene.supports().iter().filter(|s| takes_support(app, &bx, proj, s)).map(|s| s.id).collect();
             app.run("support.select", json!({ "ids": ids, "mode": mode }));
         }
         EditMode::Slice => {}
     }
+}
+
+/// Is support `s` wholly inside the box (window), or touched by it (crossing)? Its tip and its
+/// body down to the foot; the contact alone until the route is in.
+fn takes_support(app: &ResinApp, bx: &BoxSel, proj: &Proj, s: &Support) -> bool {
+    let mut pts = vec![s.tip];
+    if let Some(r) = app.routes.route(s.id) {
+        pts.push(r.head);
+        pts.extend(r.body.iter().skip(1));
+    }
+    let screen: Option<Vec<Pos2>> = pts.iter().map(|p| proj.to_screen(*p)).collect();
+    screen.is_some_and(|s| bx.takes(&s))
 }
 
 /// Is model `m` wholly inside the box (window), or touched by it (crossing)? Its bounds' corners
@@ -254,6 +260,22 @@ mod tests {
         assert_eq!(app.session.scene.selected.iter().copied().collect::<Vec<_>>(), vec![tip]);
         apply(&mut app, &proj, BoxSel::from_drag(pos2(lo2.x, hi2.y), pos2(hi2.x, lo2.y)), false);
         assert!(app.session.scene.selected.is_empty());
+
+        // From the front, in Object edition, the first model and its support are one object.
+        app.mode = EditMode::Object;
+        app.run("view.standard", json!({ "view": "front" })).unwrap();
+        app.run("view.fit", json!({ "aspect": 800.0 / 600.0 })).unwrap();
+        let proj = Proj { cam: app.session.camera, rect };
+        let s = |p: [f64; 3]| proj.to_screen(Vec3::new(p[0], p[1], p[2])).unwrap();
+        let z = app.session.scene.model(a).unwrap().bounds.min.z;
+        // Around the model alone, rightwards: its support hangs out of the box, neither.
+        let (lo, hi) = (s([-1.0, 0.0, z - 0.5]), s([11.0, 0.0, z + 0.5]));
+        apply(&mut app, &proj, BoxSel::from_drag(pos2(lo.x, hi.y), pos2(hi.x, lo.y)), false);
+        assert_eq!(selected(&app), Vec::<u64>::new());
+        // Over the support alone, leftwards: its model.
+        let (lo, hi) = (s([1.0, 0.0, 1.0]), s([3.0, 0.0, z - 1.0]));
+        apply(&mut app, &proj, BoxSel::from_drag(pos2(hi.x, lo.y), pos2(lo.x, hi.y)), false);
+        assert_eq!(selected(&app), vec![a]);
     }
 
     /// A press on empty space and a drag select on the release; a press that navigates draws no box.

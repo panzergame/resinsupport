@@ -9,7 +9,7 @@ use resin_engine::geom::Vec3;
 use resin_engine::render::{Line, Overlay, StandardView};
 
 use crate::gpu::{Cap, Clip, Lens, ModelDraw, Sphere, ViewFrame, ViewportCallback};
-use crate::support_routes::SupportMesh;
+use crate::support_routes::{Selection, SupportMesh};
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
 use crate::{
@@ -127,7 +127,8 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     if app.routes.update(&app.session.scene, &preset) || app.routes.raft_pending() {
         ctx.request_repaint();
     }
-    let support_mesh = app.routes.mesh(&app.session.scene, &preset, app.mode != EditMode::Slice, app.supports.moving);
+    let selection = if app.mode == EditMode::Support { Selection::Supports } else { Selection::Models };
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset, selection, app.supports.moving);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, tokens);
     let joints = joint_spheres(&support_mesh, &colors, supports::body_alpha(app));
@@ -189,7 +190,7 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
     let preset = *app.session.support_settings().current();
     app.routes.update(&app.session.scene, &preset);
     app.routes.wait_raft();
-    let support_mesh = app.routes.mesh(&app.session.scene, &preset, false, None);
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset, Selection::None, None);
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let joints = joint_spheres(&support_mesh, &colors, 1.0);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);

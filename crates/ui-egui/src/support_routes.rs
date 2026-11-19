@@ -118,7 +118,29 @@ pub enum Piece {
 
 /// The preset is part of it: a base or a raft setting changes the solids and no route. So is
 /// the raft drawn, which arrives later.
-type MeshKey = (u64, u64, SupportPreset, bool, BTreeSet<u64>, BTreeSet<(u64, SupportPart)>, BTreeSet<u64>, Option<u64>);
+type MeshKey = (u64, u64, SupportPreset, Lit, Option<u64>);
+
+/// Which supports and braces a mesh draws in the selected look.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Lit {
+    /// Supports whose tip alone is lit: a body may be shared with other tips.
+    tips: BTreeSet<u64>,
+    /// Supports lit whole: tip, body and base.
+    wholes: BTreeSet<u64>,
+    parts: BTreeSet<(u64, SupportPart)>,
+    braces: BTreeSet<u64>,
+}
+
+/// What the support mesh shows as selected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selection {
+    None,
+    /// The support selection: Support edition.
+    Supports,
+    /// The selected models' supports, and the braces they hold: a model and its supports are one
+    /// object in Object and Slice edition.
+    Models,
+}
 
 /// What the raft is built from: its settings, the bases' diameter and the feet, as bits; and the
 /// labels with their models' feet.
@@ -335,34 +357,48 @@ impl RouteCache {
         self.changed
     }
 
-    /// The solids of every routed support, the selected ones in their look when `selection`, and
+    /// The solids of every routed support, those `selection` takes in the selected look, and
     /// support `hidden`'s tip left out, rebuilt only when a route, the selection or `hidden`
     /// changed.
-    pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: bool, hidden: Option<u64>) -> Arc<SupportMesh> {
-        let none = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-        let (selected, parts, braces) =
-            if selection { (&scene.selected, &scene.selected_parts, &scene.selected_braces) } else { (&none.0, &none.1, &none.2) };
-        let key = (self.changed, self.rafts, *preset, selection, selected.clone(), parts.clone(), braces.clone(), hidden);
+    pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: Selection, hidden: Option<u64>) -> Arc<SupportMesh> {
+        let lit = match selection {
+            Selection::None => Lit::default(),
+            Selection::Supports => {
+                Lit { tips: scene.selected.clone(), parts: scene.selected_parts.clone(), braces: scene.selected_braces.clone(), ..Lit::default() }
+            }
+            Selection::Models => {
+                let wholes: BTreeSet<u64> = scene.supports().iter().filter(|s| scene.selected_models.contains(&s.model)).map(|s| s.id).collect();
+                let braces = scene.braces().iter().filter(|b| wholes.contains(&b.a) || wholes.contains(&b.b)).map(|b| b.id).collect();
+                Lit { wholes, braces, ..Lit::default() }
+            }
+        };
+        let key = (self.changed, self.rafts, *preset, lit, hidden);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
             return Arc::clone(mesh);
         }
+        let lit = &key.3;
         let mut groups: [Group; 3] = Default::default();
         let mut handles = Vec::new();
         let grounded = self.grounded(scene);
         for s in scene.supports() {
             let Some((r, _)) = self.routes.get(&s.id) else { continue };
-            let whole = if grounded.contains(&s.id) && !r.fault { Look::Plain } else { Look::Unreachable };
-            // A selected support lights its tip alone: its body may be shared with other tips.
+            let whole = if lit.wholes.contains(&s.id) {
+                Look::Selected
+            } else if grounded.contains(&s.id) && !r.fault {
+                Look::Plain
+            } else {
+                Look::Unreachable
+            };
             let tip = if hidden == Some(s.id) {
                 None
-            } else if selected.contains(&s.id) {
+            } else if lit.tips.contains(&s.id) {
                 Some(Look::Selected)
             } else {
                 Some(whole)
             };
-            let look = |part: SupportPart| if parts.contains(&(s.id, part)) { Look::Selected } else { whole };
+            let look = |part: SupportPart| if lit.parts.contains(&(s.id, part)) { Look::Selected } else { whole };
             solids(r, preset, tip, whole, look, &mut groups);
             let radius = (preset.body.diameter / 2.0) as f32;
             for (i, c) in joints(r) {
@@ -371,7 +407,7 @@ impl RouteCache {
         }
         for b in scene.braces() {
             let Some((struts, _)) = self.braces.get(&b.id) else { continue };
-            let look = if braces.contains(&b.id) { Look::Selected } else { Look::Plain };
+            let look = if lit.braces.contains(&b.id) { Look::Selected } else { Look::Plain };
             let Some(g) = groups.get_mut(look.index()) else { continue };
             strut_primitives(struts, b.params.diameter_ratio, preset, |prim| {
                 if let Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } = prim {
@@ -442,15 +478,17 @@ impl RouteCache {
     /// The nearest brace strut along the ray: its brace and the distance. Picked a body's width
     /// at least, so a thin strut is no harder to hit than a column.
     pub fn brace_hit(&self, scene: &Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3) -> Option<(u64, f64)> {
-        scene
-            .braces()
-            .iter()
-            .filter_map(|b| {
-                let r = (preset.body.diameter * b.params.diameter_ratio).max(preset.body.diameter) / 2.0;
-                let struts = &self.braces.get(&b.id)?.0;
-                struts.iter().filter_map(|(p, q)| ray_capsule(origin, dir, *p, *q, r)).min_by(f64::total_cmp).map(|t| (b.id, t))
-            })
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+        self.brace_hits(scene, preset, origin, dir).min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// Every brace the ray hits, as [`Self::brace_hit`] picks them, in no order.
+    pub fn brace_hits<'a>(&'a self, scene: &'a Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3) -> impl Iterator<Item = (u64, f64)> + 'a {
+        let body = preset.body.diameter;
+        scene.braces().iter().filter_map(move |b| {
+            let r = (body * b.params.diameter_ratio).max(body) / 2.0;
+            let struts = &self.braces.get(&b.id)?.0;
+            struts.iter().filter_map(|(p, q)| ray_capsule(origin, dir, *p, *q, r)).min_by(f64::total_cmp).map(|t| (b.id, t))
+        })
     }
 
     /// Each support in the scene with its route, as last worked out.
@@ -535,13 +573,13 @@ mod tests {
         while cache.update(&s.scene, &preset) {}
         assert_eq!(cache.routes.len(), 5);
         assert_eq!(cache.unreachable(&s.scene), 0);
-        let mesh = cache.mesh(&s.scene, &preset, true, None);
+        let mesh = cache.mesh(&s.scene, &preset, Selection::Supports, None);
         assert!(!mesh.vertices.is_empty() && mesh.ranges[1].is_empty() && mesh.ranges[2].is_empty());
-        assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, true, None)), "nothing changed: the same solids");
+        assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, Selection::Supports, None)), "nothing changed: the same solids");
         // Selecting one moves its tip alone into the selected range: its body and base stay plain,
         // and its joints get no handle.
         s.execute("support.select", &json!({ "ids": [1] })).unwrap();
-        let mesh = cache.mesh(&s.scene, &preset, true, None);
+        let mesh = cache.mesh(&s.scene, &preset, Selection::Supports, None);
         let mut tip = Vec::new();
         support_primitives(cache.route(1).unwrap(), &preset, |owner, prim| {
             if let (Owner::Tip, Primitive::Frustum { a, b, ra, rb, sides, smooth, caps }) = (owner, prim) {
@@ -556,7 +594,7 @@ mod tests {
         // A selected segment and joint: the segment's column and the base under it move into the
         // selected range, the joint's handle is selected, and the rest of the support stays plain.
         s.execute("support.select", &json!({ "parts": [{ "support": 3, "segment": 0 }, { "support": 3, "joint": 0 }] })).unwrap();
-        let mesh = cache.mesh(&s.scene, &preset, true, None);
+        let mesh = cache.mesh(&s.scene, &preset, Selection::Supports, None);
         let mut column = Vec::new();
         support_primitives(cache.route(3).unwrap(), &preset, |owner, prim| {
             if let (Owner::Part(SupportPart::Segment(0)) | Owner::Base, Primitive::Frustum { a, b, ra, rb, sides, smooth, caps }) = (owner, prim) {
@@ -594,7 +632,7 @@ mod tests {
         let mid = (p + q) / 2.0;
         assert_eq!(cache.brace_hit(&s.scene, &preset, mid - Vec3::Y * 50.0, Vec3::Y).map(|h| h.0), Some(brace));
         s.execute("support.select", &json!({ "braces": [brace] })).unwrap();
-        let mesh = cache.mesh(&s.scene, &preset, true, None);
+        let mesh = cache.mesh(&s.scene, &preset, Selection::Supports, None);
         let mut struts = Vec::new();
         strut_primitives(cache.struts(brace).unwrap(), 0.5, &preset, |prim| {
             if let Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } = prim {
@@ -616,11 +654,11 @@ mod tests {
         wider.raft.margin += 2.0;
         while cache.update(&s.scene, &wider) {}
         assert!(cache.raft_pending());
-        let mesh = cache.mesh(&s.scene, &wider, true, None);
+        let mesh = cache.mesh(&s.scene, &wider, Selection::Supports, None);
         assert_eq!(drawn(&cache), Some(before), "the old raft meanwhile");
         cache.wait_raft();
         assert!(!cache.raft_pending() && drawn(&cache).unwrap().0 == wider.raft);
-        assert!(!Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &wider, true, None)), "the new raft redraws the solids");
+        assert!(!Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &wider, Selection::Supports, None)), "the new raft redraws the solids");
         // Nothing changed: no new job.
         cache.update(&s.scene, &wider);
         assert!(!cache.raft_pending());
