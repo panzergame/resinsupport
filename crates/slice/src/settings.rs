@@ -26,6 +26,37 @@ pub struct PrinterProfile {
     /// Applied when rasterizing.
     pub mirror_x: bool,
     pub mirror_y: bool,
+    /// The kind of CTB file the printer reads. Not a slicing input: changing it never makes a
+    /// job stale.
+    #[serde(default)]
+    pub ctb_format: CtbFormat,
+}
+
+/// Which CTB file [`PrinterProfile`]'s printer reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CtbFormat {
+    /// Chitubox's encrypted CTB, version 5: what Elegoo's Saturn 2 and later printers read.
+    #[default]
+    Encrypted,
+    /// Plain CTB, version 2, for older printers.
+    V2,
+}
+
+impl CtbFormat {
+    pub const ALL: [CtbFormat; 2] = [CtbFormat::Encrypted, CtbFormat::V2];
+
+    /// Its name in `print.configure` and the stored settings.
+    pub fn id(self) -> &'static str {
+        match self {
+            CtbFormat::Encrypted => "encrypted",
+            CtbFormat::V2 => "v2",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<CtbFormat> {
+        CtbFormat::ALL.into_iter().find(|f| f.id() == id)
+    }
 }
 
 impl Default for PrinterProfile {
@@ -39,6 +70,7 @@ impl Default for PrinterProfile {
             build_height: 250.0,
             mirror_x: false,
             mirror_y: false,
+            ctb_format: CtbFormat::Encrypted,
         }
     }
 }
@@ -536,8 +568,8 @@ const fn int(group: &'static str, key: &'static str, min: f64, max: f64) -> Fiel
 /// "finite, ≥ 0".
 const ANY: f64 = f64::MAX;
 
-/// Every number setting. Text and switches (`printer.name`, `printer.mirror_x`,
-/// `printer.mirror_y`, `slicing.exact`, `slicing.dither_z`, `slicing.dither_xy`) are not here.
+/// Every number setting. Text, switches and choices (`printer.name`, `printer.mirror_x`,
+/// `printer.mirror_y`, `printer.ctb_format`, `slicing.exact`, `slicing.dither_z`, `slicing.dither_xy`) are not here.
 pub const FIELDS: &[Field] = &[
     int("printer", "resolution_x", 1.0, 32768.0),
     int("printer", "resolution_y", 1.0, 32768.0),

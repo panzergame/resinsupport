@@ -7,7 +7,7 @@ pub mod project;
 pub mod safe_write;
 pub mod stl;
 
-pub use ctb::{CtbFile, CtbOptions, read_ctb, write_ctb, write_ctb_with};
+pub use ctb::{CtbFile, CtbFormat, CtbOptions, read_ctb, write_ctb, write_ctb_with};
 #[cfg(not(target_arch = "wasm32"))]
 pub use project::read_project_file;
 pub use project::{BracePattern, Project, ProjectBrace, ProjectModel, ProjectSupport, read_project, write_project};

@@ -31,7 +31,7 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     }
 }
 
-/// Write the job as a CTB v2 file, slicing first when the job no longer matches the scene.
+/// Write the job as a CTB file, slicing first when the job no longer matches the scene.
 pub(crate) fn export_ctb(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_param(p, "path")?.to_owned();
     if !resin_io::ctb::is_ctb_path(std::path::Path::new(&path)) {
@@ -44,9 +44,16 @@ pub(crate) fn export_ctb(s: &mut Session, p: &Value) -> Result<Value> {
             .and_then(|k| u32::try_from(k).ok())
             .ok_or_else(|| EngineError::BadParams("`encryption_key` must be an integer from 0 to 4294967295".into()))?,
     };
+    let format = match p.get("format") {
+        None | Some(Value::Null) => s.print_config().printer.ctb_format,
+        Some(v) => v
+            .as_str()
+            .and_then(resin_slice::CtbFormat::from_id)
+            .ok_or_else(|| EngineError::BadParams("`format` must be \"encrypted\" or \"v2\"".into()))?,
+    };
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (s, key);
+        let _ = (s, key, format);
         Err(EngineError::Failed("not supported yet: exporting to a path in the browser".into()))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -55,10 +62,10 @@ pub(crate) fn export_ctb(s: &mut Session, p: &Value) -> Result<Value> {
             super::print_config::slice(s, &Value::Null)?;
         }
         let job = s.job().map(|j| std::sync::Arc::clone(&j.sliced)).ok_or_else(|| EngineError::Internal("no job after slicing".into()))?;
-        let opts = resin_io::CtbOptions { encryption_key: key, modified_minutes: resin_io::ctb::minutes_now() };
+        let opts = resin_io::CtbOptions { format, encryption_key: key, modified_minutes: resin_io::ctb::minutes_now() };
         let bytes = resin_io::write_ctb(&job, &resin_io::ctb::Previews::plain(&job), &opts)?;
         resin_io::write_atomic(std::path::Path::new(&path), &bytes, false).map_err(|e| EngineError::Failed(format!("{path}: {e}")))?;
-        Ok(json!({ "path": path, "bytes": bytes.len(), "layers": job.layers.len() }))
+        Ok(json!({ "path": path, "bytes": bytes.len(), "layers": job.layers.len(), "format": format.id() }))
     }
 }
 

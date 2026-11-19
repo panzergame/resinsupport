@@ -8,7 +8,7 @@
 
 use egui::{DragValue, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::PrintConfig;
-use resin_engine::slice::{ANTI_ALIASING, GROUPS, MAX_NAME_CHARS, Motion, field};
+use resin_engine::slice::{ANTI_ALIASING, CtbFormat, GROUPS, MAX_NAME_CHARS, Motion, field};
 use serde_json::{Value, json};
 
 use crate::theme::Tokens;
@@ -41,6 +41,8 @@ const ANTI_ALIASING_Z_NAMES: [(&str, &str); 4] = [
 
 /// The anti-aliasing choice that sets `slicing.exact`.
 const EXACT: &str = "exact";
+
+const CTB_FORMAT_NAMES: [(&str, &str); 2] = [("encrypted", "printing.printer.ctb_format.encrypted"), ("v2", "printing.printer.ctb_format.v2")];
 
 pub(crate) const CARD_ID: &str = "print_settings";
 const CONFIRM_ID: &str = "print_settings_reset";
@@ -398,6 +400,12 @@ fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
     let p = &mut c.printer;
     ui_kit::check_row(ui, t, i18n::tr("printing.printer.mirror_x"), i18n::tr("printing.printer.mirror.help"), &mut p.mirror_x);
     ui_kit::check_row(ui, t, i18n::tr("printing.printer.mirror_y"), i18n::tr("printing.printer.mirror.help"), &mut p.mirror_y);
+    let mut format = p.ctb_format.id().to_owned();
+    let help = i18n::tr("printing.printer.ctb_format.help");
+    ui_kit::choice_row_help(ui, t, i18n::tr("printing.printer.ctb_format"), Some(help), "ctb_format", &mut format, &CTB_FORMAT_NAMES);
+    if let Some(f) = CtbFormat::from_id(&format) {
+        p.ctb_format = f;
+    }
     let (x, y) = p.pixel_pitch();
     let microns = |mm: f64| format!("{:.1}", mm * 1000.0);
     ui_kit::hint(ui, t, &i18n::format("printing.printer.pixel", &[("x", &microns(x)), ("y", &microns(y))]));
@@ -576,7 +584,13 @@ mod tests {
 
     #[test]
     fn every_card_word_is_in_the_catalog() {
-        for id in TABS.into_iter().chain(ANTI_ALIASING_NAMES.map(|(_, id)| id)).chain(ANTI_ALIASING_Z_NAMES.map(|(_, id)| id)).chain(PHASES) {
+        for id in TABS
+            .into_iter()
+            .chain(ANTI_ALIASING_NAMES.map(|(_, id)| id))
+            .chain(CTB_FORMAT_NAMES.map(|(_, id)| id))
+            .chain(ANTI_ALIASING_Z_NAMES.map(|(_, id)| id))
+            .chain(PHASES)
+        {
             assert!(i18n::has(id), "{id}");
         }
         for r in [PRINTER_ROWS, BOTTOM_ROWS, REGULAR_ROWS, SLICING_ROWS].into_iter().flatten() {

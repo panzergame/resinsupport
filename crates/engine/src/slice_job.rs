@@ -6,7 +6,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
 use resin_geom::Vec3;
-use resin_slice::{PrinterProfile, SliceInput, SlicedJob, Solid, SolidKind, Stamp};
+use resin_slice::{CtbFormat, PrinterProfile, SliceInput, SlicedJob, Solid, SolidKind, Stamp};
 use serde::Serialize;
 
 use crate::support_solids::SupportTessellator;
@@ -95,9 +95,12 @@ fn hash_of(v: &impl Serialize) -> u64 {
 
 impl Session {
     /// What a job sliced now would be stamped with: the scene's revision, the print settings
-    /// and the support preset in use.
+    /// and the support preset in use. The CTB format is left out: it changes the file, not the
+    /// layers.
     pub fn slice_stamp(&self) -> Stamp {
-        Stamp { scene: self.scene.revision(), print: hash_of(&self.print_config), supports: hash_of(self.support_settings.current()) }
+        let mut print = self.print_config.clone();
+        print.printer.ctb_format = CtbFormat::default();
+        Stamp { scene: self.scene.revision(), print: hash_of(&print), supports: hash_of(self.support_settings.current()) }
     }
 
     pub fn slice_source(&self) -> SliceSource {

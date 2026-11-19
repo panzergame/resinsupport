@@ -11,7 +11,7 @@
 //! leniently ([`PrintConfig::from_stored`]): a field that does not read falls back to its default
 //! on its own.
 
-use resin_slice::{GROUPS, PrintSettings, PrinterProfile, field};
+use resin_slice::{CtbFormat, GROUPS, PrintSettings, PrinterProfile, field};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -54,6 +54,9 @@ impl PrintConfig {
             ("printer", "name") => self.printer.name = v.as_str().ok_or_else(|| bad("a string"))?.to_owned(),
             ("printer", "mirror_x") => self.printer.mirror_x = v.as_bool().ok_or_else(|| bad("true or false"))?,
             ("printer", "mirror_y") => self.printer.mirror_y = v.as_bool().ok_or_else(|| bad("true or false"))?,
+            ("printer", "ctb_format") => {
+                self.printer.ctb_format = v.as_str().and_then(CtbFormat::from_id).ok_or_else(|| bad("\"encrypted\" or \"v2\""))?;
+            }
             ("slicing", "exact") => self.settings.slicing.exact = v.as_bool().ok_or_else(|| bad("true or false"))?,
             ("slicing", "dither_z") => self.settings.slicing.dither_z = v.as_bool().ok_or_else(|| bad("true or false"))?,
             ("slicing", "dither_xy") => self.settings.slicing.dither_xy = v.as_bool().ok_or_else(|| bad("true or false"))?,

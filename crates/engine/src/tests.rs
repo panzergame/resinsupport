@@ -520,6 +520,7 @@ fn hostile_params_never_panic() {
         json!({ "printer": { "name": "x".repeat(10_000), "display_x": 1, "resolution_x": 32768 }, "from_the_future": {} }),
         json!({ "path": "/", "encryption_key": -1 }),
         json!({ "path": "plate.CTB.stl", "encryption_key": u64::MAX }),
+        json!({ "path": "plate.ctb", "format": ["v2"], "printer": { "ctb_format": 2 } }),
         json!({ "ids": [1, 2], "pattern": "spiral", "pairing": 3, "angle": 1e308, "diameter_ratio": -1, "max_distance": 0, "braces": "all" }),
         json!({ "ids": [u64::MAX, 0], "pattern": null, "pairing": "all", "angle": 90, "head_gap": 1e300, "foot_gap": -0.0, "braces": [u64::MAX, -1] }),
     ];
@@ -1338,12 +1339,12 @@ fn print_config_merges_validates_and_round_trips() {
     assert_eq!(*s.print_config(), expected);
     s.execute(
         "print.configure",
-        &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200 }, "slicing": { "anti_aliasing": 8, "exact": true, "gamma": 0.6, "anti_aliasing_z": 4, "blur_radius": 2, "blur_passes": 3, "dither_z": true, "dither_xy": true, "dither_floor": 90 } }),
+        &json!({ "printer": { "name": "Mars 4", "mirror_y": true, "display_x": 200, "ctb_format": "v2" }, "slicing": { "anti_aliasing": 8, "exact": true, "gamma": 0.6, "anti_aliasing_z": 4, "blur_radius": 2, "blur_passes": 3, "dither_z": true, "dither_xy": true, "dither_floor": 90 } }),
     )
     .unwrap();
     let c = s.print_config();
     assert_eq!((c.printer.name.as_str(), c.printer.mirror_y, c.printer.display_x), ("Mars 4", true, 200.0));
-    assert_eq!((c.printer.mirror_x, c.printer.display_y), (false, 123.12));
+    assert_eq!((c.printer.mirror_x, c.printer.display_y, c.printer.ctb_format), (false, 123.12, resin_slice::CtbFormat::V2));
     assert_eq!((c.settings.slicing.anti_aliasing, c.settings.exposure.normal), (8, 2.5));
     assert_eq!((c.settings.slicing.exact, c.settings.slicing.gamma), (true, 0.6));
     assert_eq!((c.settings.slicing.anti_aliasing_z, c.settings.slicing.blur_radius, c.settings.slicing.blur_passes), (4, 2, 3));
@@ -1371,6 +1372,7 @@ fn print_config_merges_validates_and_round_trips() {
         (json!({ "estimates": { "resin_density": "1.1" } }), "estimates.resin_density"),
         (json!({ "printer": { "resolution_x": 0 } }), "printer.resolution_x"),
         (json!({ "printer": { "mirror_x": 1 } }), "printer.mirror_x"),
+        (json!({ "printer": { "ctb_format": "v3" } }), "printer.ctb_format"),
         (json!({ "printer": { "name": "n".repeat(65) } }), "printer.name"),
         (json!({ "printer": { "colour": "red" } }), "printer.colour"),
         (json!({ "layers": "thin" }), "layers"),
@@ -1720,6 +1722,7 @@ fn exporting_writes_the_job_as_ctb() {
     let out = dir.join("plate.ctb");
     assert!(matches!(s.execute("file.export_ctb", &json!({ "path": dir.join("plate.rsup") })), Err(EngineError::BadParams(_))));
     assert!(matches!(s.execute("file.export_ctb", &json!({ "path": out, "encryption_key": 1u64 << 32 })), Err(EngineError::BadParams(_))));
+    assert!(matches!(s.execute("file.export_ctb", &json!({ "path": out, "format": "v3" })), Err(EngineError::BadParams(_))));
     assert!(!out.exists(), "bad parameters write nothing");
     // Stale: sliced first.
     assert!(!s.job_is_current());
@@ -1730,6 +1733,7 @@ fn exporting_writes_the_job_as_ctb() {
     let bytes = std::fs::read(&out).unwrap();
     assert_eq!(exported["bytes"].as_u64(), Some(bytes.len() as u64));
     let file = resin_io::read_ctb(&bytes).unwrap();
+    assert_eq!((file.format, exported["format"].as_str()), (resin_io::CtbFormat::Encrypted, Some("encrypted")), "the printer's format");
     assert_eq!(Some(file.layers.len() as u64), sliced["layers"].as_u64());
     assert_eq!(file.header.encryption_key, resin_io::ctb::DEFAULT_KEY);
     assert_eq!(file.machine_name, s.print_config().printer.name);
@@ -1737,6 +1741,13 @@ fn exporting_writes_the_job_as_ctb() {
     // Current: written from the kept job, key as asked.
     s.execute("file.export_ctb", &json!({ "path": out, "encryption_key": 0 })).unwrap();
     assert_eq!(resin_io::read_ctb(&std::fs::read(&out).unwrap()).unwrap().header.encryption_key, 0);
+    // The format as asked, else the printer's; changing it leaves the job current.
+    s.execute("file.export_ctb", &json!({ "path": out, "format": "v2" })).unwrap();
+    assert_eq!(resin_io::read_ctb(&std::fs::read(&out).unwrap()).unwrap().format, resin_io::CtbFormat::V2);
+    s.execute("print.configure", &json!({ "printer": { "ctb_format": "v2" } })).unwrap();
+    assert!(s.job_is_current(), "the CTB format is not a slicing input");
+    assert_eq!(s.execute("file.export_ctb", &json!({ "path": out })).unwrap()["format"], "v2");
+    assert_eq!(resin_io::read_ctb(&std::fs::read(&out).unwrap()).unwrap().format, resin_io::CtbFormat::V2);
     // An empty scene has no layers to write.
     s.execute("scene.clear", &json!({})).unwrap();
     assert!(s.execute("file.export_ctb", &json!({ "path": dir.join("empty.ctb") })).is_err());

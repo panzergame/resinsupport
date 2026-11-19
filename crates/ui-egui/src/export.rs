@@ -111,13 +111,14 @@ fn render_previews(app: &mut ResinApp) -> Option<Previews> {
 fn write(app: &ResinApp, path: &std::path::Path, previews: Option<&Previews>) -> Option<Writer> {
     let job = app.session.job().map(|j| Arc::clone(&j.sliced))?;
     let previews = previews.cloned();
+    let format = app.session.print_config().printer.ctb_format;
     let (progress, cancel) = (Arc::new(Progress::default()), Arc::new(Cancel::default()));
     let (tx, done) = mpsc::channel();
     let (j, p, c, path) = (Arc::clone(&job), Arc::clone(&progress), Arc::clone(&cancel), path.to_path_buf());
     let work = move || {
         // The plain previews walk every layer: here, off the window thread.
         let previews = previews.unwrap_or_else(|| Previews::plain(&j));
-        let opts = CtbOptions { encryption_key: ctb::DEFAULT_KEY, modified_minutes: ctb::minutes_now() };
+        let opts = CtbOptions { format, encryption_key: ctb::DEFAULT_KEY, modified_minutes: ctb::minutes_now() };
         let out = ctb::write_ctb_with(&j, &previews, &opts, &p, &c)
             .and_then(|bytes| resin_engine::io::write_atomic(&path, &bytes, false).map(|()| bytes.len()).map_err(IoError::from));
         let _ = tx.send(out);

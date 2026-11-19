@@ -6,19 +6,24 @@
 // (`Header`, `PrintParameters`, `SlicerInfo`, `Preview`, `LayerDef`, `OnBeforeEncode`,
 // `EncodeInternally`): facts about the format, no UVtools code, so this file is GPL-3.0.
 
-//! Chitubox `.ctb` files, format version 2: what an Elegoo Saturn 2 reads.
+//! Chitubox `.ctb` files: plain version 2 here, the encrypted version 5 that an Elegoo Saturn 2
+//! reads in [`encrypted`], which shares the layer encoding, the cipher and the previews.
 //!
 //! All numbers are little-endian, `f32` is IEEE 754 and offsets are `u32` from the file's start.
 //! The sections follow one another in this order: header, large preview, small preview, print
 //! parameters, slicer info and the machine name, layer table, layer data. A layer is its runs of
 //! grey, 7 bits kept, run-length encoded and then XORed with a key stream unless the key is 0.
 //!
-//! [`read_ctb`] treats its bytes as hostile: every offset is checked against the file, counts are
+//! [`read_ctb`] reads both, telling them apart by their magic, and treats its bytes as hostile: every offset is checked against the file, counts are
 //! capped before anything is allocated, and nothing panics.
 
-use resin_slice::{Cancel, Progress, Run, SlicedJob, Travel};
+pub use resin_slice::CtbFormat;
+use resin_slice::{Cancel, PrintSettings, Progress, Run, SlicedJob, Travel};
 
 use crate::IoError;
+
+mod encrypted;
+pub use encrypted::{MAGIC as ENCRYPTED_MAGIC, VERSION as ENCRYPTED_VERSION};
 
 pub const MAGIC: u32 = 0x12FD_0086;
 pub const VERSION: u32 = 2;
@@ -56,6 +61,7 @@ const PLAIN_SHAPE: [u8; 3] = [0xFF, 0xFF, 0xFF];
 /// What [`write_ctb`] needs besides the job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CtbOptions {
+    pub format: CtbFormat,
     /// 0 writes the layers unciphered.
     pub encryption_key: u32,
     /// Minutes since the Unix epoch: a parameter, so the same job writes the same bytes.
@@ -64,7 +70,7 @@ pub struct CtbOptions {
 
 impl Default for CtbOptions {
     fn default() -> Self {
-        CtbOptions { encryption_key: DEFAULT_KEY, modified_minutes: 0 }
+        CtbOptions { format: CtbFormat::default(), encryption_key: DEFAULT_KEY, modified_minutes: 0 }
     }
 }
 
@@ -216,22 +222,77 @@ pub struct LayerDef {
     pub table_size: u32,
 }
 
-/// A layer as read back: where it is, how it is exposed, and its runs, neighbours of one grey
-/// merged.
+/// A lift and retract as a file holds them: up `lift_height` in all, the first
+/// `lift_height - lift_height_2` at `lift_speed` and the last `lift_height_2` at `lift_speed_2`;
+/// back down the whole lift at `retract_speed`, the last `retract_height_2` of it at
+/// `retract_speed_2`. Heights in mm, speeds in mm/min. v2 has only the first phases. UVtools 7.1.2
+/// writes the encrypted format's fields so (`set-properties`, then the settings decrypted).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Phases {
+    pub lift_height: f32,
+    pub lift_speed: f32,
+    pub lift_height_2: f32,
+    pub lift_speed_2: f32,
+    pub retract_speed: f32,
+    pub retract_height_2: f32,
+    pub retract_speed_2: f32,
+}
+
+impl Phases {
+    /// `t`'s slow lift then fast, fast retract then slow; a phase that does not move leaves the
+    /// other as the first, so no reader sees a first phase of 0 mm.
+    pub fn from_travel(t: &Travel) -> Phases {
+        let (lift_height, lift_speed, lift_height_2, lift_speed_2) = if t.lift_distance_slow > 0.0 {
+            (t.lift_distance(), t.lift_speed_slow, t.lift_distance_fast, t.lift_speed_fast)
+        } else {
+            (t.lift_distance_fast, t.lift_speed_fast, 0.0, 0.0)
+        };
+        // The allowance takes a slow retract typed as the whole lift for the whole of it.
+        let (retract_speed, retract_height_2, retract_speed_2) = if t.retract_distance_fast() > 1e-9 {
+            (t.retract_speed_fast, t.retract_distance_slow, t.retract_speed_slow)
+        } else {
+            (t.retract_speed_slow, 0.0, 0.0)
+        };
+        Phases {
+            lift_height: lift_height as f32,
+            lift_speed: lift_speed as f32,
+            lift_height_2: lift_height_2 as f32,
+            lift_speed_2: lift_speed_2 as f32,
+            retract_speed: retract_speed as f32,
+            retract_height_2: retract_height_2 as f32,
+            retract_speed_2: retract_speed_2 as f32,
+        }
+    }
+}
+
+/// A layer as read back: where it is, how it is exposed and moved, and its runs, neighbours of
+/// one grey merged.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CtbLayer {
     pub z: f32,
     pub exposure: f32,
+    /// The wait before the exposure: v2's light-off delay, the encrypted format's rest after the
+    /// retract.
     pub light_off: f32,
+    /// None (all 0) in v2, whose layers move as the print parameters say.
+    pub phases: Phases,
     pub runs: Vec<Run>,
 }
 
-/// A whole file as read back.
+/// A whole file as read back. An encrypted file's settings are spread over the v2 sections that
+/// hold the same fields; the offsets and sizes v2 alone has are 0, and `params` holds its first
+/// phases.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CtbFile {
+    pub format: CtbFormat,
     pub header: Header,
     pub params: PrintParams,
     pub slicer: SlicerInfo,
+    pub bottom_phases: Phases,
+    pub phases: Phases,
+    /// Seconds: the encrypted format's waits before each exposure, 0 in v2.
+    pub bottom_rest_after_retract: f32,
+    pub rest_after_retract: f32,
     pub machine_name: String,
     pub large_preview: Option<Preview>,
     pub small_preview: Option<Preview>,
@@ -263,7 +324,7 @@ fn v2_retract_speed(t: &Travel) -> f64 {
     if t.retract_distance_fast() > 1e-9 { t.retract_speed_fast } else { t.retract_speed_slow }
 }
 
-/// `job` as a CTB v2 file.
+/// `job` as a CTB file in `opts.format`.
 pub fn write_ctb(job: &SlicedJob, previews: &Previews, opts: &CtbOptions) -> Result<Vec<u8>, IoError> {
     write_ctb_with(job, previews, opts, &Progress::default(), &Cancel::default())
 }
@@ -271,6 +332,37 @@ pub fn write_ctb(job: &SlicedJob, previews: &Previews, opts: &CtbOptions) -> Res
 /// [`write_ctb`], counting the layers written in `progress` and stopping with
 /// [`IoError::Cancelled`] once `cancel` is set.
 pub fn write_ctb_with(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, progress: &Progress, cancel: &Cancel) -> Result<Vec<u8>, IoError> {
+    match opts.format {
+        CtbFormat::Encrypted => encrypted::write(job, previews, opts, progress, cancel),
+        CtbFormat::V2 => write_v2(job, previews, opts, progress, cancel),
+    }
+}
+
+/// What the resin costs, from the bottle's price; 0 without one.
+fn cost(job: &SlicedJob) -> f64 {
+    let x = &job.settings.estimates;
+    if x.bottle_volume > 0.0 { job.stats.volume_ml / x.bottle_volume * x.bottle_cost } else { 0.0 }
+}
+
+/// The anti-aliasing level a file says. The greys carry the anti-aliasing; the level only tells
+/// readers there is some. Exact coverage has no sub-sample count, so it says 8 as UVtools does for
+/// PrusaSlicer's greys (`UVtools.Core/FileFormats/SL1File.cs` at `5fdcc53`, `AntiAliasing`), and a
+/// gamma of 0 leaves no grey to tell of.
+fn aa_level(s: &PrintSettings) -> u32 {
+    if s.slicing.gamma <= 0.0 {
+        1
+    } else if s.slicing.exact {
+        8
+    } else {
+        u32::from(s.slicing.anti_aliasing.max(1))
+    }
+}
+
+fn aa_flag(aa_level: u32) -> u8 {
+    if aa_level == 1 { AA_FLAG_OFF } else { AA_FLAG_ON }
+}
+
+fn write_v2(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, progress: &Progress, cancel: &Cancel) -> Result<Vec<u8>, IoError> {
     let (p, s, e, m) = (&job.profile, &job.settings, &job.settings.exposure, &job.settings.motion);
     let count = u32::try_from(job.layers.len()).map_err(|_| IoError::TooLarge("too many layers".into()))?;
     if count == 0 {
@@ -293,7 +385,6 @@ pub fn write_ctb_with(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, p
     below_4g(data_at)?;
 
     let volume = job.stats.volume_ml;
-    let cost = if s.estimates.bottle_volume > 0.0 { volume / s.estimates.bottle_volume * s.estimates.bottle_cost } else { 0.0 };
     let header = Header {
         magic: MAGIC,
         version: VERSION,
@@ -331,27 +422,17 @@ pub fn write_ctb_with(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, p
         retract_speed: v2_retract_speed(&regular) as f32,
         volume_ml: volume as f32,
         weight_g: (volume * s.estimates.resin_density) as f32,
-        cost: cost as f32,
+        cost: cost(job) as f32,
         bottom_light_off_delay: e.bottom_light_off as f32,
         light_off_delay: e.light_off as f32,
         bottom_layer_count: s.layers.bottom_count,
         marker: V2_MARKER,
     };
-    // The greys carry the anti-aliasing; the level only tells readers there is some. Exact coverage
-    // has no sub-sample count, so it says 8 as UVtools does for PrusaSlicer's greys
-    // (`UVtools.Core/FileFormats/SL1File.cs` at `5fdcc53`, `AntiAliasing`), and a gamma of 0
-    // leaves no grey to tell of.
-    let aa_level = if s.slicing.gamma <= 0.0 {
-        1
-    } else if s.slicing.exact {
-        8
-    } else {
-        u32::from(s.slicing.anti_aliasing.max(1))
-    };
+    let aa_level = aa_level(s);
     let slicer = SlicerInfo {
         machine_name_offset: below_4g(name_at)?,
         machine_name_size: below_4g(name.len() as u64)?,
-        aa_flag: if aa_level == 1 { AA_FLAG_OFF } else { AA_FLAG_ON },
+        aa_flag: aa_flag(aa_level),
         // Per-layer settings disallowed.
         per_layer_settings: 0,
         modified_minutes: opts.modified_minutes,
@@ -400,8 +481,11 @@ pub fn write_ctb_with(job: &SlicedJob, previews: &Previews, opts: &CtbOptions, p
     Ok(out)
 }
 
-/// Read a CTB v2 file.
+/// Read a CTB file, plain v2 or encrypted.
 pub fn read_ctb(bytes: &[u8]) -> Result<CtbFile, IoError> {
+    if Reader::at(bytes, 0, 4)?.u32()? == ENCRYPTED_MAGIC {
+        return encrypted::read(bytes);
+    }
     let header = Header::read(&mut Reader::at(bytes, 0, HEADER_SIZE)?)?;
     if header.magic != MAGIC {
         return Err(IoError::Format("not a CTB file".into()));
@@ -453,9 +537,23 @@ pub fn read_ctb(bytes: &[u8]) -> Result<CtbFile, IoError> {
         let mut data = section(bytes, at, def.data_size.into())?.to_vec();
         crypt(&mut data, header.encryption_key, i);
         let runs = decode_layer(&data, pixels).map_err(|why| IoError::Format(format!("layer {i}: {why}")))?;
-        layers.push(CtbLayer { z: def.z, exposure: def.exposure, light_off: def.light_off, runs });
+        layers.push(CtbLayer { z: def.z, exposure: def.exposure, light_off: def.light_off, phases: Phases::default(), runs });
     }
-    Ok(CtbFile { header, params, slicer, machine_name, large_preview, small_preview, layers })
+    let first_phases = |lift_height, lift_speed| Phases { lift_height, lift_speed, retract_speed: params.retract_speed, ..Phases::default() };
+    Ok(CtbFile {
+        format: CtbFormat::V2,
+        header,
+        params,
+        slicer,
+        bottom_phases: first_phases(params.bottom_lift_height, params.bottom_lift_speed),
+        phases: first_phases(params.lift_height, params.lift_speed),
+        bottom_rest_after_retract: 0.0,
+        rest_after_retract: 0.0,
+        machine_name,
+        large_preview,
+        small_preview,
+        layers,
+    })
 }
 
 /// `runs` as the layer RLE: one stream over the whole image, runs crossing row ends. Neighbours
@@ -993,6 +1091,14 @@ mod tests {
         Previews { large: image(4, 3), small: image(2, 2) }
     }
 
+    fn v2() -> CtbOptions {
+        CtbOptions { format: CtbFormat::V2, ..CtbOptions::default() }
+    }
+
+    fn encrypted() -> CtbOptions {
+        CtbOptions { format: CtbFormat::Encrypted, ..CtbOptions::default() }
+    }
+
     fn u32_at(bytes: &[u8], at: usize) -> u32 {
         u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
     }
@@ -1023,7 +1129,7 @@ mod tests {
         (m.lift_speed_slow, m.lift_speed_fast, m.retract_speed_fast, m.retract_speed_slow) = (60.0, 240.0, 300.0, 90.0);
         (m.bottom_lift_speed_slow, m.bottom_lift_speed_fast) = (30.0, 120.0);
         let params = |job: &SlicedJob| {
-            let opts = CtbOptions { encryption_key: DEFAULT_KEY, modified_minutes: 0 };
+            let opts = CtbOptions { format: CtbFormat::V2, encryption_key: DEFAULT_KEY, modified_minutes: 0 };
             let f = read_ctb(&write_ctb(job, &Previews::plain(job), &opts).unwrap()).unwrap();
             (f.params.lift_speed, f.params.bottom_lift_speed, f.params.retract_speed)
         };
@@ -1042,7 +1148,7 @@ mod tests {
     #[test]
     fn a_job_reads_back() {
         let job = cube();
-        let opts = CtbOptions { encryption_key: DEFAULT_KEY, modified_minutes: 29_000_000 };
+        let opts = CtbOptions { format: CtbFormat::V2, encryption_key: DEFAULT_KEY, modified_minutes: 29_000_000 };
         let bytes = write_ctb(&job, &Previews::plain(&job), &opts).unwrap();
         let f = read_ctb(&bytes).unwrap();
         let (p, s) = (&job.profile, &job.settings);
@@ -1080,7 +1186,7 @@ mod tests {
     #[test]
     fn sections_follow_one_another() {
         let job = tiny();
-        let bytes = write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap();
+        let bytes = write_ctb(&job, &tiny_previews(), &v2()).unwrap();
         let h = read_ctb(&bytes).unwrap().header;
         assert_eq!(h.large_preview_offset, 112);
         assert_eq!(h.small_preview_offset, 112 + 32 + u32_at(&bytes, 112 + 12));
@@ -1095,7 +1201,7 @@ mod tests {
     fn mirroring_x_is_the_projector_type() {
         let mut job = tiny();
         job.profile.mirror_x = true;
-        let bytes = write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap();
+        let bytes = write_ctb(&job, &tiny_previews(), &v2()).unwrap();
         assert_eq!(read_ctb(&bytes).unwrap().header.projector_type, 1);
     }
 
@@ -1103,13 +1209,13 @@ mod tests {
     fn anti_aliasing_goes_in_the_slicer_info() {
         let mut job = tiny();
         job.settings.slicing.anti_aliasing = 4;
-        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap()).unwrap();
+        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &v2()).unwrap()).unwrap();
         assert_eq!((f.header.aa_level, f.slicer.aa_level, f.slicer.aa_flag), (1, 4, 0x0F));
         job.settings.slicing.exact = true;
-        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap()).unwrap();
+        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &v2()).unwrap()).unwrap();
         assert_eq!((f.slicer.aa_level, f.slicer.aa_flag), (8, 0x0F));
         job.settings.slicing.gamma = 0.0;
-        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap()).unwrap();
+        let f = read_ctb(&write_ctb(&job, &tiny_previews(), &v2()).unwrap()).unwrap();
         assert_eq!((f.slicer.aa_level, f.slicer.aa_flag), (1, 0x07));
     }
 
@@ -1162,7 +1268,7 @@ mod tests {
         let data = encode_layer(&runs, 10).unwrap();
         assert!(decode_layer(&data, 9).is_err() && decode_layer(&data, 11).is_err());
         let job = SlicedJob { layers: vec![Layer { runs: runs.to_vec(), ..Layer::default() }], ..tiny() };
-        assert!(matches!(write_ctb(&job, &tiny_previews(), &CtbOptions::default()), Err(IoError::Format(_))));
+        assert!(matches!(write_ctb(&job, &tiny_previews(), &v2()), Err(IoError::Format(_))));
     }
 
     #[test]
@@ -1208,7 +1314,7 @@ mod tests {
         let job = tiny();
         let pixels = 16 * 8;
         for key in [0, DEFAULT_KEY] {
-            let bytes = write_ctb(&job, &tiny_previews(), &CtbOptions { encryption_key: key, modified_minutes: 0 }).unwrap();
+            let bytes = write_ctb(&job, &tiny_previews(), &CtbOptions { format: CtbFormat::V2, encryption_key: key, modified_minutes: 0 }).unwrap();
             let table = read_ctb(&bytes).unwrap().header.layer_table_offset as usize;
             let entry = table + LAYER_DEF_SIZE;
             let (at, len) = (u32_at(&bytes, entry + 12) as usize, u32_at(&bytes, entry + 16) as usize);
@@ -1274,21 +1380,21 @@ mod tests {
     fn progress_counts_layers_and_cancel_stops() {
         let job = tiny();
         let (progress, cancel) = (Progress::default(), Cancel::default());
-        write_ctb_with(&job, &tiny_previews(), &CtbOptions::default(), &progress, &cancel).unwrap();
+        write_ctb_with(&job, &tiny_previews(), &v2(), &progress, &cancel).unwrap();
         assert_eq!(progress.get(), (3, 3));
         cancel.cancel();
-        assert!(matches!(write_ctb_with(&job, &tiny_previews(), &CtbOptions::default(), &progress, &cancel), Err(IoError::Cancelled)));
+        assert!(matches!(write_ctb_with(&job, &tiny_previews(), &v2(), &progress, &cancel), Err(IoError::Cancelled)));
     }
 
     #[test]
     fn an_empty_job_is_refused() {
         let job = SlicedJob { layers: Vec::new(), ..tiny() };
-        assert!(write_ctb(&job, &tiny_previews(), &CtbOptions::default()).is_err());
+        assert!(write_ctb(&job, &tiny_previews(), &v2()).is_err());
     }
 
     #[test]
     fn hostile_files_are_errors_not_panics() {
-        let good = write_ctb(&tiny(), &tiny_previews(), &CtbOptions::default()).unwrap();
+        let good = write_ctb(&tiny(), &tiny_previews(), &v2()).unwrap();
         assert!(read_ctb(&good).is_ok());
         for len in 0..good.len() {
             assert!(read_ctb(&good[..len]).is_err(), "cut to {len} bytes");
@@ -1331,8 +1437,12 @@ mod tests {
         // Unciphered, every entry would decode one block again and again.
         let checker = PrinterProfile { resolution_x: 256, resolution_y: 256, display_x: 25.6, display_y: 25.6, ..PrinterProfile::default() };
         let one_pixel_runs = (0..256 * 256).map(|i| Run { len: 1, grey: if i % 2 == 0 { 0 } else { 255 } }).collect();
-        let mut repeated =
-            write_ctb(&job_of(checker, one_pixel_runs, 400), &tiny_previews(), &CtbOptions { encryption_key: 0, modified_minutes: 0 }).unwrap();
+        let mut repeated = write_ctb(
+            &job_of(checker, one_pixel_runs, 400),
+            &tiny_previews(),
+            &CtbOptions { format: CtbFormat::V2, encryption_key: 0, modified_minutes: 0 },
+        )
+        .unwrap();
         let table = read_ctb(&repeated).unwrap().header.layer_table_offset as usize;
         let block = repeated[table + 12..table + 20].to_vec();
         let data_len = u32_at(&repeated, table + 16) as usize;
@@ -1345,7 +1455,183 @@ mod tests {
         assert!(read_ctb(&grown).is_err(), "400 entries on one block in a file far smaller than their sum");
         let mut v4 = good;
         v4[4..8].copy_from_slice(&4u32.to_le_bytes());
-        assert!(read_ctb(&v4).is_err(), "only v2 is read");
+        assert!(read_ctb(&v4).is_err(), "a plain CTB is read only as v2");
+    }
+
+    /// `job`'s motion in two phases each way, bottom and regular alike different.
+    fn two_phase(mut job: SlicedJob) -> SlicedJob {
+        let m = &mut job.settings.motion;
+        (m.lift_distance_slow, m.lift_distance_fast, m.retract_distance_slow) = (1.5, 3.0, 2.0);
+        (m.lift_speed_slow, m.lift_speed_fast, m.retract_speed_fast, m.retract_speed_slow) = (60.0, 240.0, 300.0, 90.0);
+        (m.bottom_lift_distance_slow, m.bottom_lift_distance_fast, m.bottom_retract_distance_slow) = (2.5, 4.0, 3.0);
+        (m.bottom_lift_speed_slow, m.bottom_lift_speed_fast, m.bottom_retract_speed_fast, m.bottom_retract_speed_slow) = (30.0, 120.0, 200.0, 45.0);
+        job
+    }
+
+    /// The decrypted settings of an encrypted file, changed by `edit`, encrypted back in place.
+    fn with_settings(bytes: &[u8], edit: impl Fn(&mut [u8])) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        let range = encrypted::HEADER_SIZE..encrypted::HEADER_SIZE + encrypted::SETTINGS_SIZE;
+        encrypted::decrypt(&mut out[range.clone()]).unwrap();
+        edit(&mut out[range.clone()]);
+        encrypted::encrypt(&mut out[range]).unwrap();
+        out
+    }
+
+    #[test]
+    fn the_saturn_2_gets_encrypted_files_by_default() {
+        assert_eq!(CtbOptions::default().format, CtbFormat::Encrypted);
+        assert_eq!(PrinterProfile::default().ctb_format, CtbFormat::Encrypted);
+        let job = tiny();
+        let bytes = write_ctb(&job, &tiny_previews(), &CtbOptions::default()).unwrap();
+        assert_eq!((u32_at(&bytes, 0), u32_at(&bytes, 16)), (ENCRYPTED_MAGIC, ENCRYPTED_VERSION));
+        assert_eq!(read_ctb(&bytes).unwrap().format, CtbFormat::Encrypted);
+        let bytes = write_ctb(&job, &tiny_previews(), &v2()).unwrap();
+        assert_eq!((u32_at(&bytes, 0), u32_at(&bytes, 4)), (MAGIC, VERSION));
+        assert_eq!(read_ctb(&bytes).unwrap().format, CtbFormat::V2);
+    }
+
+    #[test]
+    fn phases_keep_a_moving_first_phase() {
+        let s = two_phase(cube()).settings;
+        let p = Phases::from_travel(&s.motion.regular());
+        assert_eq!((p.lift_height, p.lift_speed, p.lift_height_2, p.lift_speed_2), (4.5, 60.0, 3.0, 240.0), "the whole lift, then its fast part");
+        assert_eq!((p.retract_speed, p.retract_height_2, p.retract_speed_2), (300.0, 2.0, 90.0));
+        // A lift in the fast phase only, a retract slow all the way.
+        let mut t = s.motion.regular();
+        (t.lift_distance_slow, t.lift_distance_fast, t.retract_distance_slow) = (0.0, 5.0, 5.0);
+        let p = Phases::from_travel(&t);
+        assert_eq!((p.lift_height, p.lift_speed, p.lift_height_2, p.lift_speed_2), (5.0, 240.0, 0.0, 0.0));
+        assert_eq!((p.retract_speed, p.retract_height_2, p.retract_speed_2), (90.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn an_encrypted_job_reads_back() {
+        let mut job = two_phase(cube());
+        job.settings.slicing.anti_aliasing = 4;
+        job.settings.exposure.bottom_power = 200;
+        let opts = CtbOptions { modified_minutes: 29_000_000, ..encrypted() };
+        let bytes = write_ctb(&job, &Previews::plain(&job), &opts).unwrap();
+        let f = read_ctb(&bytes).unwrap();
+        let (p, s) = (&job.profile, &job.settings);
+        let h = &f.header;
+        assert_eq!((h.magic, h.version, h.resolution_x, h.resolution_y), (ENCRYPTED_MAGIC, 5, 7680, 4320));
+        assert_eq!(h.bed, [p.display_x as f32, p.display_y as f32, p.build_height as f32]);
+        assert_eq!((h.total_height, h.layer_height), (job.layers[199].z, s.layers.height as f32));
+        assert_eq!((h.exposure, h.bottom_exposure, h.light_off_delay), (s.exposure.normal as f32, s.exposure.bottom as f32, 0.0));
+        assert_eq!((h.bottom_layers, h.layer_count, h.projector_type), (s.layers.bottom_count, 200, 0));
+        assert_eq!((h.light_pwm, h.bottom_light_pwm, h.encryption_key), (255, 200, DEFAULT_KEY));
+        assert_eq!(h.print_time, job.stats.print_time_s.ceil() as u32);
+        assert_eq!((f.bottom_phases, f.phases), (Phases::from_travel(&s.motion.bottom()), Phases::from_travel(&s.motion.regular())));
+        assert_eq!((f.bottom_rest_after_retract, f.rest_after_retract), (s.exposure.bottom_light_off as f32, s.exposure.light_off as f32));
+        assert_eq!((f.params.volume_ml, f.params.bottom_layer_count), (job.stats.volume_ml as f32, s.layers.bottom_count));
+        assert_eq!(f.machine_name, p.name);
+        assert_eq!((f.slicer.aa_flag, f.slicer.aa_level, f.slicer.per_layer_settings), (0x0F, 4, 0x40));
+        assert_eq!((f.slicer.modified_minutes, f.slicer.transition_layers), (29_000_000, s.layers.transition_count));
+        assert_eq!(f.large_preview.as_ref().map(|p| (p.width, p.height)), Some(LARGE_PREVIEW));
+        assert_eq!(f.small_preview.as_ref().map(|p| (p.width, p.height)), Some(SMALL_PREVIEW));
+        assert_eq!(f.layers.len(), job.layers.len());
+        for (i, (got, want)) in (0u32..).zip(f.layers.iter().zip(&job.layers)) {
+            assert_eq!((got.z, got.exposure, got.light_off), (want.z, want.exposure, want.light_off), "layer {i}");
+            assert_eq!(got.phases, Phases::from_travel(&s.layer_motion(i).travel), "layer {i}");
+            assert_eq!(got.runs, normalised(&want.runs), "layer {i}");
+        }
+        let (bottom, transition) = (s.layers.bottom_count as usize, s.layers.transition_count as usize);
+        assert!(f.layers[bottom].phases.lift_height > f.phases.lift_height, "a transition layer steps from the bottom motion");
+        assert_eq!(f.layers[bottom + transition].phases, f.phases);
+    }
+
+    #[test]
+    fn encrypted_sections_follow_one_another() {
+        let job = tiny();
+        let bytes = write_ctb(&job, &tiny_previews(), &encrypted()).unwrap();
+        let f = read_ctb(&bytes).unwrap();
+        // The header: settings 288 bytes at 48, the signature 32 bytes where it says.
+        assert_eq!((u32_at(&bytes, 4), u32_at(&bytes, 8), u32_at(&bytes, 20)), (288, 48, 32));
+        let name_at = 48 + 288;
+        assert_eq!(f.slicer.machine_name_offset, name_at);
+        assert_eq!(&bytes[name_at as usize..][..job.profile.name.len() + 1], [job.profile.name.as_bytes(), &[0]].concat());
+        let table = f.header.layer_table_offset as usize;
+        let signature_at = u32_at(&bytes, 24) as usize;
+        assert_eq!(signature_at, table + 3 * 16 + 8);
+        assert_eq!((u32_at(&bytes, signature_at - 8), u32_at(&bytes, signature_at + 32)), (0x4220_52FA, 0x6D42_32B3));
+        // Each pointer is to a definition, its data right after it.
+        let mut at = signature_at + 36;
+        for i in 0..3 {
+            assert_eq!((u32_at(&bytes, table + 16 * i), u32_at(&bytes, table + 16 * i + 8)), (at as u32, 0x58), "layer {i}");
+            assert_eq!(u32_at(&bytes, at + 16), at as u32 + 0x58, "layer {i}");
+            at += 0x58 + u32_at(&bytes, at + 24) as usize;
+        }
+        assert_eq!(at, bytes.len());
+    }
+
+    #[test]
+    fn a_tampered_encrypted_file_is_refused() {
+        let good = write_ctb(&tiny(), &tiny_previews(), &encrypted()).unwrap();
+        assert!(read_ctb(&good).is_ok());
+        let signature_at = u32_at(&good, 24) as usize;
+        // The signature covers only the checksum, the settings' first AES block: CBC keeps a
+        // change elsewhere to the blocks it touches, which only their own checks can catch.
+        for at in [48, 48 + 7, 48 + 15, signature_at, signature_at + 31] {
+            let mut bad = good.clone();
+            bad[at] ^= 0x10;
+            assert!(read_ctb(&bad).is_err(), "byte {at} flipped");
+        }
+        // A new checksum without a new signature.
+        let resigned = with_settings(&good, |s| s[0] ^= 1);
+        assert!(read_ctb(&resigned).is_err());
+        let mut v6 = good;
+        v6[16..20].copy_from_slice(&6u32.to_le_bytes());
+        assert!(read_ctb(&v6).is_err(), "only versions 4 and 5 are read");
+    }
+
+    #[test]
+    fn hostile_encrypted_files_are_errors_not_panics() {
+        let good = write_ctb(&tiny(), &tiny_previews(), &encrypted()).unwrap();
+        for len in 0..good.len() {
+            assert!(read_ctb(&good[..len]).is_err(), "cut to {len} bytes");
+        }
+        let mut rng = XorShift(0x0BAD_5EED_1234_5678);
+        for _ in 0..2000 {
+            let mut flipped = good.clone();
+            for _ in 0..1 + rng.next() % 4 {
+                let at = (rng.next() % flipped.len() as u64) as usize;
+                flipped[at] ^= 1 << (rng.next() % 8);
+            }
+            let _ = read_ctb(&flipped);
+            let noise: Vec<u8> = (0..rng.next() % 600).map(|_| rng.next() as u8).collect();
+            let mut with_header = good[..48].to_vec();
+            with_header.extend_from_slice(&noise);
+            let _ = read_ctb(&with_header);
+        }
+        let len = good.len() as u32;
+        // Header offsets and sizes.
+        for at in [4usize, 8, 20, 24] {
+            for v in [0, 1, 15, 17, len - 1, len, len + 1, 0x7FFF_FFFF, u32::MAX] {
+                let mut bad = good.clone();
+                bad[at..at + 4].copy_from_slice(&v.to_le_bytes());
+                if v != u32_at(&good, at) {
+                    assert!(read_ctb(&bad).is_err(), "{v:#x} at {at}");
+                }
+            }
+        }
+        // Offsets and counts in the settings, signed as the writer signs them.
+        let table = read_ctb(&good).unwrap().header.layer_table_offset as usize;
+        for at in [8usize, 56, 60, 64, 68, 72, 160, 164] {
+            for v in [len, len + 1, 0x7FFF_FFFF, u32::MAX] {
+                let bad = with_settings(&good, |s| s[at..at + 4].copy_from_slice(&v.to_le_bytes()));
+                assert!(read_ctb(&bad).is_err(), "{v:#x} at settings {at}");
+            }
+        }
+        // A pointer, a definition's data offset and size, its encrypted span's size.
+        let def = u32_at(&good, table) as usize;
+        for at in [table, table + 4, def + 16, def + 20, def + 24, def + 36] {
+            for v in [len, len + 1, 0x7FFF_FFFF, u32::MAX] {
+                let mut bad = good.clone();
+                bad[at..at + 4].copy_from_slice(&v.to_le_bytes());
+                assert!(read_ctb(&bad).is_err(), "{v:#x} at {at}");
+            }
+        }
     }
 
     /// The files for the printer test (`docs/prompts/slicing/04-export-ctb.md`): run by hand with
@@ -1356,8 +1642,15 @@ mod tests {
         let dir = std::path::PathBuf::from(std::env::var("CTB_OUT_DIR").expect("set CTB_OUT_DIR to the directory to write to"));
         let cube = cube();
         let f = letter_f();
-        for (name, job, key) in [("cube-k67.ctb", &cube, DEFAULT_KEY), ("cube-k0.ctb", &cube, 0), ("f-k67.ctb", &f, DEFAULT_KEY)] {
-            let bytes = write_ctb(job, &Previews::plain(job), &CtbOptions { encryption_key: key, modified_minutes: 29_000_000 }).unwrap();
+        let (v2, enc) = (CtbFormat::V2, CtbFormat::Encrypted);
+        for (name, job, format, key) in [
+            ("cube-k67.ctb", &cube, v2, DEFAULT_KEY),
+            ("cube-k0.ctb", &cube, v2, 0),
+            ("f-k67.ctb", &f, v2, DEFAULT_KEY),
+            ("cube-enc.ctb", &cube, enc, DEFAULT_KEY),
+            ("f-enc.ctb", &f, enc, DEFAULT_KEY),
+        ] {
+            let bytes = write_ctb(job, &Previews::plain(job), &CtbOptions { format, encryption_key: key, modified_minutes: 29_000_000 }).unwrap();
             let back = read_ctb(&bytes).unwrap();
             assert_eq!(back.layers.len(), job.layers.len());
             crate::write_atomic(&dir.join(name), &bytes, false).unwrap();
