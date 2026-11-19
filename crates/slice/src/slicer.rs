@@ -172,6 +172,8 @@ pub fn slice_with(
     let res = (profile.resolution_x, profile.resolution_y);
     let place = Placement::new(profile, aa);
     let h = settings.layers.height;
+    let (px, py) = profile.pixel_pitch();
+    let steep_grey = dither.and_then(|_| raster::steep_grey(s.dither_max_angle, h, planes, (px + py) / 2.0));
 
     let mut clipped = 0;
     let mut top = 0.0f64;
@@ -216,12 +218,16 @@ pub fn slice_with(
             open = open.max(o);
             cuts.push(runs);
         }
+        let steep = steep_grey.map(|t| {
+            let mask = raster::steep(&cuts, pixels, t);
+            if passes > 0 { raster::dilate(&mask, res, u64::from(radius) * u64::from(passes), cancel) } else { mask }
+        });
         let mut runs = if cuts.len() == 1 { cuts.pop().unwrap_or_default() } else { raster::average(&cuts, pixels) };
         if passes > 0 {
             runs = raster::blur(&runs, res, radius, passes, cancel);
         }
         if let Some(d) = dither {
-            runs = raster::dither(&runs, res.0, i as u32, d, cancel);
+            runs = raster::dither(&runs, res.0, i as u32, d, steep.as_deref(), cancel);
         }
         if let Some(table) = &gamma {
             runs = raster::regrey(&runs, table);
@@ -581,6 +587,62 @@ mod tests {
         i.settings.slicing.exact = true;
         i.settings.slicing.dither_floor = 20;
         assert_eq!(run(&i).layers, grey.layers);
+    }
+
+    #[test]
+    fn only_surfaces_within_the_angle_limit_are_dithered() {
+        // Left of the plate's centre a wall whose +Y face leans 2° from vertical; right of it a
+        // block whose top slopes 10° from horizontal, 80° from vertical.
+        let tri = |p: [f32; 3], q: [f32; 3], r: [f32; 3]| [p, q, r];
+        let hexa = |b: [[f32; 3]; 4], t: [[f32; 3]; 4]| {
+            let mut v = vec![tri(b[0], b[3], b[2]), tri(b[0], b[2], b[1]), tri(t[0], t[1], t[2]), tri(t[0], t[2], t[3])];
+            for i in 0..4 {
+                let j = (i + 1) % 4;
+                v.extend([tri(b[i], b[j], t[j]), tri(b[i], t[j], t[i])]);
+            }
+            v
+        };
+        let lean = 2f32.to_radians().tan() * 2.5;
+        let wall = hexa(
+            [[-20.0, -2.0, 0.0], [-5.0, -2.0, 0.0], [-5.0, 2.0, 0.0], [-20.0, 2.0, 0.0]],
+            [[-20.0, -2.0, 2.5], [-5.0, -2.0, 2.5], [-5.0, 2.0 - lean, 2.5], [-20.0, 2.0 - lean, 2.5]],
+        );
+        let rise = 10f32.to_radians().tan() * 10.0;
+        let ramp = hexa(
+            [[5.0, -5.0, 0.0], [20.0, -5.0, 0.0], [20.0, 5.0, 0.0], [5.0, 5.0, 0.0]],
+            [[5.0, -5.0, 0.5], [20.0, -5.0, 0.5], [20.0, 5.0, 0.5 + rise], [5.0, 5.0, 0.5 + rise]],
+        );
+        let mut i = input(vec![wall, ramp]);
+        let s = &mut i.settings.slicing;
+        (s.exact, s.anti_aliasing_z, s.dither_z, s.dither_xy, s.dither_floor) = (true, 8, true, true, 100);
+        let width = u64::from(i.profile.resolution_x);
+        // Grey pixels (neither dark nor lit) left and right of the centre, on layer 20 (1 mm up).
+        let greys = |i: &SliceInput| {
+            let job = run(i);
+            let (mut at, mut left, mut right) = (0u64, 0u64, 0u64);
+            for r in &job.layers[20].runs {
+                if r.grey > 0 && r.grey < 255 {
+                    for p in at..at + r.len {
+                        if p % width < width / 2 { left += 1 } else { right += 1 }
+                    }
+                }
+                at += r.len;
+            }
+            (left, right)
+        };
+        let (wall_greys, ramp_greys) = greys(&i);
+        assert_eq!(wall_greys, 0, "the wall is dithered");
+        assert!(ramp_greys > 1000, "the ramp keeps its greys: {ramp_greys}");
+        // Its blurred surroundings too.
+        (i.settings.slicing.blur_radius, i.settings.slicing.blur_passes) = (2, 2);
+        let (wall_greys, ramp_greys) = greys(&i);
+        assert_eq!(wall_greys, 0);
+        assert!(ramp_greys > 1000);
+        // At 90°, or with one cut, everything is dithered.
+        i.settings.slicing.dither_max_angle = 90.0;
+        assert_eq!(greys(&i), (0, 0));
+        (i.settings.slicing.dither_max_angle, i.settings.slicing.anti_aliasing_z) = (20.0, 1);
+        assert_eq!(greys(&i), (0, 0));
     }
 
     #[test]

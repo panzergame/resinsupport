@@ -272,6 +272,11 @@ pub struct Slicing {
     /// and dark. 100 dithers between lit and dark only.
     #[serde(default = "half")]
     pub dither_floor: u8,
+    /// With `dither_z` or `dither_xy`, how far from vertical a surface may lean, in degrees, and
+    /// still be dithered: flatter ones keep their greys. Read from how much a pixel's grey changes
+    /// across the layer's Z anti-aliasing cuts, so ignored with one cut. 90 dithers everywhere.
+    #[serde(default = "twenty_degrees")]
+    pub dither_max_angle: f64,
 }
 
 impl Slicing {
@@ -301,6 +306,10 @@ fn one() -> u8 {
 
 fn half() -> u8 {
     50
+}
+
+fn twenty_degrees() -> f64 {
+    20.0
 }
 
 /// For the resin and cost estimates.
@@ -358,6 +367,7 @@ impl Default for PrintSettings {
                 dither_z: false,
                 dither_xy: false,
                 dither_floor: 50,
+                dither_max_angle: 20.0,
             },
             estimates: Estimates { resin_density: 1.1, bottle_volume: 1000.0, bottle_cost: 0.0 },
         }
@@ -460,6 +470,7 @@ impl PrintSettings {
             ("slicing", "blur_radius") => s.blur_radius.into(),
             ("slicing", "blur_passes") => s.blur_passes.into(),
             ("slicing", "dither_floor") => s.dither_floor.into(),
+            ("slicing", "dither_max_angle") => s.dither_max_angle,
             ("slicing", "gamma") => s.gamma,
             ("estimates", "resin_density") => x.resin_density,
             ("estimates", "bottle_volume") => x.bottle_volume,
@@ -500,6 +511,7 @@ impl PrintSettings {
             ("slicing", "blur_radius") => self.slicing.blur_radius = x as u32,
             ("slicing", "blur_passes") => self.slicing.blur_passes = x as u8,
             ("slicing", "dither_floor") => self.slicing.dither_floor = x as u8,
+            ("slicing", "dither_max_angle") => self.slicing.dither_max_angle = x,
             ("slicing", "gamma") => self.slicing.gamma = x,
             ("estimates", "resin_density") => self.estimates.resin_density = x,
             ("estimates", "bottle_volume") => self.estimates.bottle_volume = x,
@@ -604,6 +616,7 @@ pub const FIELDS: &[Field] = &[
     int("slicing", "blur_radius", 1.0, 16.0),
     int("slicing", "blur_passes", 0.0, 4.0),
     int("slicing", "dither_floor", 1.0, 100.0),
+    real("slicing", "dither_max_angle", 0.0, 90.0),
     real("slicing", "gamma", 0.0, 1.0),
     real("estimates", "resin_density", 0.0, ANY),
     real("estimates", "bottle_volume", 0.0, ANY),

@@ -194,6 +194,8 @@
   "printing.blur_radius.help": "Blurs each layer after anti-aliasing and before gamma, to soften the pixel steps. Fine details and support tips lose light.",
   "printing.dither_floor": "Dither floor",
   "printing.dither_floor.help": "The lowest grey, in percent of full light as sent to the printer, that your resin cures reliably. Greys from it up are kept; greys under it are dithered between it and dark. 100 % dithers between lit and dark only.",
+  "printing.dither_max_angle": "Dither up to",
+  "printing.dither_max_angle.help": "Dithers only surfaces leaning less than this from vertical, where an edge creeps across a pixel over many layers. Flatter surfaces keep their greys, which set how deep they cure. Measured between the Anti-aliasing Z cuts, so it needs 2 planes or more; with one, dithering applies everywhere. 90° dithers everywhere.",
   "printing.dither_xy": "Dither along edges",
   "printing.dither_xy.help": "Gives each pixel its own dither pattern, so neighbours along an edge switch on at different layers rather than all together, which would print a hairline. On its own, each pixel switches on once, at its own layer.",
   "printing.dither_z": "Dither across layers",

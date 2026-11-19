@@ -342,6 +342,7 @@ const SLICING_ROWS: &[Num] = &[
     num("printing.blur_passes", "slicing", "blur_passes", "", 0, 0.05).help("printing.blur_passes.help"),
     num("printing.blur_radius", "slicing", "blur_radius", " px", 0, 0.05).help("printing.blur_radius.help").when(blurs),
     num("printing.dither_floor", "slicing", "dither_floor", " %", 0, 0.2).help("printing.dither_floor.help").when(dithers),
+    num("printing.dither_max_angle", "slicing", "dither_max_angle", "°", 1, 0.2).help("printing.dither_max_angle.help").when(dithers),
     num("printing.gamma", "slicing", "gamma", "", 2, 0.01).help("printing.gamma.help"),
     num("printing.estimates.resin_density", "estimates", "resin_density", " g/ml", 2, 0.01),
     num("printing.estimates.bottle_volume", "estimates", "bottle_volume", " ml", 0, 10.0),
@@ -573,13 +574,14 @@ mod tests {
     #[test]
     fn the_dither_floor_waits_for_a_dither() {
         let floor = SLICING_ROWS.iter().find(|r| r.key == "dither_floor").and_then(|r| r.when).unwrap();
+        let angle = SLICING_ROWS.iter().find(|r| r.key == "dither_max_angle").and_then(|r| r.when).unwrap();
         let mut c = PrintConfig::default();
-        assert!(!floor(&c));
+        assert!(!floor(&c) && !angle(&c));
         c.settings.slicing.dither_xy = true;
-        assert!(floor(&c));
+        assert!(floor(&c) && angle(&c));
         c.settings.slicing = PrintConfig::default().settings.slicing;
         c.settings.slicing.dither_z = true;
-        assert!(floor(&c));
+        assert!(floor(&c) && angle(&c));
     }
 
     #[test]
