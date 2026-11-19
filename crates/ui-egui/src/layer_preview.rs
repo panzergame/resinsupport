@@ -1,7 +1,7 @@
 //! Browsing a sliced job's layers in Slice edition: which layers are shown (the slider at the
-//! viewport's right edge, Page Up and Page Down, Home and End), the shown layer decoded for the
-//! GPU, and the card that describes it. What is shown is the UI's choice, as the camera is: no
-//! command, no undo step.
+//! viewport's right edge, Page Up and Page Down, Up and Down in the 2D view, Home and End), the
+//! shown layer decoded for the GPU, and the card that describes it. What is shown is the UI's
+//! choice, as the camera is: no command, no undo step.
 
 use std::sync::Arc;
 
@@ -22,7 +22,7 @@ const TRACK_WIDTH: f32 = 4.0;
 const HANDLE_SIZE: egui::Vec2 = vec2(18.0, 10.0);
 /// Clear of the view caption in the viewport's bottom-right corner.
 const SLIDER_BOTTOM_GAP: f32 = 40.0;
-/// Page Up and Page Down with Shift.
+/// Page Up and Page Down (Up and Down in the 2D view) with Shift.
 const BIG_STEP: isize = 10;
 /// Clear of the axis gizmo in the viewport's bottom-left corner.
 const CARD_LEFT: f32 = 108.0;
@@ -180,8 +180,9 @@ pub fn image_dimmed(app: &ResinApp, image: &LayerImage) -> bool {
     stamp != app.session.slice_stamp() || app.slicer.running_stamp().is_some_and(|s| s != stamp)
 }
 
-/// Page Up and Page Down step one layer (Shift: ten), Home and End jump to the ends. Whether
-/// the key was used.
+/// Page Up and Page Down step one layer (Shift: ten), as Up and Down do in the 2D view, where
+/// they would only turn the hidden 3D view; Home and End jump to the ends. Whether the key was
+/// used.
 pub fn key(app: &mut ResinApp, key: egui::Key, mods: egui::Modifiers) -> bool {
     if !active(app) || mods.ctrl || mods.command || mods.alt {
         return false;
@@ -191,6 +192,8 @@ pub fn key(app: &mut ResinApp, key: egui::Key, mods: egui::Modifiers) -> bool {
     match key {
         egui::Key::PageUp => p.step(step),
         egui::Key::PageDown => p.step(-step),
+        egui::Key::ArrowUp if p.flat => p.step(step),
+        egui::Key::ArrowDown if p.flat => p.step(-step),
         egui::Key::Home => p.set_top(0),
         egui::Key::End => p.set_top(usize::MAX),
         _ => return false,

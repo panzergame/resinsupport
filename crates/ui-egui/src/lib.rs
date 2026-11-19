@@ -749,22 +749,28 @@ impl ResinApp {
         for t in &typed {
             transform::text(self, t);
         }
-        let pressed: Vec<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
+        let pressed: Vec<(egui::Key, egui::Modifiers, bool)> = ctx.input(|i| {
             i.events
                 .iter()
                 .filter_map(|e| match e {
-                    egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
+                    egui::Event::Key { key, pressed: true, repeat, modifiers, .. } => Some((*key, *modifiers, *repeat)),
                     _ => None,
                 })
                 .collect()
         });
-        for (key, mods) in pressed {
+        for (key, mods, repeat) in pressed {
+            // A held key runs through the layers; every other shortcut acts once per press.
+            if repeat {
+                layer_preview::key(self, key, mods);
+                continue;
+            }
             if transform::key(self, key, mods) {
                 // Taken from the tool's card too: its Enter and Esc would end the tool its own way.
                 ctx.input_mut(|i| i.consume_key(mods, key));
                 continue;
             }
-            if navigation::view_key(self, ctx, key, mods) || layer_preview::key(self, key, mods) {
+            // Layers first: in the 2D view, Up and Down step the layer instead of turning the view.
+            if layer_preview::key(self, key, mods) || navigation::view_key(self, ctx, key, mods) {
                 continue;
             }
             let plain = mods.is_none();
@@ -1186,6 +1192,59 @@ mod tests {
         finish_slice(&mut app, &ctx);
         assert!(app.session.job_is_current());
         assert_eq!(EditMode::Slice.next(), EditMode::Object);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn up_and_down_step_the_layer_in_the_2d_view_only() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-arrows-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("tri.stl");
+        std::fs::write(&stl, "solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 2\nendloop\nendfacet\nendsolid t\n")
+            .unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        app.run("file.import_stl", json!({ "path": stl, "fit": false })).unwrap();
+        let ctx = egui::Context::default();
+        app.set_mode(EditMode::Slice);
+        finish_slice(&mut app, &ctx);
+        assert!(layer_preview::active(&app));
+        let layers = app.session.job().map_or(0, |j| j.sliced.layers.len());
+        assert!(layers > 17, "{layers} layers");
+        app.preview.sync(app.session.job());
+        app.preview.set_top(5);
+        // egui reads a press of a key still down as a repeat: `release` false holds it.
+        let press = |app: &mut ResinApp, key: egui::Key, modifiers: egui::Modifiers, release: bool| {
+            let events = [true, false]
+                .into_iter()
+                .take(if release { 2 } else { 1 })
+                .map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers })
+                .collect();
+            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| app.keys(ui.ctx()));
+            out.textures_delta.clear();
+        };
+        let (none, shift) = (egui::Modifiers::NONE, egui::Modifiers::SHIFT);
+
+        press(&mut app, egui::Key::ArrowUp, none, true);
+        assert_eq!(app.preview.top, 5, "the 3D view turns instead");
+
+        app.preview.flat = true;
+        press(&mut app, egui::Key::ArrowUp, none, false);
+        assert_eq!(app.preview.top, 6);
+        press(&mut app, egui::Key::ArrowUp, none, true);
+        assert_eq!(app.preview.top, 7, "a held key keeps stepping");
+        press(&mut app, egui::Key::ArrowUp, shift, true);
+        assert_eq!(app.preview.top, 17);
+        press(&mut app, egui::Key::ArrowDown, none, true);
+        assert_eq!(app.preview.top, 16);
+        press(&mut app, egui::Key::ArrowDown, shift, true);
+        assert_eq!(app.preview.top, 6);
+        press(&mut app, egui::Key::ArrowDown, egui::Modifiers::CTRL, true);
+        assert_eq!(app.preview.top, 6, "Ctrl+arrows pan");
+        press(&mut app, egui::Key::F, none, false);
+        assert!(app.preview.fit);
+        app.preview.fit = false;
+        press(&mut app, egui::Key::F, none, true);
+        assert!(!app.preview.fit, "other shortcuts ignore a held key");
         std::fs::remove_dir_all(dir).ok();
     }
 }

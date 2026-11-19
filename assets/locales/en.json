@@ -177,7 +177,7 @@
   "preview.row.exposure": "Exposure",
   "preview.row.layer": "Layer",
   "preview.row.regions": "Regions",
-  "preview.slider.tip": "The shown layers: drag a handle, click or scroll. Page Up and Page Down step a layer (Shift: ten), Home and End jump to the ends",
+  "preview.slider.tip": "The shown layers: drag a handle, click or scroll. Page Up and Page Down (Up and Down in the 2D view) step a layer (Shift: ten), Home and End jump to the ends",
   "preview.slider_label": "{n} · {z} mm",
   "preview.title": "Layer",
   "printing.all_layers.help": "One value for every layer, the bottom ones included",
