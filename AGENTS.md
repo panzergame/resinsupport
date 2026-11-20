@@ -19,6 +19,7 @@ ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resi
 ## Where things go
 | Working on | Read |
 |---|---|
+| What the app already does, a feature prompt | `docs/features.md` |
 | Licences, assets, porting, wording | `skills/resinsupport-ground-rules/SKILL.md` |
 | Non-test Rust, hostile input, a crash | `skills/resinsupport-crash-safety/SKILL.md` |
 | A command, a crate boundary | `skills/resinsupport-commands/SKILL.md` |

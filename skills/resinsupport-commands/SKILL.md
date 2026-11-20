@@ -13,7 +13,7 @@ User-visible behaviour is a command. The ribbon, dialogs, gizmo, tests and futur
 3. Validate inputs first and return `EngineError::BadParams` rather than half-applying. Parameters are hostile: `skills/resinsupport-crash-safety/SKILL.md`. Shared parsers live in `crates/engine/src/cmd.rs` (`vec3_param`, `ids_param`, `num_param`).
 4. Engine tests measure the result against values derived by hand (`crates/engine/src/tests.rs`; `skills/resinsupport-tests/SKILL.md`). Give it a row in `sample` there, valid parameters on the fixture: `every_scene_change_is_undoable` fails for a command without one, and checks it undoes and redoes (below).
 5. Add its label to the English catalog as `cmd.<command id>`: `cargo xtask i18n --add-missing` writes it; `every_command_label_is_in_the_english_catalog` fails without it (`skills/resinsupport-ui-text/SKILL.md`).
-6. Add a row to the commands table in `docs/architecture.md`, and tick `ROADMAP.md` when a milestone task lands.
+6. Add a row to the commands table in `docs/architecture.md`, and tick `ROADMAP.md` when a milestone task lands. Write or update its user story in `docs/features.md` (and drop it from that category's **Not yet**), so the guide keeps saying what the app does.
 7. A button or dialog for it: `skills/resinsupport-ui/SKILL.md`.
 
 ## Undo and redo
