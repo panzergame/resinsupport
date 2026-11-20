@@ -249,9 +249,8 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
         width: FORM_CARD_WIDTH,
         buttons: Buttons::OkCancel { ok_enabled: to.is_some() && adds > 0 },
     };
-    // Pinned to the view's top right, clear of the support settings at its top left: placed by
-    // its top left, egui's first sizing pass, at its default width, would push it leftwards.
-    let action = card.show_anchored(ctx, &t, egui::Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
+    // Opens at the view's top right, clear of the support settings at its top left.
+    let action = card.show_placed(ctx, &t, egui::Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
         ui_kit::row(ui, &t, i18n::tr("tool.line.spacing"), |ui| ui_kit::number_field(ui, &mut spacing, SPACING_RANGE, 0.05, " mm", 2));
         ui_kit::row(ui, &t, i18n::tr("tool.line.per_body"), |ui| {
             ui.add_enabled_ui(!same, |ui| ui_kit::number_field(ui, &mut per_body, 1..=MAX_TIPS_PER_BODY, 0.05, "", 0))
@@ -325,7 +324,7 @@ mod tests {
         app.run("view.fit", json!({ "aspect": 800.0 / 600.0 })).unwrap();
         let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
         let proj = Proj { cam: app.session.camera, rect };
-        // The card then sits in the view's top right, clear of the model.
+        // The card then opens in the view's top right, clear of the model.
         app.viewport_rect = Some(rect);
         let ctx = egui::Context::default();
         let mut time = 0.0;

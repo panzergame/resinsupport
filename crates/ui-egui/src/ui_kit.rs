@@ -1,7 +1,7 @@
 // Ported from SolidCraft (MIT OR Apache-2.0), crates/ui-egui/src/ui_kit/panel.rs (`header`,
 // `Panel::feature`) and ui_kit/actions.rs (`footer`, `action_button`, `icon_button_at`) at
-// 4bdffef0; the card's scrolling body (`Panel::feature_impl`) and `page_list` from
-// crates/ui-kit/src/panel.rs at a34756830; see ATTRIBUTION.md. Reduced: no docking, top buttons,
+// 4bdffef0; the card's scrolling body (`Panel::feature_impl`), its placement (`Window::placed`)
+// and `page_list` from crates/ui-kit/src/panel.rs at a34756830; see ATTRIBUTION.md. Reduced: no docking, top buttons,
 // compute status, page groups or scenario handles.
 
 //! SolidCraft's UI kit, ported reduced: the card every dialog uses (a 40 pt header with icon,
@@ -93,17 +93,24 @@ impl Card<'_> {
     /// Show the card; Enter is OK, Esc (outside a field being typed in) and the close button are
     /// Cancel.
     pub fn show(self, ctx: &egui::Context, t: &Tokens, body: impl FnOnce(&mut Ui)) -> Action {
-        self.show_window(ctx, t, None, body)
+        self.show_window(ctx, t, Placement::At, body)
     }
 
     /// [`Card::show`], pinned by its `corner` to the same corner of `bounds` (else the screen)
     /// moved by `offset`:
     /// a panel that stays put, such as one at the viewport's bottom left, whatever its height.
     pub fn show_anchored(self, ctx: &egui::Context, t: &Tokens, corner: Align2, offset: egui::Vec2, body: impl FnOnce(&mut Ui)) -> Action {
-        self.show_window(ctx, t, Some((corner, offset)), body)
+        self.show_window(ctx, t, Placement::Anchored(corner, offset), body)
     }
 
-    fn show_window(self, ctx: &egui::Context, t: &Tokens, anchor: Option<(Align2, egui::Vec2)>, body: impl FnOnce(&mut Ui)) -> Action {
+    /// [`Card::show`], first opened with its `corner` at the same corner of `bounds` (else the
+    /// screen) moved by `offset`; the user can then move it. The corner holds while egui sizes the
+    /// card, where a card placed by its top left would shift as its width settles.
+    pub fn show_placed(self, ctx: &egui::Context, t: &Tokens, corner: Align2, offset: egui::Vec2, body: impl FnOnce(&mut Ui)) -> Action {
+        self.show_window(ctx, t, Placement::Placed(corner, offset), body)
+    }
+
+    fn show_window(self, ctx: &egui::Context, t: &Tokens, placement: Placement, body: impl FnOnce(&mut Ui)) -> Action {
         let typing = ctx.text_edit_focused();
         let frame = card_frame(t);
         let permanent = matches!(self.buttons, Buttons::None | Buttons::CloseOnly);
@@ -115,10 +122,12 @@ impl Card<'_> {
         if let Some(b) = self.bounds {
             window = window.constrain_to(b);
         }
-        if let Some((corner, offset)) = anchor {
-            window = window.anchor(corner, offset);
-        }
-        window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).default_pos(self.at).show(ctx, |ui| {
+        window = match placement {
+            Placement::At => window.default_pos(self.at),
+            Placement::Anchored(corner, offset) => window.anchor(corner, offset),
+            Placement::Placed(corner, offset) => window.pivot(corner).default_pos(corner.pos_in_rect(&room) + offset),
+        };
+        window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).show(ctx, |ui| {
             ui.set_width(self.width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             if header(ui, t, self.icon, self.title, self.buttons != Buttons::None) {
@@ -158,6 +167,14 @@ impl Card<'_> {
         });
         action
     }
+}
+
+/// Where a card sits: see [`Card::show`], [`Card::show_anchored`] and [`Card::show_placed`].
+#[derive(Clone, Copy)]
+enum Placement {
+    At,
+    Anchored(Align2, egui::Vec2),
+    Placed(Align2, egui::Vec2),
 }
 
 /// A card's frame: the dialog fill, border, corners and shadow.
@@ -357,58 +374,99 @@ mod tests {
         assert!(short <= 400.0 - SPACE_12 + 1.0, "within the viewport: {short}");
     }
 
-    /// Where a card pinned by its top right corner to `bounds` is drawn on each of a few repaints,
-    /// at `ppp` pixels per point, the pointer moving (a repaint each frame).
-    fn pinned_card_rects(bounds: Rect, ppp: f32) -> Vec<Option<Rect>> {
+    /// The card the tests below draw: four rows, OK and Cancel, its top right corner at the top
+    /// right of `bounds`, anchored or `placed`.
+    fn top_right_card(ui: &mut Ui, t: &Tokens, bounds: Rect, placed: bool) {
+        let card = Card {
+            id: egui::Id::new("pinned"),
+            title: "",
+            icon: "",
+            at: Pos2::ZERO,
+            bounds: Some(bounds),
+            width: FORM_CARD_WIDTH,
+            buttons: Buttons::OkCancel { ok_enabled: true },
+        };
+        let body = |ui: &mut Ui| {
+            for _ in 0..4 {
+                row(ui, t, "Row", |ui| ui.allocate_space(vec2(ui.available_width(), CONTROL_HEIGHT)));
+            }
+        };
+        let (corner, offset) = (Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12));
+        if placed {
+            card.show_placed(ui.ctx(), t, corner, offset, body);
+        } else {
+            card.show_anchored(ui.ctx(), t, corner, offset, body);
+        }
+    }
+
+    /// Where [`top_right_card`] is drawn after each frame of `events`, at `ppp` pixels per point.
+    fn card_rects(bounds: Rect, ppp: f32, placed: bool, events: Vec<Vec<egui::Event>>) -> Vec<Option<Rect>> {
         let ctx = egui::Context::default();
         let t = Tokens::for_dark(false);
         ctx.set_pixels_per_point(ppp);
-        (0..8)
-            .map(|frame| {
+        events
+            .into_iter()
+            .enumerate()
+            .map(|(frame, events)| {
                 let mut raw = egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1100.0))),
-                    time: Some(f64::from(frame) * 0.016),
-                    events: vec![egui::Event::PointerMoved(Pos2::new(600.0 + 7.0 * frame as f32, 400.0))],
+                    time: Some(frame as f64 * 0.016),
+                    events,
                     ..Default::default()
                 };
                 raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
-                let mut out = ctx.run_ui(raw, |ui| {
-                    let card = Card {
-                        id: egui::Id::new("pinned"),
-                        title: "",
-                        icon: "",
-                        at: Pos2::ZERO,
-                        bounds: Some(bounds),
-                        width: FORM_CARD_WIDTH,
-                        buttons: Buttons::OkCancel { ok_enabled: true },
-                    };
-                    card.show_anchored(ui.ctx(), &t, Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
-                        for _ in 0..4 {
-                            row(ui, &t, "Row", |ui| ui.allocate_space(vec2(ui.available_width(), CONTROL_HEIGHT)));
-                        }
-                    });
-                });
+                let mut out = ctx.run_ui(raw, |ui| top_right_card(ui, &t, bounds, placed));
                 out.textures_delta.clear();
                 ctx.memory(|m| m.area_rect(egui::Id::new("pinned")))
             })
             .collect()
     }
 
-    /// A card pinned by its right edge stays put from one repaint to the next at a fractional
+    /// A card by its top right corner stays put from one repaint to the next at a fractional
     /// scale, wherever the view's right edge falls between device pixels: the body's scroll area,
     /// rounded to pixels, must not change its width (the brace card shook by a pixel as the
     /// pointer moved).
     #[test]
-    fn a_right_anchored_card_holds_still_at_a_fractional_scale() {
-        for ppp in [0.9, 1.1, 1.25, 1.33, 1.5, 1.75] {
-            for step in 0..40 {
-                let right = 1777.0 + step as f32 * 0.025;
-                let bounds = Rect::from_min_max(Pos2::new(228.3, 151.0), Pos2::new(right, 977.0));
-                let rects = pinned_card_rects(bounds, ppp);
-                // The first frames size the card; from then on it must not move.
-                let settled = &rects[2..];
-                assert!(settled.windows(2).all(|w| w[0] == w[1]), "at {ppp} ppx, right edge {right}: {settled:?}");
+    fn a_card_held_by_its_right_edge_holds_still_at_a_fractional_scale() {
+        for placed in [false, true] {
+            for ppp in [0.9, 1.1, 1.25, 1.33, 1.5, 1.75] {
+                for step in 0..40 {
+                    let right = 1777.0 + step as f32 * 0.025;
+                    let bounds = Rect::from_min_max(Pos2::new(228.3, 151.0), Pos2::new(right, 977.0));
+                    let moves = (0..8).map(|i| vec![egui::Event::PointerMoved(Pos2::new(600.0 + 7.0 * i as f32, 400.0))]).collect();
+                    let rects = card_rects(bounds, ppp, placed, moves);
+                    // The first frames size the card; from then on it must not move.
+                    let settled = &rects[2..];
+                    assert!(settled.windows(2).all(|w| w[0] == w[1]), "placed {placed}, at {ppp} ppx, right edge {right}: {settled:?}");
+                }
             }
+        }
+    }
+
+    /// A placed card opens with its corner where asked, follows its header when dragged, and
+    /// stays where it was dropped; an anchored one stays put.
+    #[test]
+    fn a_placed_card_opens_at_its_corner_and_moves_with_its_header() {
+        use egui::{Event, PointerButton};
+        let bounds = Rect::from_min_max(Pos2::new(200.0, 100.0), Pos2::new(1800.0, 1000.0));
+        let header = Pos2::new(bounds.right() - SPACE_12 - FORM_CARD_WIDTH / 2.0, bounds.top() + SPACE_12 + FORM_HEADER_HEIGHT / 2.0);
+        let drag = |to: Pos2| {
+            let press = |pressed| Event::PointerButton { pos: header, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+            let release = Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Default::default() };
+            let mut frames: Vec<Vec<Event>> = vec![vec![], vec![], vec![Event::PointerMoved(header)], vec![press(true)]];
+            frames.extend((1..=10).map(|i| vec![Event::PointerMoved(header + (to - header) * i as f32 / 10.0)]));
+            frames.extend([vec![release], vec![], vec![]]);
+            frames
+        };
+        let to = header + vec2(-300.0, 200.0);
+        for placed in [true, false] {
+            let rects = card_rects(bounds, 1.0, placed, drag(to));
+            let (Some(first), Some(last)) = (rects[2], rects[rects.len() - 1]) else { panic!("no card: {rects:?}") };
+            let corner = bounds.right_top() + vec2(-SPACE_12, SPACE_12);
+            assert!((first.right_top() - corner).length() < 1.0, "placed {placed}: opens at {first:?}, not by {corner:?}");
+            let moved = last.right_top() - first.right_top();
+            let expected = if placed { to - header } else { vec2(0.0, 0.0) };
+            assert!((moved - expected).length() < 1.0, "placed {placed}: moved by {moved:?}, not {expected:?}");
         }
     }
 }

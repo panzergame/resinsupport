@@ -214,8 +214,8 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
         // Making none in place of some is a change too: it clears the selection's braces.
         buttons: Buttons::OkCancel { ok_enabled: too_many.is_none() && (adds > 0 || replaced > 0) },
     };
-    // Pinned to the view's top right, as the tip line's card.
-    let action = card.show_anchored(ctx, &t, egui::Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
+    // Opens at the view's top right, as the tip line's card.
+    let action = card.show_placed(ctx, &t, egui::Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
         let patterns = [("zigzag", "tool.brace.zigzag"), ("cross", "tool.brace.cross")];
         ui_kit::choice_row(ui, &t, i18n::tr("tool.brace.pattern"), "support_brace_pattern", &mut pattern, &patterns);
         let pairings = [("chain", "tool.brace.chain"), ("tree", "tool.brace.tree"), ("all", "tool.brace.all")];
