@@ -128,12 +128,17 @@ impl Card<'_> {
             let bottom = room.bottom() - SPACE_12 - 1.0;
             let footer_height = if permanent { 0.0 } else { FORM_FOOTER_HEIGHT };
             let body_height = (bottom - ui.cursor().top() - footer_height).max(CONTROL_HEIGHT * 2.0);
+            // egui rounds the scroll content to device pixels, so what it measures depends on where
+            // the card sits; an anchored card placed by that width would move on every repaint.
+            // The body is a child, which does not grow the card, and the card takes its own width.
+            let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(ui.available_rect_before_wrap()));
             egui::ScrollArea::vertical()
                 .id_salt("card_body")
                 .min_scrolled_height(0.0)
                 .max_height(body_height)
                 .auto_shrink([false, true])
-                .show(ui, |ui| egui::Frame::NONE.inner_margin(SPACE_12).show(ui, |ui| scope(ui, t, body)));
+                .show(&mut body_ui, |ui| egui::Frame::NONE.inner_margin(SPACE_12).show(ui, |ui| scope(ui, t, body)));
+            ui.allocate_exact_size(vec2(ui.available_width(), body_ui.min_rect().height()), Sense::hover());
             if !permanent {
                 let clicked = footer(ui, t, self.buttons);
                 if clicked != Action::None {
@@ -350,5 +355,60 @@ mod tests {
         assert!((roomy - whole).abs() < 4.0, "whole, past egui's first 420 pt: {roomy} vs {whole}");
         let short = card_height(rows, 400.0);
         assert!(short <= 400.0 - SPACE_12 + 1.0, "within the viewport: {short}");
+    }
+
+    /// Where a card pinned by its top right corner to `bounds` is drawn on each of a few repaints,
+    /// at `ppp` pixels per point, the pointer moving (a repaint each frame).
+    fn pinned_card_rects(bounds: Rect, ppp: f32) -> Vec<Option<Rect>> {
+        let ctx = egui::Context::default();
+        let t = Tokens::for_dark(false);
+        ctx.set_pixels_per_point(ppp);
+        (0..8)
+            .map(|frame| {
+                let mut raw = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(2000.0, 1100.0))),
+                    time: Some(f64::from(frame) * 0.016),
+                    events: vec![egui::Event::PointerMoved(Pos2::new(600.0 + 7.0 * frame as f32, 400.0))],
+                    ..Default::default()
+                };
+                raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
+                let mut out = ctx.run_ui(raw, |ui| {
+                    let card = Card {
+                        id: egui::Id::new("pinned"),
+                        title: "",
+                        icon: "",
+                        at: Pos2::ZERO,
+                        bounds: Some(bounds),
+                        width: FORM_CARD_WIDTH,
+                        buttons: Buttons::OkCancel { ok_enabled: true },
+                    };
+                    card.show_anchored(ui.ctx(), &t, Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
+                        for _ in 0..4 {
+                            row(ui, &t, "Row", |ui| ui.allocate_space(vec2(ui.available_width(), CONTROL_HEIGHT)));
+                        }
+                    });
+                });
+                out.textures_delta.clear();
+                ctx.memory(|m| m.area_rect(egui::Id::new("pinned")))
+            })
+            .collect()
+    }
+
+    /// A card pinned by its right edge stays put from one repaint to the next at a fractional
+    /// scale, wherever the view's right edge falls between device pixels: the body's scroll area,
+    /// rounded to pixels, must not change its width (the brace card shook by a pixel as the
+    /// pointer moved).
+    #[test]
+    fn a_right_anchored_card_holds_still_at_a_fractional_scale() {
+        for ppp in [0.9, 1.1, 1.25, 1.33, 1.5, 1.75] {
+            for step in 0..40 {
+                let right = 1777.0 + step as f32 * 0.025;
+                let bounds = Rect::from_min_max(Pos2::new(228.3, 151.0), Pos2::new(right, 977.0));
+                let rects = pinned_card_rects(bounds, ppp);
+                // The first frames size the card; from then on it must not move.
+                let settled = &rects[2..];
+                assert!(settled.windows(2).all(|w| w[0] == w[1]), "at {ppp} ppx, right edge {right}: {settled:?}");
+            }
+        }
     }
 }
