@@ -31,6 +31,8 @@ pub mod theme;
 pub mod toolbar;
 pub mod transform;
 pub mod ui_kit;
+#[cfg(test)]
+mod ui_kit_guard_tests;
 pub mod viewport;
 
 use resin_engine::Session;

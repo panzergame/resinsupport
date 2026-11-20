@@ -8,7 +8,7 @@
 //! title and close, a padded body of form rows that scrolls when the viewport is too short, and a
 //! 48 pt footer with OK and Cancel, or with Restore defaults and Close; a permanent panel has
 //! neither footer nor close), and every control a card, a menu or a list holds. Feature modules
-//! draw their controls with these, never with egui's own.
+//! draw their controls with these, never with egui's own (`raw_widgets_stay_in_the_kit`).
 //! Colours and sizes come from [`crate::theme`], words from [`crate::i18n`].
 
 mod checks;
