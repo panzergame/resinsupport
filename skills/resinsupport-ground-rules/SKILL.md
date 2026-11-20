@@ -22,7 +22,8 @@ The rules that cannot be broken. `AGENTS.md` lists them in one line each.
 - Say which dependency you add and why. Every crate below the apps must stay wasm-friendly (`skills/resinsupport-performance/SKILL.md`).
 
 ## Code and assets from SolidCraft
-- SolidCraft (MIT OR Apache-2.0) is the reference for conventions, UI and geometry. Code ported from it keeps a header comment naming its source file and commit (`4bdffef0` so far), and gets a row in `ATTRIBUTION.md`.
+- SolidCraft (MIT OR Apache-2.0) is the reference for conventions, UI and geometry. Code ported from it keeps a header comment naming its source file and commit (`4bdffef0`, and `a34756830` for the UI kit), and gets a row in `ATTRIBUTION.md`.
+- SolidCraft's UI kit (`solidcraft:crates/ui-kit`), theme (`solidcraft:crates/theme`) and look (`solidcraft:crates/look`: icons, glyphs, themes) are under the SolidCraft Brand and Interface Licence from `312454f89` on, which is not GPL-compatible: port them from `a34756830` or earlier, never from a later revision, unless the SolidCraft maintainers have agreed in writing. Its other code stays MIT OR Apache-2.0.
 - Port interaction (gizmos, navigation, dialogs) from SolidCraft rather than imitating another slicer.
 - Every file asset (icon, image, font) is original or openly licensed and has a row in `ATTRIBUTION.md`. UI icons are SolidCraft's SVG masters, copied unchanged into `crates/ui-egui/icons` (`skills/resinsupport-ui/SKILL.md`).
 

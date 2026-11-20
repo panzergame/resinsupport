@@ -5,7 +5,7 @@ description: "Use when adding or changing a ResinSupport dialog, ribbon button, 
 
 # Dialogs and UI
 
-The UI is thin: it reads the session and acts through `app.run(id, params)` (`skills/resinsupport-commands/SKILL.md`). Its look is SolidCraft's, ported reduced; when a piece is missing, port it from `solidcraft:crates/ui-egui/src/ui_kit/` and `solidcraft:docs/ui-kit.md` rather than inventing one (`skills/resinsupport-ground-rules/SKILL.md`).
+The UI is thin: it reads the session and acts through `app.run(id, params)` (`skills/resinsupport-commands/SKILL.md`). Its look is SolidCraft's, ported reduced; when a piece is missing, port it from `solidcraft:crates/ui-kit/src/` and `solidcraft:docs/ui-kit.md` at `a34756830`, never later (the Brand and Interface Licence, `skills/resinsupport-ground-rules/SKILL.md`), rather than inventing one.
 
 ## Colours, sizes, style
 - Colours come from `theme::Tokens` (`crates/ui-egui/src/theme.rs`), in light and dark pairs; sizes and spacing from `theme::metrics`. No literal colours or magic sizes in feature code: add a token.
