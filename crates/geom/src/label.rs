@@ -83,7 +83,7 @@ pub struct Label {
     /// the default.
     #[serde(default = "default_margin")]
     pub margin: f64,
-    /// The label preset its side, size, depth and margin follow, by name. The values above stay
+    /// The label preset its size, depth and margin follow, by name. The values above stay
     /// the label's own, so it prints the same where no preset of that name is known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,

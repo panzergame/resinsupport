@@ -1221,7 +1221,7 @@ fn label_presets_are_saved_applied_followed_and_deleted() {
     s.execute("model.label", &json!({ "id": a, "text": "A" })).unwrap();
     let depth = s.undo_depth();
     let r = s.execute("label.preset.save", &json!({ "id": a, "name": "Cal" })).unwrap();
-    assert_eq!(r["preset"], json!({ "name": "Cal", "side": "left", "size": 4.0, "depth": 0.5, "margin": 1.0 }));
+    assert_eq!(r["preset"], json!({ "name": "Cal", "size": 4.0, "depth": 0.5, "margin": 1.0 }), "no side: each label keeps its own");
     assert_eq!(label(&s, a).unwrap().preset.as_deref(), Some("Cal"), "the label follows it");
     assert_eq!(s.undo_depth(), depth, "saving is no step, nor is the link");
     // The link reaches the history wherever the label had these settings: undoing the text keeps it.
@@ -1232,10 +1232,13 @@ fn label_presets_are_saved_applied_followed_and_deleted() {
     assert_eq!(names(&s), ["Cal", "Slab"], "sorted");
     assert_eq!(s.execute("label.preset.list", &json!({})).unwrap()["presets"][0]["size"], json!(4.0));
 
-    // Applied to b, which gets a label with its number, the preset's settings and its own text.
+    // Applied to b, which gets a label with its number, the preset's settings and its own text and side.
     s.execute("model.label", &json!({ "id": b, "preset": "cal" })).unwrap();
     let lb = label(&s, b).unwrap();
-    assert_eq!((lb.text.as_str(), lb.side, lb.size, lb.preset.as_deref()), ("2", resin_geom::LabelSide::Left, 4.0, Some("Cal")));
+    assert_eq!((lb.text.as_str(), lb.side, lb.size, lb.preset.as_deref()), ("2", resin_geom::LabelSide::Front, 4.0, Some("Cal")));
+    // A side is b's alone: no step for a, nor any follower.
+    let r = s.execute("model.label", &json!({ "id": b, "side": "right" })).unwrap();
+    assert_eq!((r["followers"].clone(), label(&s, a).unwrap().side), (json!([]), resin_geom::LabelSide::Left));
 
     // Edited through b: the preset and a follow, in the same step; the slab, on another preset, does not.
     let slab_before = label(&s, slab);

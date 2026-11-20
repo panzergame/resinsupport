@@ -354,9 +354,11 @@ mod tests {
 
     #[test]
     fn every_kind_reads_on_its_own() {
+        // Stored before a label's side left its presets: read, the side left out.
         let label = json!({ "name": "Cal", "side": "left", "size": 3, "depth": 1, "margin": 2 });
         let (l, problems) = PresetLibraries::from_stored(&json!({ "label": [label, 1], "future_kind": [] }));
         assert_eq!((l.label.presets().len(), problems), (1, vec!["presets.label.1".to_string()]));
+        assert_eq!(serde_json::to_value(&l).unwrap()["label"], json!([{ "name": "Cal", "size": 3.0, "depth": 1.0, "margin": 2.0 }]));
         let back: PresetLibraries = serde_json::from_value(serde_json::to_value(&l).unwrap()).unwrap();
         assert_eq!(back, l);
         assert_eq!(PresetLibraries::from_stored(&json!([])), (PresetLibraries::default(), vec!["presets".to_string()]));

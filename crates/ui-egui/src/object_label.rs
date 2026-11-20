@@ -5,6 +5,9 @@
 //! It closes with the mode, when another tool opens, or once its model is not the one selected or
 //! has no label (an undo).
 //!
+//! Two sections, as SolidCraft's cards: Preset (its row, then the size, depth and margin it holds)
+//! and Options (the side and text, each model's own).
+//!
 //! Its Preset row ([`ui_kit::PresetRow`], row `"label"`) picks one of the user's label presets
 //! (`model.label` with `preset`), duplicates what is shown as a new one (`label.preset.save`),
 //! renames the one followed on a double click (`label.preset.rename`) or deletes it, once
@@ -14,7 +17,7 @@
 
 use egui::DragValue;
 use resin_engine::Model;
-use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars, same_preset_name};
+use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars};
 use serde_json::{Map, Value, json};
 
 use crate::theme::Tokens;
@@ -80,11 +83,6 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         (LabelSide::ALL.iter().position(|s| *s == label.side).unwrap_or(0), label.size, label.depth, label.margin, label.text.clone());
     let library = &app.session.presets().label;
     let names: Vec<String> = library.presets().iter().map(|p| p.name.clone()).collect();
-    let followed = label.preset.as_deref().and_then(|n| library.find(n)).map(|p| p.name.clone());
-    let others = followed.as_ref().map_or(0, |name| {
-        let follows = |m: &Model| m.label.as_ref().and_then(|l| l.preset.as_deref()).is_some_and(|n| same_preset_name(n, name));
-        app.session.scene.models().iter().filter(|m| m.id != id && follows(m)).count()
-    });
     let mut rows = std::mem::take(&mut app.preset_rows);
     let mut preset_action = None;
     let mut delete = false;
@@ -98,50 +96,48 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         buttons: Buttons::CloseOnly,
     };
     let action = card.show(ctx, &t, |ui| {
-        let row = PresetRow {
-            row: PRESET_ROW,
-            label: i18n::tr("tool.label.preset"),
-            tip: i18n::tr("tool.label.preset_tip"),
-            names: &names,
-            followed: label.preset.as_deref(),
-        };
-        preset_action = row.show(ui, &t, rows.state(PRESET_ROW));
-        if followed.is_some() {
-            let live =
-                if others == 0 { i18n::tr("tool.label.preset.live").to_string() } else { i18n::count("tool.label.preset.live_others", others, &[]) };
-            ui_kit::hint(ui, &t, &live);
-        }
-        ui_kit::row(ui, &t, i18n::tr("tool.label.side"), |ui| {
-            let names = SIDES.map(i18n::tr);
-            ui_kit::segmented(ui, &t, &mut side, &names);
+        ui_kit::section(ui, &t, "label_preset", i18n::tr("ui.section.preset"), true, |ui| {
+            let row = PresetRow {
+                row: PRESET_ROW,
+                label: i18n::tr("tool.label.preset"),
+                tip: i18n::tr("tool.label.preset_tip"),
+                names: &names,
+                followed: label.preset.as_deref(),
+            };
+            preset_action = row.show(ui, &t, rows.state(PRESET_ROW));
+            ui_kit::row(ui, &t, i18n::tr("tool.label.size"), |ui| {
+                ui.add_sized(
+                    [ui.available_width(), CONTROL_HEIGHT],
+                    DragValue::new(&mut size).range(LABEL_SIZE_RANGE).speed(0.1).suffix(" mm").max_decimals(2),
+                )
+                .on_hover_text(i18n::tr("tool.label.size_tip"));
+            });
+            ui_kit::row(ui, &t, i18n::tr("tool.label.depth"), |ui| {
+                ui.add_sized(
+                    [ui.available_width(), CONTROL_HEIGHT],
+                    DragValue::new(&mut depth).range(LABEL_DEPTH_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
+                )
+                .on_hover_text(i18n::tr("tool.label.depth_tip"));
+            });
+            ui_kit::row(ui, &t, i18n::tr("tool.label.margin"), |ui| {
+                ui.add_sized(
+                    [ui.available_width(), CONTROL_HEIGHT],
+                    DragValue::new(&mut margin).range(LABEL_MARGIN_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
+                )
+                .on_hover_text(i18n::tr("tool.label.margin_tip"));
+            });
         });
-        ui_kit::row(ui, &t, i18n::tr("tool.label.size"), |ui| {
-            ui.add_sized(
-                [ui.available_width(), CONTROL_HEIGHT],
-                DragValue::new(&mut size).range(LABEL_SIZE_RANGE).speed(0.1).suffix(" mm").max_decimals(2),
-            )
-            .on_hover_text(i18n::tr("tool.label.size_tip"));
+        ui_kit::section(ui, &t, "label_options", i18n::tr("ui.section.options"), true, |ui| {
+            ui_kit::row(ui, &t, i18n::tr("tool.label.side"), |ui| {
+                let names = SIDES.map(i18n::tr);
+                ui_kit::segmented(ui, &t, &mut side, &names);
+            });
+            ui_kit::row(ui, &t, i18n::tr("tool.label.text"), |_| {});
+            ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(f32::INFINITY));
+            if let Some(why) = &why_not {
+                ui.colored_label(t.warning, why);
+            }
         });
-        ui_kit::row(ui, &t, i18n::tr("tool.label.depth"), |ui| {
-            ui.add_sized(
-                [ui.available_width(), CONTROL_HEIGHT],
-                DragValue::new(&mut depth).range(LABEL_DEPTH_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
-            )
-            .on_hover_text(i18n::tr("tool.label.depth_tip"));
-        });
-        ui_kit::row(ui, &t, i18n::tr("tool.label.margin"), |ui| {
-            ui.add_sized(
-                [ui.available_width(), CONTROL_HEIGHT],
-                DragValue::new(&mut margin).range(LABEL_MARGIN_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
-            )
-            .on_hover_text(i18n::tr("tool.label.margin_tip"));
-        });
-        ui_kit::row(ui, &t, i18n::tr("tool.label.text"), |_| {});
-        ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(f32::INFINITY));
-        if let Some(why) = &why_not {
-            ui.colored_label(t.warning, why);
-        }
-        ui_kit::hint(ui, &t, i18n::tr("tool.label.hint"));
         delete = ui_kit::button(ui, i18n::tr("tool.label.delete")).on_hover_text(i18n::tr("tool.label.delete_tip")).clicked();
     });
     app.preset_rows = rows;
@@ -409,7 +405,6 @@ mod tests {
             "tool.label.margin",
             "tool.label.margin_tip",
             "tool.label.text",
-            "tool.label.hint",
             "tool.label.delete",
             "tool.label.delete_tip",
             "tool.label.no_raft",
@@ -418,7 +413,6 @@ mod tests {
             "tool.label.missing",
             "tool.label.preset",
             "tool.label.preset_tip",
-            "tool.label.preset.live",
             "ui.preset.copy_name",
             "ui.preset.delete_message",
             "ui.preset.delete_ok",
@@ -431,8 +425,6 @@ mod tests {
             "ui.preset.restore_tip",
             "ui.preset.save_tip",
             "ui.preset.taken",
-            "tool.label.preset.live_others.one",
-            "tool.label.preset.live_others.other",
             "models.labelled",
             "tool.needs_object_edition",
             "reason.select_one_model",

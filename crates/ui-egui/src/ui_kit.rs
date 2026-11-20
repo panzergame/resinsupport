@@ -12,11 +12,13 @@ mod choice;
 mod confirm;
 mod figure;
 mod preset_row;
+mod section;
 
 pub use choice::segmented;
 pub use confirm::Confirm;
 pub use figure::{FigureField, FigureRow, FigureSlot, figure_height, figure_rows};
 pub use preset_row::{PresetAction, PresetRow, PresetRowState, PresetRows};
+pub use section::section;
 
 use egui::{Align2, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 

@@ -174,13 +174,13 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 ### Label prints on the raft
 **As a** maker, **I want** a model's name or number standing out of its raft, **so that** I can tell calibration prints apart once they're off the plate.
 - L in Object edition; several lines; on the front, back, left or right, read from that side; the raft widens to hold it.
-- Size and depth set on the card; Delete removes it; saved in projects and copies.
+- On the card, a Preset section (the preset, size, depth, margin) then an Options section (side, text); Delete removes it; saved in projects and copies.
 - Commands: `model.label`, `model.label.delete`
 
 ### Reuse label settings as presets
-**As a** maker, **I want** named presets of a label's side, size, depth and margin, **so that** every print I label looks the same without setting it up again.
+**As a** maker, **I want** named presets of a label's size, depth and margin, **so that** every print I label looks the same without setting it up again.
 - On the label card: pick a preset (or None) in the drop-down; the copy icon beside it saves what is shown as a new preset (a copy of the one used, named in place); a double click on the drop-down renames the preset in place; the delete icon deletes it once confirmed; kept with my preferences across projects.
-- Changing a preset's settings on a model using it changes the preset and every model in the scene using it; the text stays each model's own.
+- Changing a preset's settings on a model using it changes the preset and every model in the scene using it; the text and side stay each model's own.
 - Saving, renaming and deleting a preset are not undone by Undo, nor is what they did to my labels (a renamed preset stays renamed on every model using it); projects not open keep the old name, shown as not in my presets.
 - A deleted preset's labels keep their settings and its name, shown as not in my presets; the copy icon offers that name, taking them back.
 - Commands: `label.preset.save`, `label.preset.list`, `label.preset.rename`, `label.preset.delete`, `model.label` (`preset`)

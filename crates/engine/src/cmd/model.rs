@@ -202,8 +202,8 @@ pub(super) fn refuse_unknown(p: &Value, known: &[&str]) -> Result<()> {
 /// `id?` (default the one selected model), `preset?`, `text?`, `side?`, `size?`, `depth?`,
 /// `margin?`: change what is given of the model's label, giving it one first if it has none (its
 /// text the model's place in the model list, from 1). `preset` (a name, or null for none) comes
-/// first; settings given for a label following a known preset change the preset too, and every
-/// other model of the scene following it.
+/// first; size, depth or margin given for a label following a known preset change the preset too,
+/// and every other model of the scene following it. Text and side are the model's own.
 pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
     refuse_unknown(p, &["id", "preset", "text", "side", "size", "depth", "margin"])?;
     let id = one_target(s, p)?;
@@ -240,7 +240,7 @@ pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
         label.margin = margin;
     }
     s.scene.set_label(id, Some(label.clone()))?;
-    let settings_given = ["side", "size", "depth", "margin"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null()));
+    let settings_given = ["size", "depth", "margin"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null()));
     let followers =
         if settings_given { crate::presets::edited::<LabelPresetKind>(s, label.preset.as_deref(), &LabelSettings::of(&label))? } else { Vec::new() };
     Ok(json!({ "id": id, "label": label, "followers": followers }))
