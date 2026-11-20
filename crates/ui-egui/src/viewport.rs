@@ -219,6 +219,7 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
         .scene
         .models()
         .iter()
+        .filter(|m| !m.hidden)
         .map(|m| ModelDraw { id: m.id, mesh: Arc::clone(&m.mesh), transform: m.transform, color: model, overhang: false })
         .collect();
     ViewFrame {
@@ -277,7 +278,7 @@ fn plate_outline(x: f64, y: f64, color: [f32; 4]) -> [Line; 4] {
     [0, 1, 2, 3].map(|i| Line { a: c[i], b: c[(i + 1) % 4], color })
 }
 
-/// Every model, the selected ones in their own colour while in Object or Slice mode; in Support mode,
+/// Every shown model, the selected ones in their own colour while in Object or Slice mode; in Support mode,
 /// with the faces that need supports tinted.
 fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
     let scene = &app.session.scene;
@@ -285,6 +286,7 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
     scene
         .models()
         .iter()
+        .filter(|m| !m.hidden)
         .map(|m| {
             let picked = app.mode != EditMode::Support && scene.selected_models.contains(&m.id);
             ModelDraw {

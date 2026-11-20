@@ -537,6 +537,9 @@ fn hostile_params_never_panic() {
         json!({ "name": "Slab", "to": 1 }),
         json!({ "name": "\u{0}", "to": "x".repeat(100_000) }),
         json!({ "name": [], "to": "" }),
+        json!({ "id": 1, "name": "\u{0}\n\u{202e}", "visible": "no", "ids": [1, u64::MAX] }),
+        json!({ "id": 1, "name": " ", "visible": null, "ids": "all" }),
+        json!({ "id": [1], "name": "x".repeat(256), "visible": 1, "ids": [] }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -550,7 +553,7 @@ fn hostile_params_never_panic() {
 
 /// What a step must put back, selection aside: the models, where they are, their supports.
 fn content(s: &Session) -> String {
-    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted, m.slicing, &m.label)).collect();
+    let models: Vec<_> = s.scene.models().iter().map(|m| (m.id, &m.name, m.placement, m.bounds, m.lifted, m.slicing, &m.label, m.hidden)).collect();
     format!("{models:?} {:?} {:?} {}", s.scene.supports(), s.scene.braces(), s.scene.lift_height())
 }
 
@@ -984,6 +987,7 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "label.preset.save" => Some(json!({ "id": f.labelled, "name": "Other" })),
         "model.arrange" => Some(json!({})),
         "model.delete" => Some(json!({ "id": a })),
+        "model.duplicate" => Some(json!({ "ids": [a] })),
         "model.label" => Some(json!({ "id": b, "text": "B\n2", "side": "left", "size": 4, "margin": 2 })),
         "model.label.delete" => Some(json!({ "id": f.labelled })),
         "model.lift" => Some(json!({ "lifted": true })),
@@ -991,10 +995,12 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "scene.lift_height" => Some(json!({ "height": 8 })),
         "model.move" => Some(json!({ "by": [1, 2, 3] })),
         "model.place" => Some(json!({ "models": [{ "id": b, "position": [0, 40, 5], "rotation": [0, 0, 30], "scale": [2, 1, 1] }] })),
+        "model.rename" => Some(json!({ "id": a, "name": " Part A " })),
         "model.rotate" => Some(json!({ "degrees": [0, 90, 0] })),
         "model.scale" => Some(json!({ "factors": 1.5 })),
         "model.select" => Some(json!({ "ids": [b] })),
         "model.slicing" => Some(json!({ "ids": [a, b], "set": { "blur_passes": 2, "dither_xy": true } })),
+        "model.visibility" => Some(json!({ "ids": [a], "visible": false })),
         "print.configure" => {
             Some(json!({ "printer": { "name": "Other", "mirror_x": true }, "layers": { "height": 0.03 }, "slicing": { "anti_aliasing": 4 } }))
         }
@@ -2171,4 +2177,104 @@ fn braces_join_selected_supports_until_one_is_edited() {
     let all = crate::brace_struts(&routes(&s)[0], &routes(&s)[1], &crate::BraceParams { angle: 15.0, foot_gap: 0.0, ..Default::default() }, &preset);
     let kept = list["braces"][0]["struts"].as_array().map_or(0, Vec::len);
     assert!(r["ids"].as_array().map(Vec::len) == Some(1) && kept > 0 && kept < all.len(), "{r} {kept} of {}", all.len());
+}
+
+/// Renaming trims the name and refuses an empty one, an overlong one or a control character,
+/// changing nothing; the same name again is no step.
+#[test]
+fn a_model_is_renamed_with_a_name_that_makes_sense() {
+    let dir = temp_dir("rename");
+    let f = fixture(&dir);
+    let (mut s, a) = (f.session, f.a);
+    let name = |s: &Session| s.scene.model(a).unwrap().name.clone();
+    let r = s.execute("model.rename", &json!({ "id": a, "name": "  Bracket é  " })).unwrap();
+    assert_eq!(r["name"], "Bracket é");
+    assert_eq!(name(&s), "Bracket é");
+    let depth = s.undo_depth();
+    s.execute("model.rename", &json!({ "id": a, "name": "Bracket é" })).unwrap();
+    assert_eq!(s.undo_depth(), depth, "the same name is no step");
+    for bad in [json!(""), json!("   "), json!("a\tb"), json!("\u{7}"), json!("x".repeat(crate::MAX_NAME_CHARS + 1)), json!(3)] {
+        assert!(matches!(s.execute("model.rename", &json!({ "id": a, "name": bad })), Err(EngineError::BadParams(_))), "{bad}");
+    }
+    s.execute("model.rename", &json!({ "id": a, "name": "é".repeat(crate::MAX_NAME_CHARS) })).unwrap();
+    assert!(s.execute("model.rename", &json!({ "id": 999, "name": "x" })).is_err());
+    assert!(s.execute("model.rename", &json!({ "id": a, "name": "x", "to": "y" })).is_err(), "an unknown parameter");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(name(&s), "Bracket é");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Duplicating adds copies with their supports, selected, as one step, and leaves the clipboard
+/// as it was.
+#[test]
+fn duplicated_models_come_with_their_supports_and_leave_the_clipboard_alone() {
+    let dir = temp_dir("duplicate");
+    let f = fixture(&dir);
+    let (mut s, a, b) = (f.session, f.a, f.b);
+    s.execute("edit.copy", &json!({ "ids": [b] })).unwrap();
+    let depth = s.undo_depth();
+    let r = s.execute("model.duplicate", &json!({})).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+    let [copy] = r["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect::<Vec<_>>()[..] else { panic!("{r}") };
+    assert_eq!(s.scene.selected_models.iter().copied().collect::<Vec<_>>(), vec![copy]);
+    assert_eq!(s.scene.model(copy).unwrap().name, s.scene.model(a).unwrap().name);
+    assert_eq!(s.scene.supports().iter().filter(|t| t.model == copy).count(), 1, "the selected model's tip came along");
+    let pasted = s.execute("edit.paste", &json!({})).unwrap()["ids"][0].as_u64().unwrap();
+    assert_eq!(s.scene.supports().iter().filter(|t| t.model == pasted).count(), 0, "still the copied model b, which has none");
+    assert!(s.execute("model.duplicate", &json!({ "ids": [] })).is_err());
+    assert!(s.execute("model.duplicate", &json!({ "ids": [999] })).is_err());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A hidden model and its supports leave the selection and are never selected again while
+/// hidden; nothing picks them; they are left out of the slice; the project keeps them hidden; a
+/// copy of one is shown.
+#[test]
+fn a_hidden_model_is_out_of_sight_and_out_of_the_print() {
+    let dir = temp_dir("hidden");
+    let f = fixture(&dir);
+    let (mut s, a, b, tip) = (f.session, f.a, f.b, f.tip);
+    let (models_before, unreachable_before) = {
+        let (input, unreachable) = s.slice_input();
+        (input.solids.iter().filter(|x| x.kind == SolidKind::Model).count(), unreachable)
+    };
+    assert_eq!(unreachable_before, 1, "a's tip, on the plate");
+    assert!(s.scene.selected_models.contains(&a) && s.scene.selected.contains(&tip));
+    let over_a = s.scene.model(a).unwrap().bounds.center() + Vec3::Z * 100.0;
+    assert_eq!(s.scene.ray_hit(over_a, -Vec3::Z).map(|(id, _)| id), Some(a));
+
+    let depth = s.undo_depth();
+    s.execute("model.visibility", &json!({ "visible": false })).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+    assert!(s.scene.model(a).unwrap().hidden && !s.scene.shows(a) && !s.scene.shows_support(tip));
+    assert!(s.scene.selected_models.is_empty() && s.scene.selected.is_empty() && s.scene.selected_parts.is_empty());
+    assert!(s.scene.ray_hit(over_a, -Vec3::Z).is_none(), "passed through");
+    let tip_at = s.scene.supports().iter().find(|t| t.id == tip).unwrap().tip;
+    assert!(s.scene.support_hit(tip_at + Vec3::Z * 50.0, -Vec3::Z, 1.0).is_none());
+    s.execute("model.select", &json!({ "ids": [a, b] })).unwrap();
+    assert_eq!(s.scene.selected_models.iter().copied().collect::<Vec<_>>(), vec![b], "a hidden model is not selected");
+    s.execute("support.select", &json!({ "ids": [tip] })).unwrap();
+    assert!(s.scene.selected.is_empty());
+    assert!(s.execute("model.visibility", &json!({ "ids": [a] })).is_err(), "`visible` is required");
+    assert!(s.execute("model.visibility", &json!({ "ids": [a, 999], "visible": true })).is_err());
+    assert!(s.scene.model(a).unwrap().hidden, "all or nothing");
+
+    let (input, unreachable) = s.slice_input();
+    assert_eq!(input.solids.iter().filter(|x| x.kind == SolidKind::Model).count(), models_before - 1);
+    assert_eq!(unreachable, 0, "its support is left out, not counted as unprinted");
+
+    let back = resin_io::read_project(&resin_io::write_project(&s.scene.project()).unwrap()).unwrap();
+    assert_eq!(back.models.iter().map(|m| m.hidden).collect::<Vec<_>>(), vec![true, false, false]);
+    let copy = s.execute("model.duplicate", &json!({ "ids": [a] })).unwrap()["ids"][0].as_u64().unwrap();
+    assert!(s.scene.shows(copy), "a copy is shown");
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    s.execute("model.visibility", &json!({ "ids": [a], "visible": true })).unwrap();
+    assert!(s.scene.shows(a) && s.scene.selected_models.iter().copied().eq([b]), "shown again, not selected again");
+    let depth = s.undo_depth();
+    s.execute("model.visibility", &json!({ "ids": [a], "visible": true })).unwrap();
+    assert_eq!(s.undo_depth(), depth, "showing a shown model is no step");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.scene.model(a).unwrap().hidden);
+    std::fs::remove_dir_all(dir).ok();
 }

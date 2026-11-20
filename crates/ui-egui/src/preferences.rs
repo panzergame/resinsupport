@@ -18,7 +18,7 @@ pub fn window(app: &mut ResinApp, ctx: &egui::Context) {
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(egui::pos2(240.0, 160.0), |r| r.left_top() + egui::vec2(SPACE_12, SPACE_12));
+    let at = crate::models_card::beside(app);
     let card = Card {
         id: egui::Id::new("preferences"),
         title: i18n::tr("prefs.title"),
@@ -52,6 +52,6 @@ pub fn window(app: &mut ResinApp, ctx: &egui::Context) {
     match action {
         Action::Ok | Action::Cancel => app.prefs_open = false,
         Action::Reset => prefs::reset_page(&mut app.prefs, page),
-        Action::None => {}
+        Action::Fold | Action::None => {}
     }
 }

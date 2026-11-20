@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>eye</title>
+  <path d="M6 32C16 18 48 18 58 32C48 46 16 46 6 32Z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M40 32C40 36.418 36.418 40 32 40C27.582 40 24 36.418 24 32C24 27.582 27.582 24 32 24C36.418 24 40 27.582 40 32" fill="currentColor"/>
+</svg>

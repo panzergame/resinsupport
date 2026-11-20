@@ -61,7 +61,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(pos2(220.0, 140.0), |r| r.left_top() + vec2(SPACE_12, SPACE_12));
+    let at = crate::models_card::beside(app);
     let before = app.session.print_config().clone();
     let mut c = before.clone();
     let mut tab = app.print_tab.min(TABS.len() - 1);
@@ -131,7 +131,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                 app.run("print.reset", json!({}));
             }
             Action::Cancel => app.confirm_print_reset = false,
-            Action::Reset | Action::None => {}
+            Action::Reset | Action::Fold | Action::None => {}
         }
     }
 }

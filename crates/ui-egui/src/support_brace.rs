@@ -254,7 +254,7 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
     match action {
         Action::Ok => make(app),
         Action::Cancel => app.tool = None,
-        Action::Reset | Action::None => {}
+        Action::Reset | Action::Fold | Action::None => {}
     }
 }
 

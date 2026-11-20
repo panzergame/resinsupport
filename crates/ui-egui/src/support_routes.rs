@@ -118,7 +118,8 @@ pub enum Piece {
 
 /// The preset is part of it: a base or a raft setting changes the solids and no route. So is
 /// the raft drawn, which arrives later.
-type MeshKey = (u64, u64, SupportPreset, Lit, Option<u64>);
+/// Route changes, rafts drawn, the preset, what is lit, the tip left out and the hidden models.
+type MeshKey = (u64, u64, SupportPreset, Lit, Option<u64>, BTreeSet<u64>);
 
 /// Which supports and braces a mesh draws in the selected look.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -256,8 +257,13 @@ impl RouteCache {
             return;
         }
         let grounded = self.grounded(scene);
-        let held: Vec<(u64, &Route)> =
-            scene.supports().iter().filter(|s| grounded.contains(&s.id)).filter_map(|s| self.routes.get(&s.id).map(|(r, _)| (s.model, r))).collect();
+        // A hidden model's supports stand on no raft: it is not printed.
+        let held: Vec<(u64, &Route)> = scene
+            .supports()
+            .iter()
+            .filter(|s| grounded.contains(&s.id) && scene.shows(s.model))
+            .filter_map(|s| self.routes.get(&s.id).map(|(r, _)| (s.model, r)))
+            .collect();
         let feet = raft_feet(held.iter().map(|(_, r)| *r));
         let sites = label_sites(scene, held.iter().map(|(m, r)| (*m, *r)));
         let key: RaftKey =
@@ -326,11 +332,11 @@ impl RouteCache {
         self.braces.get(&id).map(|(s, _)| s)
     }
 
-    /// How many supports have no path to the plate, as last routed: a branch has none when its
-    /// parent has none.
+    /// How many supports of shown models have no path to the plate, as last routed: a branch has
+    /// none when its parent has none.
     pub fn unreachable(&self, scene: &Scene) -> usize {
         let grounded = self.grounded(scene);
-        scene.supports().iter().filter(|s| self.routes.contains_key(&s.id) && !grounded.contains(&s.id)).count()
+        scene.supports().iter().filter(|s| scene.shows(s.model) && self.routes.contains_key(&s.id) && !grounded.contains(&s.id)).count()
     }
 
     /// The supports whose route reaches the plate, a branch's through its parents; and those not
@@ -357,9 +363,9 @@ impl RouteCache {
         self.changed
     }
 
-    /// The solids of every routed support, those `selection` takes in the selected look, and
-    /// support `hidden`'s tip left out, rebuilt only when a route, the selection or `hidden`
-    /// changed.
+    /// The solids of every routed support on a shown model, those `selection` takes in the
+    /// selected look, and support `hidden`'s tip left out, rebuilt only when a route, the
+    /// selection, `hidden` or the hidden models changed.
     pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: Selection, hidden: Option<u64>) -> Arc<SupportMesh> {
         let lit = match selection {
             Selection::None => Lit::default(),
@@ -372,7 +378,8 @@ impl RouteCache {
                 Lit { wholes, braces, ..Lit::default() }
             }
         };
-        let key = (self.changed, self.rafts, *preset, lit, hidden);
+        let hidden_models: BTreeSet<u64> = scene.models().iter().filter(|m| m.hidden).map(|m| m.id).collect();
+        let key = (self.changed, self.rafts, *preset, lit, hidden, hidden_models);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
@@ -382,7 +389,7 @@ impl RouteCache {
         let mut groups: [Group; 3] = Default::default();
         let mut handles = Vec::new();
         let grounded = self.grounded(scene);
-        for s in scene.supports() {
+        for s in scene.supports().iter().filter(|s| !key.5.contains(&s.model)) {
             let Some((r, _)) = self.routes.get(&s.id) else { continue };
             let whole = if lit.wholes.contains(&s.id) {
                 Look::Selected
@@ -405,7 +412,7 @@ impl RouteCache {
                 handles.push(Handle { center: c, radius, selected: look(SupportPart::Joint(i)) == Look::Selected });
             }
         }
-        for b in scene.braces() {
+        for b in scene.braces().iter().filter(|b| scene.shows_support(b.a) && scene.shows_support(b.b)) {
             let Some((struts, _)) = self.braces.get(&b.id) else { continue };
             let look = if lit.braces.contains(&b.id) { Look::Selected } else { Look::Plain };
             let Some(g) = groups.get_mut(look.index()) else { continue };
@@ -484,16 +491,16 @@ impl RouteCache {
     /// Every brace the ray hits, as [`Self::brace_hit`] picks them, in no order.
     pub fn brace_hits<'a>(&'a self, scene: &'a Scene, preset: &SupportPreset, origin: Vec3, dir: Vec3) -> impl Iterator<Item = (u64, f64)> + 'a {
         let body = preset.body.diameter;
-        scene.braces().iter().filter_map(move |b| {
+        scene.braces().iter().filter(|b| scene.shows_support(b.a) && scene.shows_support(b.b)).filter_map(move |b| {
             let r = (body * b.params.diameter_ratio).max(body) / 2.0;
             let struts = &self.braces.get(&b.id)?.0;
             struts.iter().filter_map(|(p, q)| ray_capsule(origin, dir, *p, *q, r)).min_by(f64::total_cmp).map(|t| (b.id, t))
         })
     }
 
-    /// Each support in the scene with its route, as last worked out.
+    /// Each support of a shown model with its route, as last worked out.
     fn routed<'a>(&'a self, scene: &'a Scene) -> impl Iterator<Item = (u64, &'a Route)> + 'a {
-        scene.supports().iter().filter_map(|s| self.routes.get(&s.id).map(|(r, _)| (s.id, r)))
+        scene.supports().iter().filter(|s| scene.shows(s.model)).filter_map(|s| self.routes.get(&s.id).map(|(r, _)| (s.id, r)))
     }
 }
 
@@ -546,6 +553,32 @@ mod tests {
     use super::*;
     use resin_engine::{PresetId, Session};
     use serde_json::json;
+
+    /// A hidden model's supports are not drawn, picked or counted, and stand on no raft.
+    #[test]
+    fn a_hidden_models_supports_are_out_of_sight() {
+        let mut s = Session::new();
+        let path = std::env::temp_dir().join(format!("resin-ui-routes-hidden-{}.stl", std::process::id()));
+        let text = "solid p\nfacet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 20 10\nendloop\nendfacet\nendsolid p\n";
+        std::fs::write(&path, text).unwrap();
+        let m = s.execute("file.import_stl", &json!({ "path": path })).unwrap()["id"].as_u64().unwrap();
+        std::fs::remove_file(&path).ok();
+        s.execute("support.add", &json!({ "model": m, "point": [5, 10, 10], "normal": [0, 0, -1] })).unwrap();
+        let preset = PresetId::Medium.defaults();
+        let mut cache = RouteCache::default();
+        while cache.update(&s.scene, &preset) {}
+        cache.wait_raft();
+        let (o, d) = (resin_engine::geom::Vec3::new(5.0, -50.0, 5.0), resin_engine::geom::Vec3::new(0.0, 1.0, 0.0));
+        assert!(cache.piece_hit(&s.scene, &preset, o, d, true).is_some());
+        assert!(!cache.mesh(&s.scene, &preset, Selection::None, None).vertices.is_empty());
+
+        s.execute("model.visibility", &json!({ "ids": [m], "visible": false })).unwrap();
+        while cache.update(&s.scene, &preset) {}
+        cache.wait_raft();
+        assert!(cache.piece_hit(&s.scene, &preset, o, d, true).is_none());
+        assert!(cache.mesh(&s.scene, &preset, Selection::None, None).vertices.is_empty(), "no support and no raft");
+        assert_eq!(cache.unreachable(&s.scene), 0);
+    }
 
     #[test]
     fn routes_follow_the_scene_within_the_budget() {

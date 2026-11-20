@@ -255,6 +255,17 @@ impl Driver {
         true
     }
 
+    /// Right-click the `kind` mark labelled `label`, opening its menu; whether there was one.
+    fn right_click(&mut self, kind: &str, label: Option<&str>) -> bool {
+        let Some(at) = self.find(kind, label) else { return false };
+        self.move_to(at);
+        let button = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Default::default() };
+        self.frame(vec![button(true)]);
+        self.frame(vec![button(false)]);
+        self.settle(3);
+        true
+    }
+
     /// Rest the pointer on the `kind` mark labelled `label` until its tooltip shows.
     fn hover(&mut self, kind: &str, label: Option<&str>) -> bool {
         let Some(at) = self.find(kind, label) else { return false };
@@ -307,6 +318,26 @@ fn support_scene(d: &mut Driver) -> bool {
     true
 }
 
+/// The cube and three copies, named, the third hidden, the first selected.
+fn browser_scene(d: &mut Driver) -> bool {
+    let Some(first) = d.app.session.scene.models().first().map(|m| m.id) else { return false };
+    let mut ids = vec![first];
+    for _ in 0..3 {
+        let Some(v) = d.app.run("model.duplicate", json!({ "ids": [first] })) else { return false };
+        ids.extend(v["ids"].as_array().into_iter().flatten().filter_map(Value::as_u64));
+    }
+    for (id, name) in ids.iter().zip(["cube", "bracket", "figurine", "stand"]) {
+        if d.app.run("model.rename", json!({ "id": id, "name": name })).is_none() {
+            return false;
+        }
+    }
+    let Some(&hidden) = ids.get(2) else { return false };
+    d.app.run("model.visibility", json!({ "ids": [hidden], "visible": false }));
+    d.app.run("model.select", json!({ "ids": [first] }));
+    d.settle(3);
+    true
+}
+
 fn slice_scene(d: &mut Driver) -> bool {
     d.app.set_mode(EditMode::Slice);
     d.sliced()
@@ -324,6 +355,18 @@ fn screens() -> Vec<(String, Setup)> {
             d.app.tool.is_some()
         }),
         ("menu-file".into(), |d| d.click("app_bar_menu", None)),
+        ("browser".into(), browser_scene),
+        ("browser-menu".into(), |d| browser_scene(d) && d.right_click("browser_row", Some("bracket"))),
+        ("browser-rename".into(), |d| {
+            browser_scene(d) && {
+                let bracket = d.app.session.scene.models().iter().find(|m| m.name == "bracket").map(|m| m.id);
+                bracket.is_some_and(|id| d.app.run("model.select", json!({ "ids": [id] })).is_some()) && {
+                    crate::models_card::rename_selected(&mut d.app);
+                    d.settle(3);
+                    d.app.models_card.renaming.is_some()
+                }
+            }
+        }),
         ("menu-view".into(), |d| d.click("ribbon_group_menu", Some("View"))),
         ("tooltip-ribbon".into(), |d| d.hover("ribbon_button", Some("Move"))),
         ("support".into(), support_scene),

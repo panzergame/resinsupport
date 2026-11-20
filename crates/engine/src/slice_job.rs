@@ -116,12 +116,9 @@ impl Session {
     }
 
     pub fn slice_source(&self) -> SliceSource {
-        SliceSource {
-            scene: self.scene.clone(),
-            preset: *self.support_settings.current(),
-            config: self.print_config.clone(),
-            stamp: self.slice_stamp(),
-        }
+        let preset = *self.support_settings.current();
+        // A hidden model is not printed, nor its supports.
+        SliceSource { scene: self.scene.shown(&preset), preset, config: self.print_config.clone(), stamp: self.slice_stamp() }
     }
 
     /// The slicer's input now, and how many supports are left out: see [`SliceSource::input`].

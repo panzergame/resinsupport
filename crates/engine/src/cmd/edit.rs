@@ -39,22 +39,35 @@ fn go_to(s: &mut Session, step: Snapshot) -> Snapshot {
 /// of what was copied before.
 pub(crate) fn copy(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = targets(s, p)?;
-    let project = s.scene.project_of(|id| ids.contains(&id));
-    let lifted = s.scene.models().iter().filter(|m| ids.contains(&m.id)).map(|m| m.lifted).collect();
-    let copied = project.models.len();
-    s.clipboard = Some(Clipboard { project, lifted });
-    Ok(json!({ "copied": copied }))
+    let clip = copied(s, &ids);
+    let count = clip.project.models.len();
+    s.clipboard = Some(clip);
+    Ok(json!({ "copied": count }))
 }
 
 /// Add what was copied, arranged on the plate around the other models at the height it was
 /// copied at, and select it.
 pub(crate) fn paste(s: &mut Session, _: &Value) -> Result<Value> {
     let clip = s.clipboard.clone().ok_or_else(|| EngineError::Failed("nothing to paste".into()))?;
+    add_copies(s, clip)
+}
+
+/// Add `clip`'s models and supports, shown, arranged on the plate around the other models at the
+/// height they were copied at, and select them: what `edit.paste` and `model.duplicate` do.
+pub(super) fn add_copies(s: &mut Session, clip: Clipboard) -> Result<Value> {
     let ids = s.scene.append(clip.project)?;
     let lifted: Vec<_> = ids.iter().zip(&clip.lifted).filter_map(|(&id, &l)| s.scene.model(id).map(|m| (id, m.placement, Some(l)))).collect();
     s.scene.place(&lifted)?;
+    s.scene.set_hidden(&ids, false)?;
     // A copy is put beside, not down: its supports were made for the height it was copied at.
     let beside = s.scene.arrange(&ids, plate(s), false)?;
     s.scene.selected_models = ids.iter().copied().collect();
     Ok(json!({ "ids": ids, "beside": beside }))
+}
+
+/// Keep models `ids` and their supports as copied: what `edit.copy` and `model.duplicate` take.
+pub(super) fn copied(s: &Session, ids: &[u64]) -> Clipboard {
+    let project = s.scene.project_of(|id| ids.contains(&id));
+    let lifted = s.scene.models().iter().filter(|m| ids.contains(&m.id)).map(|m| m.lifted).collect();
+    Clipboard { project, lifted }
 }

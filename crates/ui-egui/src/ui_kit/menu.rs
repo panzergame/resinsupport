@@ -1,12 +1,13 @@
 // Ported from SolidCraft (MIT OR Apache-2.0), crates/ui-kit/src/menu.rs (`MenuItem::show`,
-// `MenuItem::paint`, `Menu::separator`, `Menu::show`, `LIST_W`) at a34756830; see ATTRIBUTION.md. Reduced: no icons,
-// swatches, submenus, danger rows, keyboard navigation or scenario handles.
+// `MenuItem::paint`, `Menu::separator`, `Menu::show`, `LIST_W`) at a34756830; see ATTRIBUTION.md. Reduced: no
+// swatches, submenus, keyboard navigation or scenario handles, and a danger row's icon keeps its colours.
 
-//! The rows of a popup menu: the application menu, a ribbon group's menu.
+//! The rows of a popup menu: the application menu, a ribbon group's menu, a model's menu.
 
 use egui::{FontId, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
 use super::checks::paint_check_glyph;
+use crate::icons;
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
 
@@ -30,11 +31,15 @@ pub struct MenuItem<'a> {
     pub enabled: bool,
     /// `Some(true)` ticks the entry: the current one of a choice.
     pub checked: Option<bool>,
+    /// An icon from [`crate::icons`] before the label; empty for none.
+    pub icon: &'a str,
+    /// It deletes something: its label and keys in the error colour.
+    pub danger: bool,
 }
 
 impl<'a> MenuItem<'a> {
     pub fn new(label: &'a str) -> Self {
-        Self { label, shortcut: "", enabled: true, checked: None }
+        Self { label, shortcut: "", enabled: true, checked: None, icon: "", danger: false }
     }
 
     pub fn shortcut(self, shortcut: &'a str) -> Self {
@@ -43,6 +48,14 @@ impl<'a> MenuItem<'a> {
 
     pub fn enabled(self, enabled: bool) -> Self {
         Self { enabled, ..self }
+    }
+
+    pub fn icon(self, icon: &'a str) -> Self {
+        Self { icon, ..self }
+    }
+
+    pub fn danger(self) -> Self {
+        Self { danger: true, ..self }
     }
 
     /// The entry's row, `CONTROL_HEIGHT + SPACE_2` tall across the menu; inert and faded when not
@@ -66,7 +79,13 @@ impl<'a> MenuItem<'a> {
     fn paint(&self, ui: &Ui, t: &Tokens, r: Rect, response: &Response) {
         let enabled = self.enabled && ui.is_enabled();
         let hot = enabled && (response.hovered() || response.has_focus());
-        let (ink, dim) = if hot { (t.form_primary, t.form_primary) } else { (t.form_ink, t.form_dim) };
+        let (ink, dim) = if self.danger {
+            (t.error, t.error)
+        } else if hot {
+            (t.form_primary, t.form_primary)
+        } else {
+            (t.form_ink, t.form_dim)
+        };
         let mut painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(r));
         if !enabled {
             painter.multiply_opacity(0.4);
@@ -74,9 +93,11 @@ impl<'a> MenuItem<'a> {
         if hot {
             painter.rect_filled(r, CONTROL_RADIUS, t.accent_soft);
         }
+        let icon = Rect::from_center_size(pos2(r.left() + CONTROL_HEIGHT / 2.0, r.center().y), vec2(SPACE_16, SPACE_16));
         if self.checked == Some(true) {
-            let icon = Rect::from_center_size(pos2(r.left() + CONTROL_HEIGHT / 2.0, r.center().y), vec2(SPACE_16, SPACE_16));
             paint_check_glyph(&painter, icon, false, t.form_primary);
+        } else if !self.icon.is_empty() {
+            icons::paint(&painter, icon, self.icon, t.dark, 1.0);
         }
         let mut right = r.right() - SPACE_8;
         if !self.shortcut.is_empty() {

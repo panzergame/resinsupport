@@ -32,7 +32,7 @@ pub use resin_io as io;
 pub use resin_render as render;
 pub use resin_slice as slice;
 pub use route::{Route, route, support_head};
-pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
+pub use session::{DEFAULT_LIFT_HEIGHT, LIFT_RANGE, MAX_EXTENT, MAX_NAME_CHARS, Model, SCALE_RANGE, Scene, Session, Support, SupportPart};
 pub use slice_job::{Job, SliceSource};
 pub use support_line::{DEFAULT_LINE_SPACING, DEFAULT_TIPS_PER_BODY, LinePoint, MAX_LINE_TIPS, line_points};
 pub use support_settings::{

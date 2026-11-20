@@ -377,6 +377,11 @@ pub(crate) fn select(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(bad) = braces.iter().find(|id| !s.scene.braces().iter().any(|b| b.id == **id)) {
         return Err(EngineError::BadParams(format!("no brace {bad}")));
     }
+    // A hidden model's supports are out of sight: never selected.
+    let shown = |id: &u64| s.scene.shows_support(*id);
+    let ids: Vec<u64> = ids.into_iter().filter(shown).collect();
+    let parts: Vec<_> = parts.into_iter().filter(|(id, _)| shown(id)).collect();
+    let braces: Vec<u64> = braces.into_iter().filter(|id| s.scene.braces().iter().any(|b| b.id == *id && shown(&b.a) && shown(&b.b))).collect();
     // One mode over every set: a plain click on a part replaces the supports selected too.
     select_ids(&mut s.scene.selected, ids, p)?;
     select_ids(&mut s.scene.selected_parts, parts, p)?;

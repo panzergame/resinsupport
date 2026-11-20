@@ -1,11 +1,13 @@
 # Each icon component's fingerprint as `cargo xtask design-pull` last wrote it: only a changed icon
 # is written back to crates/ui-egui/icons.
 box c86e490115bcf4cf
+chevron 1f6d9b278c902c35
 close d312ede83f174445
 cone deffbd3002726e5d
 copy 2546928e9a71efc7
 delete 8e758c681e1bbe11
 export 6f289a5381400c63
+eye 158ec0407ff68790
 fit aedd0003a127947a
 home b1a90d6c69958251
 import 61f5a7d22aec3dd0
@@ -13,10 +15,12 @@ move 44b6b41ae25acf98
 perspective 696fa37930ad7d11
 play 24f31b94b0675300
 redo 3e56c203d7a06772
+rename f49b42bed37bc151
 revolve 6671d469523d3988
 scale f23985e026ab4984
 section 4f1bd8ae92c57d4d
 settings bb30e185f1a31b12
 stop 73f7ec948b593a9b
+suppress a07328734f07619d
 undo 2164f85bb6dd9489
 ws_design 2d6ea700b4430b1f

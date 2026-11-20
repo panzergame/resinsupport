@@ -118,6 +118,7 @@ pub fn apply(app: &mut ResinApp, proj: &Proj, bx: BoxSel, add: bool) {
             let ids: Vec<u64> = scene
                 .models()
                 .iter()
+                .filter(|m| !m.hidden)
                 .filter(|m| {
                     let mut supports = scene.supports().iter().filter(|s| s.model == m.id).map(|s| takes_support(app, &bx, proj, s));
                     if bx.crossing { supports.any(|t| t) || takes_model(&bx, proj, m) } else { supports.all(|t| t) && takes_model(&bx, proj, m) }
@@ -127,7 +128,8 @@ pub fn apply(app: &mut ResinApp, proj: &Proj, bx: BoxSel, add: bool) {
             app.run("model.select", json!({ "ids": ids, "mode": mode }));
         }
         EditMode::Support => {
-            let ids: Vec<u64> = app.session.scene.supports().iter().filter(|s| takes_support(app, &bx, proj, s)).map(|s| s.id).collect();
+            let scene = &app.session.scene;
+            let ids: Vec<u64> = scene.supports().iter().filter(|s| scene.shows(s.model) && takes_support(app, &bx, proj, s)).map(|s| s.id).collect();
             app.run("support.select", json!({ "ids": ids, "mode": mode }));
         }
         EditMode::Slice => {}

@@ -20,7 +20,7 @@ use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE
 use serde_json::{Map, Value, json};
 
 use crate::theme::Tokens;
-use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::FORM_CARD_WIDTH;
 use crate::ui_kit::{self, Action, Buttons, Card, PresetAction, PresetRow};
 use crate::{ActiveTool, EditMode, ResinApp, i18n, object_slicing};
 
@@ -85,7 +85,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let name = app.session.scene.model(id).map_or_else(String::new, |m| m.name.clone());
     let title = i18n::format("tool.label.title", &[("name", &name), ("index", &index)]);
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(egui::pos2(220.0, 140.0), |r| r.left_top() + egui::vec2(SPACE_12, SPACE_12));
+    let at = crate::models_card::beside(app);
     let why_not = why_not_printed(app, id, &label.text);
     let (mut side, mut size, mut depth, mut margin, mut text) =
         (LabelSide::ALL.iter().position(|s| *s == label.side).unwrap_or(0), label.size, label.depth, label.margin, label.text.clone());

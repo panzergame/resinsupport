@@ -83,6 +83,33 @@ pub(crate) fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "id": id }))
 }
 
+/// `ids?` (default the selected models): add copies of them and their supports, as
+/// `edit.paste` adds what was copied, leaving what was copied alone.
+pub(crate) fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
+    refuse_unknown(p, &["ids"])?;
+    let ids = targets(s, p)?;
+    let clip = super::edit::copied(s, &ids);
+    super::edit::add_copies(s, clip)
+}
+
+/// `id`, `name`: rename the model.
+pub(crate) fn rename(s: &mut Session, p: &Value) -> Result<Value> {
+    refuse_unknown(p, &["id", "name"])?;
+    let id = id_param(p)?;
+    let name = str_param(p, "name")?;
+    s.scene.rename_model(id, name)?;
+    Ok(json!({ "id": id, "name": s.scene.model(id).map(|m| m.name.clone()) }))
+}
+
+/// `ids?` (default the selected models), `visible`: show or hide them.
+pub(crate) fn visibility(s: &mut Session, p: &Value) -> Result<Value> {
+    refuse_unknown(p, &["ids", "visible"])?;
+    let visible = bool_param(p, "visible")?.ok_or_else(|| EngineError::BadParams("`visible` is required".into()))?;
+    let ids = targets(s, p)?;
+    s.scene.set_hidden(&ids, !visible)?;
+    Ok(json!({ "ids": ids, "visible": visible }))
+}
+
 pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
     let models: Vec<Value> = s
         .scene
@@ -98,6 +125,7 @@ pub(crate) fn list(s: &mut Session, _: &Value) -> Result<Value> {
                 "lifted": m.lifted,
                 "slicing": m.slicing,
                 "label": m.label,
+                "hidden": m.hidden,
                 "selected": s.scene.selected_models.contains(&m.id),
             })
         })
@@ -115,6 +143,8 @@ pub(crate) fn clear(s: &mut Session, _: &Value) -> Result<Value> {
 pub(crate) fn select(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = ids_param(p, "model")?.ok_or_else(|| EngineError::BadParams("`ids` is required".into()))?;
     check_known(s, &ids)?;
+    // A hidden model is out of sight: never selected.
+    let ids = ids.into_iter().filter(|id| s.scene.shows(*id)).collect();
     select_ids(&mut s.scene.selected_models, ids, p)?;
     Ok(json!({ "selected": s.scene.selected_models }))
 }

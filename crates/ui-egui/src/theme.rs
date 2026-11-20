@@ -53,6 +53,10 @@ pub mod metrics {
     pub const FORM_CLOSE_SIZE: f32 = 26.0;
     /// A text field's text, from its left and right edges.
     pub const FORM_INSET: f32 = 9.0;
+    /// A row of the Models card.
+    pub const TREE_ROW_HEIGHT: f32 = 26.0;
+    /// The Models card's width.
+    pub const FORM_BROWSER_WIDTH: f32 = 188.0;
     // design-tokens: end
 }
 

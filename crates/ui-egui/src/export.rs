@@ -75,7 +75,7 @@ pub fn with_ctb_extension(path: PathBuf) -> PathBuf {
 
 /// Export the scene to `path`: nothing else happens in the window until its summary is closed.
 pub(crate) fn start(app: &mut ResinApp, path: PathBuf) {
-    if app.export.is_some() || app.session.scene.models().is_empty() {
+    if app.export.is_some() || app.session.scene.models().iter().all(|m| m.hidden) {
         return;
     }
     let started = Instant::now();

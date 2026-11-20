@@ -44,7 +44,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(pos2(220.0, 140.0), |r| r.left_top() + vec2(SPACE_12, SPACE_12));
+    let at = crate::models_card::beside(app);
     let settings = *app.session.support_settings();
     let active = settings.active;
     let before = *settings.current();
@@ -106,7 +106,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                 app.run("support.reset_preset", json!({ "preset": active.id() }));
             }
             Action::Cancel => app.confirm_reset = false,
-            Action::Reset | Action::None => {}
+            Action::Reset | Action::Fold | Action::None => {}
         }
     }
 }

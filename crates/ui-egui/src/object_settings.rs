@@ -7,7 +7,7 @@ use resin_engine::LIFT_RANGE;
 use serde_json::json;
 
 use crate::theme::Tokens;
-use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::FORM_CARD_WIDTH;
 use crate::ui_kit::{self, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -18,7 +18,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(egui::pos2(220.0, 140.0), |r| r.left_top() + egui::vec2(SPACE_12, SPACE_12));
+    let at = crate::models_card::beside(app);
     let scene = &app.session.scene;
     let before = scene.lift_height();
     let mut height = before;

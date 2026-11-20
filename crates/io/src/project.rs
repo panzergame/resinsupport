@@ -5,9 +5,9 @@
 //!
 //! A project is a ZIP with nothing in front of it:
 //! - `container.json`: `{"format": "resinsupport-container/1"}`, the package layout;
-//! - `document.json`: `{"format": "resinsupport/5", "models": […], "supports": […], "braces": […]}`,
+//! - `document.json`: `{"format": "resinsupport/6", "models": […], "supports": […], "braces": […]}`,
 //!   Deflated (`resinsupport/1` and `/2`, read too, have no braces and no model slicing settings,
-//!   `/3` no labels, `/4` no label presets);
+//!   `/3` no labels, `/4` no label presets, `/5` no hidden models: all shown);
 //! - `blobs/<lowercase SHA-256>.mesh`: each distinct mesh once, stored, hashed over its bytes.
 //!
 //! A mesh blob is `RSMESH01`, a little-endian `u64` triangle count, then nine little-endian `f32`
@@ -37,7 +37,7 @@ use crate::stl::MAX_TRIANGLES;
 pub const EXTENSION: &str = "rsup";
 const CONTAINER_FORMAT: &str = "resinsupport-container/1";
 const FORMAT_NAME: &str = "resinsupport/";
-const FORMAT_VERSION: u64 = 5;
+const FORMAT_VERSION: u64 = 6;
 const MESH_MAGIC: &[u8; 8] = b"RSMESH01";
 const MESH_HEADER: usize = 16;
 const TRIANGLE_BYTES: usize = 36;
@@ -67,6 +67,8 @@ pub struct ProjectModel {
     pub slicing: SlicingOverride,
     /// Its label on the raft, if any.
     pub label: Option<Label>,
+    /// Out of sight, and not printed.
+    pub hidden: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -143,6 +145,8 @@ struct ModelEntry {
     slicing: SlicingOverride,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label: Option<Label>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hidden: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -275,7 +279,14 @@ pub fn write_project(project: &Project) -> Result<Vec<u8>, IoError> {
                 name
             }
         };
-        models.push(ModelEntry { name: m.name.clone(), placement: m.placement, mesh_blob: blob, slicing: m.slicing, label: m.label.clone() });
+        models.push(ModelEntry {
+            name: m.name.clone(),
+            placement: m.placement,
+            mesh_blob: blob,
+            slicing: m.slicing,
+            label: m.label.clone(),
+            hidden: m.hidden,
+        });
     }
     let mut supports = Vec::with_capacity(project.supports.len());
     for (i, s) in project.supports.iter().enumerate() {
@@ -441,7 +452,7 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, IoError> {
             }
         };
         check_model(&m.name, &m.slicing, m.label.as_ref())?;
-        models.push(ProjectModel { name: m.name, mesh, placement: m.placement, slicing: m.slicing, label: m.label });
+        models.push(ProjectModel { name: m.name, mesh, placement: m.placement, slicing: m.slicing, label: m.label, hidden: m.hidden });
     }
     let supports: Vec<ProjectSupport> = document
         .supports
@@ -494,6 +505,7 @@ mod tests {
                     placement: Placement::at(Vec3::new(5.0, 5.0, 5.0)),
                     slicing: SlicingOverride::default(),
                     label: None,
+                    hidden: false,
                 },
                 ProjectModel {
                     name: "copy é".into(),
@@ -508,6 +520,7 @@ mod tests {
                         margin: 2.5,
                         preset: Some("Calibration".into()),
                     }),
+                    hidden: true,
                 },
             ],
             supports: vec![
@@ -590,12 +603,23 @@ mod tests {
     #[test]
     fn newer_formats_are_refused_with_a_reason() {
         let mut d = document();
-        d["format"] = "resinsupport/6".into();
+        d["format"] = "resinsupport/7".into();
         assert!(refused(&with_document(&d)).contains("newer"));
         let bytes = write_project(&sample()).unwrap();
         let mut list: Vec<(String, Vec<u8>)> = parts(&bytes).into_iter().filter(|(n, _)| n != "container.json").collect();
         list.push(("container.json".into(), br#"{"format":"resinsupport-container/9"}"#.to_vec()));
         assert!(refused(&package(&list.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect::<Vec<_>>())).contains("newer"));
+    }
+
+    #[test]
+    fn a_fifth_format_project_reads_with_every_model_shown() {
+        let mut d = document();
+        d["format"] = "resinsupport/5".into();
+        assert_eq!(d["models"][1]["hidden"], true, "written only when hidden");
+        assert!(d["models"][0].get("hidden").is_none());
+        d["models"][1].as_object_mut().unwrap().remove("hidden");
+        let back = read_project(&with_document(&d)).unwrap();
+        assert!(back.models.iter().all(|m| !m.hidden));
     }
 
     #[test]
@@ -673,6 +697,11 @@ mod tests {
         let mut d = document();
         d["braces"][0]["pattern"] = "spiral".into();
         refused(&with_document(&d));
+        for hidden in [serde_json::json!("yes"), serde_json::json!(1), serde_json::json!(null)] {
+            let mut d = document();
+            d["models"][0]["hidden"] = hidden;
+            refused(&with_document(&d));
+        }
         let mut d = document();
         d["surprise"] = 1.into();
         refused(&with_document(&d));

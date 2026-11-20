@@ -153,7 +153,7 @@ impl PresetRow<'_> {
                     action = Some(PresetAction::Delete(name));
                 }
                 Action::Cancel => state.confirm_delete = None,
-                Action::Reset | Action::None => {}
+                Action::Reset | Action::Fold | Action::None => {}
             }
         }
         action

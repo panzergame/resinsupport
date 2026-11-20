@@ -40,11 +40,13 @@ const ROLES: &[(&str, &str, [u8; 3], [u8; 3])] = &[
 /// Every icon by name.
 const MASTERS: &[(&str, &str)] = &[
     ("box", include_str!("../icons/box.svg")),
+    ("chevron", include_str!("../icons/chevron.svg")),
     ("close", include_str!("../icons/close.svg")),
     ("cone", include_str!("../icons/cone.svg")),
     ("copy", include_str!("../icons/copy.svg")),
     ("delete", include_str!("../icons/delete.svg")),
     ("export", include_str!("../icons/export.svg")),
+    ("eye", include_str!("../icons/eye.svg")),
     ("fit", include_str!("../icons/fit.svg")),
     ("home", include_str!("../icons/home.svg")),
     ("import", include_str!("../icons/import.svg")),
@@ -52,11 +54,13 @@ const MASTERS: &[(&str, &str)] = &[
     ("perspective", include_str!("../icons/perspective.svg")),
     ("play", include_str!("../icons/play.svg")),
     ("redo", include_str!("../icons/redo.svg")),
+    ("rename", include_str!("../icons/rename.svg")),
     ("revolve", include_str!("../icons/revolve.svg")),
     ("scale", include_str!("../icons/scale.svg")),
     ("section", include_str!("../icons/section.svg")),
     ("settings", include_str!("../icons/settings.svg")),
     ("stop", include_str!("../icons/stop.svg")),
+    ("suppress", include_str!("../icons/suppress.svg")),
     ("undo", include_str!("../icons/undo.svg")),
     ("ws_design", include_str!("../icons/ws_design.svg")),
 ];
@@ -540,6 +544,11 @@ struct Cache(Arc<Mutex<HashMap<(&'static str, bool, u32), TextureHandle>>>);
 
 /// Draw icon `name` filling `r`, for a dark or light surface, at `opacity` (0 to 1).
 pub fn paint(p: &Painter, r: Rect, name: &str, dark: bool, opacity: f32) {
+    paint_turned(p, r, name, dark, opacity, false);
+}
+
+/// [`paint`], turned upside down when `turned`: one master for a chevron that folds and unfolds.
+pub fn paint_turned(p: &Painter, r: Rect, name: &str, dark: bool, opacity: f32, turned: bool) {
     crate::ui_kit::mark(p.layer_id(), if dark { "icon_dark" } else { "icon_light" }, r, name);
     let Some((key, doc)) = docs().get_key_value(name) else { return };
     let px = (r.width().max(r.height()) * p.ctx().pixels_per_point()).round().clamp(1.0, 512.0) as u32;
@@ -557,7 +566,8 @@ pub fn paint(p: &Painter, r: Rect, name: &str, dark: bool, opacity: f32) {
         }
     };
     let tint = Color32::from_white_alpha((opacity.clamp(0.0, 1.0) * 255.0).round() as u8);
-    p.image(texture.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+    let uv = if turned { Rect::from_min_max(pos2(0.0, 1.0), pos2(1.0, 0.0)) } else { Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)) };
+    p.image(texture.id(), r, uv, tint);
 }
 
 #[cfg(test)]

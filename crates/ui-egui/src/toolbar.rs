@@ -110,6 +110,9 @@ impl Cmd {
         let tool = |op| transform::tool(app).is_some_and(|t| t.op == op);
         let need_pick = scene.selected_models.is_empty().then_some("reason.select_model");
         let need_models = scene.models().is_empty();
+        // Hidden models are not printed: with none shown, there is nothing to export.
+        let need_shown =
+            if need_models { Some("reason.import_first") } else { scene.models().iter().all(|m| m.hidden).then_some("reason.all_hidden") };
         let state = |shortcut, disabled, pressed| State { shortcut, disabled, pressed };
         match self {
             #[cfg(not(target_arch = "wasm32"))]
@@ -131,7 +134,7 @@ impl Cmd {
             Cmd::SliceNow => state(None, None, false),
             Cmd::CancelSlice => state(None, (!app.slicer.is_running()).then_some("reason.not_slicing"), false),
             #[cfg(not(target_arch = "wasm32"))]
-            Cmd::ExportCtb => state(Some("Ctrl+E"), need_models.then_some("reason.import_first"), false),
+            Cmd::ExportCtb => state(Some("Ctrl+E"), need_shown, false),
             #[cfg(target_arch = "wasm32")]
             Cmd::ExportCtb => state(None, Some("reason.export_desktop"), false),
             Cmd::Preview3d => state(None, None, !layer_preview::active(app) || !app.preview.flat),
@@ -311,6 +314,8 @@ fn file_menu(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
         let shortcut = |ui: &Ui, s: &egui::KeyboardShortcut| ui.ctx().format_shortcut(s);
         let has_models = !app.session.scene.models().is_empty();
         #[cfg(not(target_arch = "wasm32"))]
+        let has_shown = app.session.scene.models().iter().any(|m| !m.hidden);
+        #[cfg(not(target_arch = "wasm32"))]
         {
             if MenuItem::new(i18n::tr("menu.open")).shortcut(&shortcut(ui, &crate::OPEN)).show(ui, t).clicked() {
                 app.open_dialog();
@@ -321,7 +326,7 @@ fn file_menu(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             if MenuItem::new(i18n::tr("menu.save_as")).shortcut(&shortcut(ui, &crate::SAVE_AS)).show(ui, t).clicked() {
                 app.save_project(true);
             }
-            if MenuItem::new(i18n::tr("menu.export_ctb")).shortcut(&shortcut(ui, &crate::EXPORT_CTB)).enabled(has_models).show(ui, t).clicked() {
+            if MenuItem::new(i18n::tr("menu.export_ctb")).shortcut(&shortcut(ui, &crate::EXPORT_CTB)).enabled(has_shown).show(ui, t).clicked() {
                 app.export_dialog();
             }
             ui_kit::menu_separator(ui, t);

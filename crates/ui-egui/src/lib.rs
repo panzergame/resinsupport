@@ -14,6 +14,7 @@ pub mod icons;
 pub mod layer_image;
 pub mod layer_preview;
 pub mod layer_view;
+pub mod models_card;
 pub mod navigation;
 pub mod object_label;
 pub mod object_settings;
@@ -148,6 +149,8 @@ pub struct ResinApp {
     pub(crate) object_slicing: bool,
     /// Every card's preset row: the name being typed, the delete being confirmed.
     pub(crate) preset_rows: ui_kit::PresetRows,
+    /// The Models card: folded or not, the name being typed.
+    pub(crate) models_card: models_card::ModelsCard,
     /// The layers shown in Slice edition, and how.
     pub(crate) preview: layer_preview::LayerPreview,
     /// The device's largest texture side: a layer is cut into tiles no bigger.
@@ -227,6 +230,7 @@ impl ResinApp {
             confirm_print_reset: false,
             object_slicing: false,
             preset_rows: Default::default(),
+            models_card: Default::default(),
             preview: Default::default(),
             max_texture: DEFAULT_MAX_TEXTURE,
             prefs_writer: writer,
@@ -508,7 +512,7 @@ impl ResinApp {
                 }
             }
             ui_kit::Action::Cancel => self.pending_open = None,
-            ui_kit::Action::Reset | ui_kit::Action::None => {}
+            ui_kit::Action::Reset | ui_kit::Action::Fold | ui_kit::Action::None => {}
         }
     }
 
@@ -622,50 +626,6 @@ impl ResinApp {
         }
     }
 
-    fn models_panel(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
-        ui.heading(i18n::tr("models.heading"));
-        ui.separator();
-        let mut delete = None;
-        let mut select = None;
-        let shift = ui.input(|i| i.modifiers.shift);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for m in self.session.scene.models() {
-                let selected = self.session.scene.selected_models.contains(&m.id);
-                let size = m.bounds.size();
-                let title = object_label::titled(m);
-                let item = ui_kit::list_item(ui, tokens, m.id, &title, selected, "delete", i18n::tr("models.delete"));
-                let row = item.row.on_hover_text(i18n::format(
-                    "models.tip",
-                    &[
-                        ("name", &title),
-                        ("triangles", &m.mesh.triangle_count()),
-                        ("x", &format!("{:.2}", size.x)),
-                        ("y", &format!("{:.2}", size.y)),
-                        ("z", &format!("{:.2}", size.z)),
-                        ("volume", &format!("{:.1}", m.volume())),
-                    ],
-                ));
-                if item.action {
-                    delete = Some(m.id);
-                } else if row.clicked() {
-                    select = Some(m.id);
-                }
-            }
-        });
-        if let Some(id) = delete {
-            self.run("model.delete", json!({ "id": id }));
-        }
-        if let Some(id) = select {
-            // Slice edition picks one model at a time, for its own slicing settings.
-            if self.mode == EditMode::Slice {
-                self.run("model.select", json!({ "ids": [id] }));
-            } else {
-                self.set_mode(EditMode::Object);
-                self.run("model.select", json!({ "ids": [id], "mode": if shift { "toggle" } else { "replace" } }));
-            }
-        }
-    }
-
     fn status_bar(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
         ui.horizontal(|ui| {
             let tris: usize = self.session.scene.models().iter().map(|m| m.mesh.triangle_count()).sum();
@@ -752,6 +712,12 @@ impl ResinApp {
             self.step_history(false);
         }
         self.clipboard_keys(ctx);
+        if self.mode == EditMode::Object && ctx.input_mut(|i| i.consume_shortcut(&models_card::DUPLICATE)) {
+            models_card::duplicate_selected(self);
+        }
+        if self.mode == EditMode::Object && ctx.input_mut(|i| i.consume_shortcut(&models_card::RENAME)) {
+            models_card::rename_selected(self);
+        }
         if self.mode == EditMode::Object && ctx.input_mut(|i| i.consume_shortcut(&SELECT_ALL)) {
             let ids: Vec<u64> = self.session.scene.models().iter().map(|m| m.id).collect();
             self.run("model.select", json!({ "ids": ids }));
@@ -872,12 +838,7 @@ impl ResinApp {
         match self.mode {
             EditMode::Object => {
                 let ids: Vec<u64> = self.session.scene.selected_models.iter().copied().collect();
-                self.session.begin_step();
-                let n = ids.into_iter().filter(|id| self.run("model.delete", json!({ "id": id })).is_some()).count();
-                self.session.end_step();
-                if n > 0 {
-                    self.status = Some((i18n::count("status.deleted_models", n, &[]), false));
-                }
+                models_card::delete(self, ids);
             }
             EditMode::Support if !self.session.scene.selected.is_empty() || !self.session.scene.selected_braces.is_empty() => {
                 if let Some(v) = self.run("support.delete", json!({})) {
@@ -1015,8 +976,8 @@ impl ResinApp {
         toolbar::app_bar(self, ui, &tokens);
         toolbar::ribbon(self, ui, &tokens);
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &tokens));
-        egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui, &tokens));
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
+        models_card::card(self, &ctx);
         transform::panel(self, &ctx);
         object_label::panel(self, &ctx);
         support_line::card(self, &ctx);

@@ -46,7 +46,7 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 
 ### Save and reopen a project
 **As a** maker, **I want** to save my models with their supports and reopen them later, **so that** I can split preparation over several sessions.
-- `.rsup` project: models, placements, supports (with any hand-edited corners), braces, labels and per-model slicing settings; each mesh stored once.
+- `.rsup` project: models, their names, placements, supports (with any hand-edited corners), braces, labels, per-model slicing settings and which models are hidden; each mesh stored once.
 - Ctrl+S saves, Ctrl+Shift+S saves as, Ctrl+O opens. The old file is kept as `.bak`, and a write never leaves a half-written file.
 - A project opens exactly where it was saved, under my own support and print settings. A project from a newer version is refused with a message.
 - Commands: `file.save`, `file.open`
@@ -82,7 +82,7 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 ## Placing models
 
 ### Select models
-**As a** maker, **I want** to select a model by clicking it, its supports, or its row in the Models panel, **so that** I can act on it.
+**As a** maker, **I want** to select a model by clicking it, its supports, or its row on the Models card, **so that** I can act on it.
 - Shift toggles; Ctrl+A selects all; a model and its supports are one object.
 - Box selection: dragged right takes what lies wholly inside, dragged left what it touches; Shift adds to the selection.
 - Command: `model.select`
@@ -110,7 +110,15 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 
 ### Delete a model
 **As a** maker, **I want** Delete to remove the selected models with their supports.
+- Del, the ribbon's Delete, or Delete in a model's menu on the Models card.
 - Command: `model.delete`
+
+### The Models card
+**As a** maker, **I want** every model listed on a card I can fold or move, **so that** I can find, name and put aside the parts on my plate.
+- A row per model; its eye hides the model and its supports, which are then neither drawn, picked, selected, sliced nor exported, and kept hidden in the project.
+- A double click or F2 renames a model in its row: Enter keeps the name, Esc puts it back.
+- A right click opens its menu: Duplicate (Ctrl+D) adds a copy with its supports beside the others, Rename, Delete; on a selected model it acts on the whole selection.
+- Commands: `model.visibility`, `model.rename`, `model.duplicate`
 
 **Not yet**
 - **As a** maker, **I want** to lay a chosen face flat on the plate, **so that** I can orient a model in one click.

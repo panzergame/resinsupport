@@ -17,6 +17,9 @@ pub const MAX_EXTENT: f64 = 1.0e6;
 /// Scale factors outside this range are typos, not intents.
 pub const SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.001..=1000.0;
 
+/// The longest model name `model.rename` takes, in characters.
+pub const MAX_NAME_CHARS: usize = 255;
+
 /// How high above the plate a lifted model's lowest point sits, in millimetres, until changed:
 /// room for supports under it.
 pub const DEFAULT_LIFT_HEIGHT: f64 = 5.0;
@@ -48,6 +51,8 @@ pub struct Model {
     pub slicing: SlicingOverride,
     /// Its label on the raft, past its supports' farthest foot on one side.
     pub label: Option<Label>,
+    /// Out of sight with its supports: not drawn, picked, selected, sliced or exported.
+    pub hidden: bool,
 }
 
 impl Model {
@@ -239,6 +244,7 @@ impl Scene {
             lifted: false,
             slicing: SlicingOverride::default(),
             label: None,
+            hidden: false,
         });
         self.next_id
     }
@@ -279,6 +285,65 @@ impl Scene {
             m.label = label;
         }
         Ok(())
+    }
+    /// Rename model `id`, the name trimmed. Refused for an unknown model or a name that is empty,
+    /// longer than [`MAX_NAME_CHARS`] or holds a control character.
+    pub(crate) fn rename_model(&mut self, id: u64, name: &str) -> Result<()> {
+        let m = self.model(id).ok_or_else(|| EngineError::BadParams(format!("no model {id}")))?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(EngineError::BadParams("a model's name cannot be empty".into()));
+        }
+        if name.chars().count() > MAX_NAME_CHARS {
+            return Err(EngineError::BadParams(format!("a model's name is at most {MAX_NAME_CHARS} characters")));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(EngineError::BadParams("a model's name cannot hold a control character".into()));
+        }
+        // Renaming to the same name must not bump: it would make an empty undo step.
+        if m.name == name {
+            return Ok(());
+        }
+        self.revision += 1;
+        if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
+            m.name = name.to_string();
+        }
+        Ok(())
+    }
+    /// Hide or show these models. A hidden model and its supports leave the selection: nothing
+    /// unseen is moved or deleted with what is. All or nothing: an unknown model changes nothing.
+    pub(crate) fn set_hidden(&mut self, ids: &[u64], hidden: bool) -> Result<()> {
+        if let Some(id) = ids.iter().find(|id| self.model(**id).is_none()) {
+            return Err(EngineError::BadParams(format!("no model {id}")));
+        }
+        // Setting what is already there must not bump: it would make an empty undo step.
+        if ids.iter().all(|id| self.model(*id).is_some_and(|m| m.hidden == hidden)) {
+            return Ok(());
+        }
+        self.revision += 1;
+        for m in self.models.iter_mut().filter(|m| ids.contains(&m.id)) {
+            m.hidden = hidden;
+        }
+        self.prune_selection();
+        Ok(())
+    }
+    /// Whether model `id` is in the scene and not hidden.
+    pub fn shows(&self, id: u64) -> bool {
+        self.model(id).is_some_and(|m| !m.hidden)
+    }
+    /// Whether support `id` is in the scene on a model that is not hidden.
+    pub fn shows_support(&self, id: u64) -> bool {
+        self.supports.iter().find(|s| s.id == id).is_some_and(|s| self.shows(s.model))
+    }
+    /// The scene without its hidden models and their supports, as [`Scene::remove_models`]
+    /// leaves it: what is sliced.
+    pub(crate) fn shown(&self, preset: &SupportPreset) -> Scene {
+        let mut out = self.clone();
+        let hidden: BTreeSet<u64> = self.models.iter().filter(|m| m.hidden).map(|m| m.id).collect();
+        if !hidden.is_empty() {
+            out.remove_models(|id| hidden.contains(&id), preset);
+        }
+        out
     }
     /// Give each listed model its placement and, when given, whether it is lifted (`None` keeps
     /// what it is), carrying its supports along. A lifted model's Z is then moved to the lift
@@ -567,7 +632,14 @@ impl Scene {
         let kept: Vec<&Model> = self.models.iter().filter(|m| keep(m.id)).collect();
         let models = kept
             .iter()
-            .map(|m| ProjectModel { name: m.name.clone(), mesh: m.mesh.clone(), placement: m.placement, slicing: m.slicing, label: m.label.clone() })
+            .map(|m| ProjectModel {
+                name: m.name.clone(),
+                mesh: m.mesh.clone(),
+                placement: m.placement,
+                slicing: m.slicing,
+                label: m.label.clone(),
+                hidden: m.hidden,
+            })
             .collect();
         // A branch goes with the support it joins: a parent always comes before its branches, so
         // it is already kept, or left out, by the time they come.
@@ -635,6 +707,7 @@ impl Scene {
                 m.bounds = bounds;
                 m.slicing = pm.slicing;
                 m.label = pm.label;
+                m.hidden = pm.hidden;
             }
             ids.push(id);
         }
@@ -742,13 +815,19 @@ impl Scene {
         let braces = &self.braces;
         self.selected_braces.retain(|id| braces.iter().any(|b| b.id == *id));
         let models = &self.models;
-        self.selected_models.retain(|id| models.iter().any(|m| m.id == *id));
+        let shows = |id: u64| models.iter().any(|m| m.id == id && !m.hidden);
+        self.selected_models.retain(|id| shows(*id));
+        let on_shown = |id: u64| supports.iter().any(|s| s.id == id && shows(s.model));
+        self.selected.retain(|id| on_shown(*id));
+        self.selected_parts.retain(|(id, _)| on_shown(*id));
+        self.selected_braces.retain(|id| braces.iter().any(|b| b.id == *id && on_shown(b.a) && on_shown(b.b)));
     }
-    /// The nearest model surface along the ray from `origin` along unit `dir`: the model's id
-    /// and where it is hit, in the scene. Each model is picked in its own coordinates.
+    /// The nearest surface of a shown model along the ray from `origin` along unit `dir`: the
+    /// model's id and where it is hit, in the scene. Each model is picked in its own coordinates.
     pub fn ray_hit(&self, origin: Vec3, dir: Vec3) -> Option<(u64, RayHit)> {
         self.models
             .iter()
+            .filter(|m| !m.hidden)
             .filter_map(|m| {
                 let inv = m.transform.inverse()?;
                 let d = inv.vector(dir);
@@ -758,10 +837,14 @@ impl Scene {
             })
             .min_by(|a, b| a.1.t.total_cmp(&b.1.t))
     }
-    /// The nearest support tip along the ray, a sphere of `r` around its contact: its id and the
+    /// The nearest tip of a shown model's support along the ray, a sphere of `r` around its contact: its id and the
     /// distance to it.
     pub fn support_hit(&self, origin: Vec3, dir: Vec3, r: f64) -> Option<(u64, f64)> {
-        self.supports.iter().filter_map(|s| resin_geom::ray_sphere(origin, dir, s.tip, r).map(|t| (s.id, t))).min_by(|a, b| a.1.total_cmp(&b.1))
+        self.supports
+            .iter()
+            .filter(|s| self.shows(s.model))
+            .filter_map(|s| resin_geom::ray_sphere(origin, dir, s.tip, r).map(|t| (s.id, t)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 }
 

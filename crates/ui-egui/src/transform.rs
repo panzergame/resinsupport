@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::gizmo::{Change, Drag, Triad};
 use crate::theme::Tokens;
-use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH};
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
@@ -450,7 +450,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         _ => None,
     };
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
-    let at = app.viewport_rect.map_or(egui::pos2(220.0, 140.0), |r| r.left_top() + vec2(SPACE_12, SPACE_12));
+    let at = crate::models_card::beside(app);
     let mut edit: Option<Value> = None;
     let mut uniform = tool(app).is_some_and(|t| t.uniform);
     let card = Card {
@@ -560,7 +560,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         Action::Ok => app.tool = None,
         Action::Cancel => cancel(app),
         // A tool card has no Restore defaults.
-        Action::Reset | Action::None => {}
+        Action::Reset | Action::Fold | Action::None => {}
     }
 }
 

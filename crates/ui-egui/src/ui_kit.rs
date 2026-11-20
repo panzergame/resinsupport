@@ -32,7 +32,7 @@ pub use fields::{
 };
 pub use figure::{FigureField, FigureRow, FigureSlot, figure_height, figure_rows};
 pub use layout::{StatusTone, action_row, caption, hint, row, scope, sized_row, status_line, value_row, warning_caption};
-pub use list::{ListItem, list_item};
+pub use list::{BrowserRow, BrowserRowResponse, RenameEnd, browser_row, rename_row};
 pub use menu::{MenuItem, menu_list, menu_separator};
 pub use preset_row::{PresetAction, PresetRow, PresetRowState, PresetRows};
 pub use section::section;
@@ -60,6 +60,8 @@ pub enum Action {
     Cancel,
     /// Restore defaults.
     Reset,
+    /// The header's chevron: fold the card to its header, or unfold it.
+    Fold,
 }
 
 /// The footer's buttons.
@@ -81,6 +83,10 @@ pub enum Buttons {
     /// A report: Close alone (primary, [`Action::Ok`]); Enter is Close too, Esc and the header's
     /// close button Cancel.
     Close,
+    /// A list that stays open, as [`Buttons::None`]: a grip in place of the icon, a chevron in
+    /// place of the close button ([`Action::Fold`]), and its rows `SPACE_4` from the edges. A
+    /// `folded` card is its header alone.
+    Fold { folded: bool },
 }
 
 pub struct Card<'a> {
@@ -121,7 +127,9 @@ impl Card<'_> {
     fn show_window(self, ctx: &egui::Context, t: &Tokens, placement: Placement, body: impl FnOnce(&mut Ui)) -> Action {
         let typing = ctx.text_edit_focused();
         let frame = card_frame(t);
-        let permanent = matches!(self.buttons, Buttons::None | Buttons::CloseOnly);
+        let permanent = matches!(self.buttons, Buttons::None | Buttons::CloseOnly | Buttons::Fold { .. });
+        let folded = self.buttons == Buttons::Fold { folded: true };
+        let inset = if matches!(self.buttons, Buttons::Fold { .. }) { SPACE_4 } else { SPACE_12 };
         let mut action = Action::None;
         let room = self.bounds.unwrap_or_else(|| ctx.content_rect());
         // A window that does not resize offers its content its last height: as tall as the room,
@@ -138,8 +146,9 @@ impl Card<'_> {
         let shown = window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).show(ctx, |ui| {
             ui.set_width(self.width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            if header(ui, t, self.icon, self.title, self.buttons != Buttons::None) {
-                action = Action::Cancel;
+            action = header(ui, t, self.icon, self.title, self.buttons);
+            if folded {
+                return;
             }
             // The body scrolls rather than push the footer past the viewport's bottom.
             let bottom = room.bottom() - SPACE_12 - 1.0;
@@ -154,7 +163,7 @@ impl Card<'_> {
                 .min_scrolled_height(0.0)
                 .max_height(body_height)
                 .auto_shrink([false, true])
-                .show(&mut body_ui, |ui| egui::Frame::NONE.inner_margin(SPACE_12).show(ui, |ui| scope(ui, t, body)));
+                .show(&mut body_ui, |ui| egui::Frame::NONE.inner_margin(inset).show(ui, |ui| scope(ui, t, body)));
             ui.allocate_exact_size(vec2(ui.available_width(), body_ui.min_rect().height()), Sense::hover());
             if !permanent {
                 let clicked = footer(ui, t, self.buttons);
@@ -199,19 +208,27 @@ fn card_frame(t: &Tokens) -> egui::Frame {
 }
 
 /// The 40 pt header: 12 pt inset, 19 pt icon, 8 pt gap, the title (cut short to fit, whole in a
-/// tooltip), a 26 pt close target (when `closable`) and a rule under it. Whether close was clicked.
-fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, closable: bool) -> bool {
+/// tooltip), a 26 pt close target (or a fold chevron, see [`Buttons::Fold`]) and a rule under it
+/// (none under a folded card's). [`Action::Cancel`] for close, [`Action::Fold`] for the chevron.
+fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, buttons: Buttons) -> Action {
+    let closable = !matches!(buttons, Buttons::None | Buttons::Fold { .. });
+    let fold = match buttons {
+        Buttons::Fold { folded } => Some(folded),
+        _ => None,
+    };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), FORM_HEADER_HEIGHT), Sense::hover());
-    mark(ui.layer_id(), "card_header", rect, title);
+    mark(ui.layer_id(), if fold.is_some() { "browser_header" } else { "card_header" }, rect, title);
     let icon_rect =
         Rect::from_center_size(pos2(rect.left() + SPACE_12 + FORM_ICON_SIZE / 2.0, rect.center().y), vec2(FORM_ICON_SIZE, FORM_ICON_SIZE));
-    if icon.is_empty() {
+    if fold.is_some() {
+        paint_grip(ui.painter(), icon_rect.center(), t);
+    } else if icon.is_empty() {
         ui.painter().circle_filled(icon_rect.center(), SPACE_3, t.accent);
     } else {
         icons::paint(ui.painter(), icon_rect, icon, t.dark, 1.0);
     }
     let title_left = icon_rect.right() + SPACE_8;
-    let title_right = if closable { rect.right() - SPACE_8 - FORM_CLOSE_SIZE - SPACE_8 } else { rect.right() - SPACE_12 };
+    let title_right = if closable || fold.is_some() { rect.right() - SPACE_8 - FORM_CLOSE_SIZE - SPACE_8 } else { rect.right() - SPACE_12 };
     let mut job = egui::text::LayoutJob::simple_singleline(title.to_owned(), FontId::proportional(FONT_HEADING), t.form_ink);
     job.wrap = egui::text::TextWrapping::truncate_at_width((title_right - title_left).max(0.0));
     let galley = ui.painter().layout_job(job);
@@ -221,8 +238,37 @@ fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, closable: bool) -> b
     if elided {
         ui.interact(title_rect, ui.id().with("title"), Sense::hover()).on_hover_text(title);
     }
-    ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.dialog_rule));
-    closable && close_button(ui, t, pos2(rect.right() - SPACE_8 - FORM_CLOSE_SIZE / 2.0, rect.center().y))
+    if fold != Some(true) {
+        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.dialog_rule));
+    }
+    let corner = pos2(rect.right() - SPACE_8 - FORM_CLOSE_SIZE / 2.0, rect.center().y);
+    match fold {
+        Some(folded) if fold_button(ui, t, corner, folded) => Action::Fold,
+        None if closable && close_button(ui, t, corner) => Action::Cancel,
+        _ => Action::None,
+    }
+}
+
+/// A card's grip, the 2 × 3 dots that say it can be moved, centred on `at`.
+fn paint_grip(painter: &egui::Painter, at: Pos2, t: &Tokens) {
+    for col in [-1.0, 1.0] {
+        for row in [-1.0, 0.0, 1.0] {
+            painter.circle_filled(at + vec2(col * 2.5, row * 5.0), 1.25, t.form_dim);
+        }
+    }
+}
+
+/// The 26 pt fold target centred on `at`: a chevron up while the card is open, down while it is
+/// `folded`. Whether it was clicked.
+fn fold_button(ui: &mut Ui, t: &Tokens, at: Pos2, folded: bool) -> bool {
+    let rect = Rect::from_center_size(at, vec2(FORM_CLOSE_SIZE, FORM_CLOSE_SIZE));
+    let fold = ui.interact(rect, ui.id().with("fold"), Sense::click());
+    mark(ui.layer_id(), "fold_button", rect, "");
+    if fold.hovered() {
+        ui.painter().rect_filled(rect, RADIUS_SM, t.hover);
+    }
+    icons::paint_turned(ui.painter(), rect.shrink(5.0), "chevron", t.dark, 0.85, !folded);
+    fold.on_hover_text(i18n::tr(if folded { "ui.unfold" } else { "ui.fold" })).clicked()
 }
 
 /// The 26 pt close target centred on `at`. Whether it was clicked.
@@ -252,7 +298,7 @@ fn footer(ui: &mut Ui, t: &Tokens, buttons: Buttons) -> Action {
         Buttons::OkCancel { ok_enabled } => (vec![("ui.ok", Action::Ok, true), ("ui.cancel", Action::Cancel, false)], ok_enabled),
         Buttons::ResetClose | Buttons::Close => (vec![("ui.close", Action::Ok, true)], true),
         Buttons::Confirm { ok } => (vec![(ok, Action::Ok, true), ("ui.cancel", Action::Cancel, false)], true),
-        Buttons::None | Buttons::CloseOnly => (Vec::new(), true),
+        Buttons::None | Buttons::CloseOnly | Buttons::Fold { .. } => (Vec::new(), true),
     };
     let width_of = |ui: &Ui, label: &str, primary: bool| {
         let text = ui.painter().layout_no_wrap(label.into(), FontId::proportional(FONT_LABEL), t.form_ink).size().x;

@@ -89,6 +89,9 @@ pub fn commands() -> &'static [CommandSpec] {
             "ids?: [integer] (default every model); arranges them, the largest first, each at the free spot nearest the plate's centre, around the other models: moved across, turned a quarter about Z to lay their long side along the plate's or when only that fits (not a model with supports), put down on the plate or at the lift height; those with no room go in a column right of the plate, listed in `beside`",
         ),
         CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
+        CommandSpec::new("model.duplicate", "Duplicate Models", model::duplicate).params(
+            "ids?: [integer] (default the selected models); adds copies of them, with their supports, shown, arranged on the plate as `edit.paste` does, and selects them, leaving what was copied alone; returns their `ids` and those that went `beside` the plate",
+        ),
         CommandSpec::new("model.label", "Label Model", model::label).params(
             "id?: integer (default the one selected model), preset?: string (a label preset's name: the label takes its size, depth and margin and follows it) | null (it follows none), text?: string (lines break at \\n; at most 200 characters, 8 lines), side?: \"front\" (-Y) | \"back\" (+Y) | \"left\" (-X) | \"right\" (+X), size?: 1-50 mm (the capital letters' height), depth?: 0.1-10 mm (how far the letters stand out), margin?: 0-20 mm (from the support's base to the letters; the raft's edge and rim keep their own room round the other sides); what is left out is kept, or for a model without a label its number in the model list, front, 2 mm, 0.5 mm and 1 mm. The label is printed past the base of the model's support farthest on that side, inset into the raft, the raft widened out round it, the letters standing on it, read from that side. Size, depth or margin given for a label following a known preset change the preset to the label's settings, and every other model following it (one step). Returns `id`, `label` and the `followers` that changed with it",
         ),
@@ -101,6 +104,9 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("model.place", "Place Models", model::place).params(
             "models: [{ id, position?: [x, y, z] mm, rotation?: [x, y, z] degrees, scale?: [x, y, z], lifted?: bool }], each measured from the model as imported; without `lifted`, a change of Z alone stops the model following the lift",
         ),
+        CommandSpec::new("model.rename", "Rename Model", model::rename).params(
+            "id: integer, name: string (trimmed; not empty, at most 255 characters, no control characters)",
+        ),
         CommandSpec::new("model.rotate", "Rotate", model::rotate)
             .params("degrees: [x, y, z] (turned about X, then Y, then Z, around the models' centre), ids?: [integer] (default the selected models)"),
         CommandSpec::new("model.scale", "Scale", model::scale).params(
@@ -110,6 +116,9 @@ pub fn commands() -> &'static [CommandSpec] {
             .params("ids: [integer] (empty clears), mode?: \"replace\" | \"add\" | \"toggle\" (default replace)"),
         CommandSpec::new("model.slicing", "Model Slicing Settings", model::slicing).params(
             "ids?: [integer] (default the selected models), clear?: [key] | \"all\" (back to the plate's), set?: { key: value } with keys and ranges as print.configure's slicing group (anti_aliasing, exact, anti_aliasing_z, blur_radius, blur_passes, dither_z, dither_xy, dither_floor, dither_max_angle, gamma); the clearing first, then the setting. The models and their supports (braces between two of one model's) slice with these in place of the plate's; each set of settings is sliced apart and the brightest grey of any kept. Returns each model's `slicing`",
+        ),
+        CommandSpec::new("model.visibility", "Show or Hide Models", model::visibility).params(
+            "ids?: [integer] (default the selected models), visible: bool; a hidden model and its supports are not drawn, picked, selected, sliced or exported, and hiding takes them out of the selection",
         ),
         CommandSpec::new("print.configure", "Print Settings", print_config::configure).params(
             "printer?: { name: string (at most 64 characters), resolution_x, resolution_y px, display_x, display_y mm, build_height mm, mirror_x, mirror_y, ctb_format: \"encrypted\" (CTB v5, Saturn 2 and later) | \"v2\" (plain CTB v2) }, layers?: { height mm, bottom_count, transition_count }, exposure?: { normal, bottom, light_off, bottom_light_off s, power, bottom_power 1-255 }, motion?: { lift_distance_fast, lift_distance_slow, retract_distance_slow mm, lift_speed_fast, lift_speed_slow, retract_speed_fast, retract_speed_slow mm/min, and each again with a bottom_ prefix for the bottom layers; the lift goes slow then fast, the retract comes back the whole lift, fast then slow over retract_distance_slow (at most the lift, shortened to fit a shorter lift unless given) }, slicing?: { anti_aliasing: 1 | 2 | 4 | 8 sub-samples per pixel side, exact: true to grey each pixel by the share of it covered instead, anti_aliasing_z: 1 | 2 | 4 | 8 planes cut through each layer and averaged, blur_radius: 1-16 px of box blur after the anti-aliasing, blur_passes: 0-4 (0 off), dither_z: true to dither the greys printing under dither_floor across layers (each lit at the floor on its share of them), dither_xy: true to start each pixel's dither from its own point so neighbours switch on apart, dither_floor: 1-100 % the lowest printed grey the resin cures (default 50; 100: lit or dark only), dither_max_angle: 0-90° from vertical, the flattest surface dithered (default 20; 90: everywhere; needs anti_aliasing_z of 2 or more), gamma 0-1 (greys become 255 · (grey / 255)^gamma; 0 lights the pixels at least half covered) }, estimates?: { resin_density g/ml, bottle_volume ml, bottle_cost }; each partial, the result validated as a whole",
