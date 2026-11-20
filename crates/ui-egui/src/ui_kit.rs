@@ -1,24 +1,42 @@
 // Ported from SolidCraft (MIT OR Apache-2.0), crates/ui-egui/src/ui_kit/panel.rs (`header`,
-// `Panel::feature`), ui_kit/actions.rs (`footer`, `action_button`, `icon_button_at`) and
-// ui_kit/layout.rs (`scope`, `row`) at 4bdffef0; see ATTRIBUTION.md. Reduced: no docking, top buttons, compute status or
-// scenario handles.
+// `Panel::feature`) and ui_kit/actions.rs (`footer`, `action_button`, `icon_button_at`) at
+// 4bdffef0; the card's scrolling body (`Panel::feature_impl`) and `page_list` from
+// crates/ui-kit/src/panel.rs at a34756830; see ATTRIBUTION.md. Reduced: no docking, top buttons,
+// compute status, page groups or scenario handles.
 
-//! The card every dialog uses: a 40 pt header (icon, title, close), a padded body of form rows,
-//! and a 48 pt footer with OK and Cancel, or with Restore defaults and Close; a permanent panel has
-//! neither footer nor close. Colours and sizes come from [`crate::theme`], words from
-//! [`crate::i18n`].
+//! SolidCraft's UI kit, ported reduced: the card every dialog uses (a 40 pt header with icon,
+//! title and close, a padded body of form rows that scrolls when the viewport is too short, and a
+//! 48 pt footer with OK and Cancel, or with Restore defaults and Close; a permanent panel has
+//! neither footer nor close), and every control a card, a menu or a list holds. Feature modules
+//! draw their controls with these, never with egui's own.
+//! Colours and sizes come from [`crate::theme`], words from [`crate::i18n`].
 
+mod checks;
 mod choice;
 mod confirm;
+mod fields;
 mod figure;
+mod layout;
+mod list;
+mod menu;
 mod preset_row;
 mod section;
+mod status;
 
+pub use checks::{check_row, checkbox, checkbox_indeterminate, mixed_check_row};
 pub use choice::segmented;
 pub use confirm::Confirm;
+pub use fields::{
+    choice_row, choice_row_help, dropdown, dropdown_item, dropdown_menu, multiline_text_field, number_field, number_fields, parse_number, slider,
+    text_field,
+};
 pub use figure::{FigureField, FigureRow, FigureSlot, figure_height, figure_rows};
+pub use layout::{StatusTone, action_row, caption, hint, row, scope, sized_row, status_line, value_row, warning_caption};
+pub use list::{ListItem, list_item};
+pub use menu::{MenuItem, menu_list, menu_separator};
 pub use preset_row::{PresetAction, PresetRow, PresetRowState, PresetRows};
 pub use section::section;
+pub use status::progress;
 
 use egui::{Align2, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
@@ -90,7 +108,10 @@ impl Card<'_> {
         let frame = card_frame(t);
         let permanent = matches!(self.buttons, Buttons::None | Buttons::CloseOnly);
         let mut action = Action::None;
-        let mut window = egui::Window::new(self.title);
+        let room = self.bounds.unwrap_or_else(|| ctx.content_rect());
+        // A window that does not resize offers its content its last height: as tall as the room,
+        // the body's scroll area can grow, while the card is still drawn at its content's height.
+        let mut window = egui::Window::new(self.title).min_height(room.height());
         if let Some(b) = self.bounds {
             window = window.constrain_to(b);
         }
@@ -103,7 +124,16 @@ impl Card<'_> {
             if header(ui, t, self.icon, self.title, self.buttons != Buttons::None) {
                 action = Action::Cancel;
             }
-            egui::Frame::NONE.inner_margin(SPACE_12).show(ui, |ui| scope(ui, t, body));
+            // The body scrolls rather than push the footer past the viewport's bottom.
+            let bottom = room.bottom() - SPACE_12 - 1.0;
+            let footer_height = if permanent { 0.0 } else { FORM_FOOTER_HEIGHT };
+            let body_height = (bottom - ui.cursor().top() - footer_height).max(CONTROL_HEIGHT * 2.0);
+            egui::ScrollArea::vertical()
+                .id_salt("card_body")
+                .min_scrolled_height(0.0)
+                .max_height(body_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| egui::Frame::NONE.inner_margin(SPACE_12).show(ui, |ui| scope(ui, t, body)));
             if !permanent {
                 let clicked = footer(ui, t, self.buttons);
                 if clicked != Action::None {
@@ -231,94 +261,6 @@ fn action_button(ui: &mut Ui, t: &Tokens, rect: Rect, label: &str, primary: bool
     response
 }
 
-/// Form styling for a card's body: label-size text, 28 pt controls, the chrome's control fills.
-pub fn scope<R>(ui: &mut Ui, t: &Tokens, add: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing = vec2(SPACE_4, FORM_GAP_Y);
-        ui.spacing_mut().interact_size.y = CONTROL_HEIGHT;
-        ui.spacing_mut().button_padding = vec2(SPACE_8, SPACE_4);
-        ui.style_mut().text_styles.insert(egui::TextStyle::Body, FontId::proportional(FONT_LABEL));
-        ui.style_mut().text_styles.insert(egui::TextStyle::Button, FontId::proportional(FONT_LABEL));
-        let v = ui.visuals_mut();
-        v.weak_text_color = Some(t.form_dim);
-        v.override_text_color = Some(t.form_ink);
-        v.selection.stroke = Stroke::new(1.0, t.form_primary);
-        v.selection.bg_fill = t.selected_bg;
-        v.extreme_bg_color = t.field;
-        v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, t.dialog_rule);
-        for state in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-            state.bg_fill = t.control_fill;
-            state.weak_bg_fill = t.control_fill;
-            state.bg_stroke = Stroke::new(1.0, t.control_border);
-            state.corner_radius = CornerRadius::same(CONTROL_RADIUS);
-        }
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.form_primary);
-        v.widgets.active.bg_stroke = Stroke::new(1.0, t.form_primary);
-        add(ui)
-    })
-    .inner
-}
-
-/// One form row, `CONTROL_HEIGHT` tall: `label` in the 70 pt label column, the control in the
-/// rest.
-pub fn row<R>(ui: &mut Ui, t: &Tokens, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
-    sized_row(ui, t, label, FORM_LABEL_WIDTH, control)
-}
-
-/// A row with the wide (manager) label column, for settings whose names are longer.
-pub fn wide_row<R>(ui: &mut Ui, t: &Tokens, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
-    sized_row(ui, t, label, FORM_WIDE_LABEL_WIDTH, control)
-}
-
-/// A checkbox setting: the box and its label across the row, `help` on hover.
-pub fn check_row(ui: &mut Ui, t: &Tokens, label: &str, help: &str, value: &mut bool) -> Response {
-    mixed_check_row(ui, t, label, help, value, false)
-}
-
-/// [`check_row`] for a setting of several things that may differ: `mixed` shows the box neither
-/// ticked nor clear.
-pub fn mixed_check_row(ui: &mut Ui, _t: &Tokens, label: &str, help: &str, value: &mut bool, mixed: bool) -> Response {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::hover());
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
-        ui.add(egui::Checkbox::new(value, label).indeterminate(mixed))
-    })
-    .inner
-    .on_hover_text(help)
-}
-
-/// A setting chosen from `options` (stored value, catalog id of its name), in a wide row.
-pub fn choice_row(ui: &mut Ui, t: &Tokens, label: &str, id: &str, value: &mut String, options: &[(&str, &'static str)]) {
-    choice_row_help(ui, t, label, None, id, value, options);
-}
-
-/// [`choice_row`], with `help` shown on hovering the choice.
-pub fn choice_row_help(ui: &mut Ui, t: &Tokens, label: &str, help: Option<&str>, id: &str, value: &mut String, options: &[(&str, &'static str)]) {
-    let shown = options.iter().find(|(v, _)| *v == value.as_str()).map_or(value.clone(), |(_, name)| i18n::tr(name).to_string());
-    wide_row(ui, t, label, |ui| {
-        let combo = egui::ComboBox::from_id_salt(id).selected_text(shown).width(ui.available_width()).show_ui(ui, |ui| {
-            for (v, name) in options {
-                ui.selectable_value(value, (*v).to_string(), i18n::tr(name));
-            }
-        });
-        if let Some(help) = help {
-            combo.response.on_hover_text(help);
-        }
-    });
-}
-
-fn sized_row<R>(ui: &mut Ui, t: &Tokens, label: &str, label_width: f32, control: impl FnOnce(&mut Ui) -> R) -> R {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::hover());
-    let label_rect = Rect::from_min_size(rect.min, vec2(label_width, rect.height()));
-    ui.painter().text(label_rect.left_center(), Align2::LEFT_CENTER, label, FontId::proportional(FONT_LABEL), t.form_ink);
-    let control_rect = Rect::from_min_max(pos2(label_rect.right(), rect.top()), rect.max);
-    ui.scope_builder(egui::UiBuilder::new().max_rect(control_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), control).inner
-}
-
-/// A full-width line of dim text (a hint under the rows).
-pub fn hint(ui: &mut Ui, t: &Tokens, text: &str) {
-    ui.add(egui::Label::new(egui::RichText::new(text).size(FONT_CAPTION).color(t.form_dim)).wrap());
-}
-
 /// A text button in the form's style, `CONTROL_HEIGHT` tall.
 pub fn button(ui: &mut Ui, label: &str) -> Response {
     ui.add(egui::Button::new(label).min_size(vec2(0.0, CONTROL_HEIGHT)))
@@ -338,18 +280,75 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tip: &str, enabled: bool
     response.on_hover_text(tip)
 }
 
-/// One entry of a settings window's page list: its icon and title, filled when selected. Whether
-/// it was clicked.
-pub fn page_tab(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, selected: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::click());
-    if selected {
-        ui.painter().rect_filled(rect, CONTROL_RADIUS, t.selected_bg);
-    } else if resp.hovered() {
-        ui.painter().rect_filled(rect, CONTROL_RADIUS, t.hover);
+/// A settings window's page list: one `CONTROL_HEIGHT + SPACE_4` row per page (title, icon),
+/// filled when selected or hovered, `selected` the page shown. Whether a page was clicked.
+pub fn page_list(ui: &mut Ui, t: &Tokens, selected: &mut usize, pages: &[(&str, &str)]) -> bool {
+    let mut clicked = false;
+    ui.spacing_mut().item_spacing.y = SPACE_2;
+    for (index, (title, icon)) in pages.iter().enumerate() {
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT + SPACE_4), Sense::click());
+        if response.clicked() {
+            *selected = index;
+            clicked = true;
+        }
+        let on = *selected == index;
+        if on || response.hovered() || response.has_focus() {
+            ui.painter().rect_filled(rect, CONTROL_RADIUS, if on { t.selected_bg } else { t.hover });
+        }
+        let icon_rect = Rect::from_center_size(pos2(rect.left() + SPACE_10 + SPACE_8, rect.center().y), vec2(SPACE_16, SPACE_16));
+        icons::paint(ui.painter(), icon_rect, icon, t.dark, 1.0);
+        let ink = if on { t.form_primary } else { t.form_ink };
+        let text = Rect::from_min_max(pos2(icon_rect.right() + SPACE_10, rect.top()), rect.right_bottom());
+        layout::paint_text(ui, text, title, FontId::proportional(FONT_LABEL), ink);
+        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, *title));
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
     }
-    let icon_rect = Rect::from_center_size(pos2(rect.left() + SPACE_8 + 8.0, rect.center().y), vec2(16.0, 16.0));
-    icons::paint(ui.painter(), icon_rect, icon, t.dark, 1.0);
-    let ink = if selected { t.selected_ink } else { t.form_ink };
-    ui.painter().text(pos2(icon_rect.right() + SPACE_8, rect.center().y), Align2::LEFT_CENTER, title, FontId::proportional(FONT_LABEL), ink);
-    resp.clicked()
+    clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Pos2, Rect};
+
+    use super::*;
+
+    /// The card's height after a few frames, its body `rows` rows tall, in a `room` points tall viewport.
+    fn card_height(rows: usize, room: f32) -> f32 {
+        let ctx = egui::Context::default();
+        let t = Tokens::for_dark(false);
+        let bounds = Rect::from_min_size(Pos2::ZERO, vec2(800.0, room));
+        for _ in 0..4 {
+            let raw = egui::RawInput { screen_rect: Some(bounds), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let card = Card {
+                    id: egui::Id::new("tall"),
+                    title: "",
+                    icon: "",
+                    at: Pos2::ZERO,
+                    bounds: Some(bounds),
+                    width: 240.0,
+                    buttons: Buttons::None,
+                };
+                card.show(ui.ctx(), &t, |ui| {
+                    for _ in 0..rows {
+                        row(ui, &t, "Row", |_| {});
+                    }
+                });
+            });
+            out.textures_delta.clear();
+        }
+        ctx.memory(|m| m.area_rect(egui::Id::new("tall"))).map_or(0.0, |r| r.height())
+    }
+
+    #[test]
+    fn a_tall_body_shows_whole_when_there_is_room_and_scrolls_when_there_is_not() {
+        let rows = 20;
+        let whole = FORM_HEADER_HEIGHT + 2.0 * SPACE_12 + rows as f32 * CONTROL_HEIGHT + (rows - 1) as f32 * FORM_GAP_Y;
+        let roomy = card_height(rows, 1000.0);
+        assert!((roomy - whole).abs() < 4.0, "whole, past egui's first 420 pt: {roomy} vs {whole}");
+        let short = card_height(rows, 400.0);
+        assert!(short <= 400.0 - SPACE_12 + 1.0, "within the viewport: {short}");
+    }
 }

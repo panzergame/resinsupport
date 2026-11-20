@@ -377,7 +377,7 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
     };
     card.show_anchored(ctx, &t, Align2::LEFT_BOTTOM, offset, |ui| {
         for (label, value) in &rows {
-            ui_kit::row(ui, &t, i18n::tr(label), |ui| ui.label(value));
+            ui_kit::value_row(ui, &t, i18n::tr(label), value);
         }
     });
 }

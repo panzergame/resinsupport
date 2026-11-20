@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::theme::Tokens;
-use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -191,10 +191,7 @@ pub fn preview_struts(app: &ResinApp) -> impl Iterator<Item = (Vec3, Vec3)> + '_
 
 /// A number field in a row: `value` within `range`, shown with `suffix`.
 fn number(ui: &mut egui::Ui, t: &Tokens, label: &str, tip: &str, value: &mut f64, range: std::ops::RangeInclusive<f64>, suffix: &str) {
-    ui_kit::row(ui, t, label, |ui| {
-        ui.add_sized([ui.available_width(), CONTROL_HEIGHT], egui::DragValue::new(value).speed(0.1).range(range).suffix(suffix).max_decimals(2))
-            .on_hover_text(tip)
-    });
+    ui_kit::row(ui, t, label, |ui| ui_kit::number_field(ui, value, range, 0.1, suffix, 2).on_hover_text(tip));
 }
 
 /// The card: the settings, and what Enter would add.
@@ -231,7 +228,7 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
         number(ui, &t, i18n::tr("tool.brace.foot_gap"), i18n::tr("tool.brace.foot_gap_tip"), &mut p.foot_gap, GAP_RANGE, " mm");
         if let Some(n) = too_many {
             let msg = i18n::format("tool.brace.too_many", &[("n", &n), ("max", &MAX_BRACES)]);
-            ui.label(egui::RichText::new(msg).color(t.warning));
+            ui_kit::status_line(ui, &t, &msg, ui_kit::StatusTone::Warning);
         } else if enough && replaced > 0 {
             ui_kit::hint(ui, &t, &i18n::count("tool.brace.replaces", adds, &[("old", &replaced)]));
         } else if enough {
@@ -240,7 +237,7 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
             ui_kit::hint(ui, &t, i18n::tr("tool.brace.select"));
         }
         if skipped > 0 {
-            ui.label(egui::RichText::new(i18n::count("tool.brace.skipped", skipped, &[])).color(t.warning));
+            ui_kit::status_line(ui, &t, &i18n::count("tool.brace.skipped", skipped, &[]), ui_kit::StatusTone::Warning);
         }
     });
     p.pattern = BracePattern::parse(&pattern).unwrap_or(p.pattern);

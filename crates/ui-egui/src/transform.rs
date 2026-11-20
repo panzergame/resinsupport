@@ -8,7 +8,7 @@
 //! the amount (`T X 50` moves 50 mm along X, `R 90` turns 90° about Z, `S X 2` doubles X), shown
 //! live; Enter keeps it and puts the tool away, Esc puts the models back.
 
-use egui::{DragValue, vec2};
+use egui::vec2;
 use resin_engine::MAX_EXTENT;
 use resin_engine::geom::{Affine3, EPS, Placement, Vec3};
 use serde_json::{Value, json};
@@ -439,14 +439,13 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let typed = app.tool.as_ref().and_then(|tool| tool.typed.as_ref()).map(|ty| typed_line(op, ty));
     let action = card.show(ctx, &t, |ui| {
         if let Some(line) = &typed {
-            ui.label(egui::RichText::new(line).strong());
+            ui_kit::status_line(ui, &t, line, ui_kit::StatusTone::Dim);
             ui_kit::hint(ui, &t, &i18n::format("tool.typed.keys", &[("enter", &i18n::tr("key.enter")), ("escape", &i18n::tr("key.escape"))]));
-            ui.add_space(SPACE_12);
         }
         let Some(m) = &lone else {
             ui_kit::hint(ui, &t, &i18n::format("tool.several", &[("n", &ids.len())]));
             if op == Op::Scale {
-                ui.checkbox(&mut uniform, i18n::tr("tool.scale.uniform"));
+                ui_kit::check_row(ui, &t, i18n::tr("tool.scale.uniform"), "", &mut uniform);
             }
             return;
         };
@@ -457,7 +456,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                     edit = Some(json!({ "position": v }));
                 }
                 ui_kit::hint(ui, &t, i18n::tr("tool.move.hint"));
-                if ui_kit::button(ui, i18n::tr("ui.reset")).on_hover_text(i18n::tr("tool.move.reset_tip")).clicked() {
+                if ui_kit::action_row(ui, &t, i18n::tr("ui.reset")).on_hover_text(i18n::tr("tool.move.reset_tip")).clicked() {
                     edit = Some(json!({ "position": m.pivot }));
                 }
             }
@@ -466,33 +465,31 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                     edit = Some(json!({ "rotation": v }));
                 }
                 ui_kit::hint(ui, &t, i18n::tr("tool.rotate.hint"));
-                if ui_kit::button(ui, i18n::tr("ui.reset")).clicked() {
+                if ui_kit::action_row(ui, &t, i18n::tr("ui.reset")).clicked() {
                     edit = Some(json!({ "rotation": [0, 0, 0] }));
                 }
             }
             Op::Scale => {
-                ui_kit::row(ui, &t, i18n::tr("tool.scale.uniform"), |ui| ui.checkbox(&mut uniform, ""));
+                ui_kit::check_row(ui, &t, i18n::tr("tool.scale.uniform"), "", &mut uniform);
                 let size: [f64; 3] = m.mesh.bounds().size().into();
                 let scale: [f64; 3] = pl.scale.into();
                 for axis in 0..3 {
                     let new = ui_kit::row(ui, &t, AXES[axis], |ui| {
-                        let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                        let half = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(0.0);
+                        let cell = egui::Layout::left_to_right(egui::Align::Center);
                         let mut pct = scale[axis] * 100.0;
                         let pct_changed = ui
-                            .add_sized(
-                                [half, CONTROL_HEIGHT],
-                                DragValue::new(&mut pct).speed(0.5).range(0.1..=100_000.0).suffix(" %").max_decimals(2),
-                            )
+                            .allocate_ui_with_layout(vec2(half, CONTROL_HEIGHT), cell, |ui| {
+                                ui_kit::number_field(ui, &mut pct, 0.1..=100_000.0, 0.5, " %", 2)
+                            })
+                            .inner
                             .changed();
                         let base = size[axis];
                         let mut mm = base * scale[axis];
                         // A flat model has no size to aim for along its thin axis.
                         let mm_changed = ui
-                            .add_enabled_ui(base > EPS, |ui| {
-                                ui.add_sized(
-                                    [half, CONTROL_HEIGHT],
-                                    DragValue::new(&mut mm).speed(0.1).range(0.001..=MAX_EXTENT).suffix(" mm").max_decimals(3),
-                                )
+                            .allocate_ui_with_layout(vec2(half, CONTROL_HEIGHT), cell, |ui| {
+                                ui.add_enabled_ui(base > EPS, |ui| ui_kit::number_field(ui, &mut mm, 0.001..=MAX_EXTENT, 0.1, " mm", 3)).inner
                             })
                             .inner
                             .changed();
@@ -515,7 +512,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                         edit = Some(json!({ "scale": s }));
                     }
                 }
-                if ui_kit::button(ui, i18n::tr("ui.reset")).clicked() {
+                if ui_kit::action_row(ui, &t, i18n::tr("ui.reset")).clicked() {
                     edit = Some(json!({ "scale": [1, 1, 1] }));
                 }
             }
@@ -562,10 +559,7 @@ pub fn cancel(app: &mut ResinApp) {
 fn xyz_rows(ui: &mut egui::Ui, t: &Tokens, mut v: [f64; 3], suffix: &str, speed: f64, range: std::ops::RangeInclusive<f64>) -> Option<[f64; 3]> {
     let mut changed = false;
     for (axis, x) in AXES.iter().zip(v.iter_mut()) {
-        changed |= ui_kit::row(ui, t, axis, |ui| {
-            ui.add_sized([ui.available_width(), CONTROL_HEIGHT], DragValue::new(x).speed(speed).range(range.clone()).suffix(suffix).max_decimals(3))
-                .changed()
-        });
+        changed |= ui_kit::row(ui, t, axis, |ui| ui_kit::number_field(ui, x, range.clone(), speed, suffix, 3).changed());
     }
     changed.then_some(v)
 }

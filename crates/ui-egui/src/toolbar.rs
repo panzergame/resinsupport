@@ -12,6 +12,7 @@ use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
+use crate::ui_kit::{self, MenuItem};
 use crate::{EditMode, ResinApp, i18n, icons, layer_preview, transform};
 
 pub const APP_BAR_HEIGHT: f32 = 34.0;
@@ -242,7 +243,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             ui.painter().rect_filled(fr, RADIUS_SM, t.app_bar_hover);
         }
         ui.painter().galley(pos2(fr.left() + 8.0, fr.center().y - galley.size().y / 2.0), galley, t.app_bar_text);
-        egui::Popup::menu(&file).show(|ui| file_menu(app, ui));
+        egui::Popup::menu(&file).show(|ui| file_menu(app, ui, t));
         // Undo and Redo, as in the File menu and their shortcuts.
         x = fr.right() + 24.0;
         for forward in [false, true] {
@@ -300,43 +301,46 @@ fn history_button(app: &ResinApp, ctx: &egui::Context, forward: bool) -> (&'stat
     (icon, tip)
 }
 
-fn file_menu(app: &mut ResinApp, ui: &mut Ui) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if ui.add(egui::Button::new(i18n::tr("menu.open")).shortcut_text(ui.ctx().format_shortcut(&crate::OPEN))).clicked() {
-            app.open_dialog();
+fn file_menu(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
+    ui_kit::menu_list(ui, |ui| {
+        let shortcut = |ui: &Ui, s: &egui::KeyboardShortcut| ui.ctx().format_shortcut(s);
+        let has_models = !app.session.scene.models().is_empty();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if MenuItem::new(i18n::tr("menu.open")).shortcut(&shortcut(ui, &crate::OPEN)).show(ui, t).clicked() {
+                app.open_dialog();
+            }
+            if MenuItem::new(i18n::tr("menu.save")).shortcut(&shortcut(ui, &crate::SAVE)).show(ui, t).clicked() {
+                app.save_project(false);
+            }
+            if MenuItem::new(i18n::tr("menu.save_as")).shortcut(&shortcut(ui, &crate::SAVE_AS)).show(ui, t).clicked() {
+                app.save_project(true);
+            }
+            if MenuItem::new(i18n::tr("menu.export_ctb")).shortcut(&shortcut(ui, &crate::EXPORT_CTB)).enabled(has_models).show(ui, t).clicked() {
+                app.export_dialog();
+            }
+            ui_kit::menu_separator(ui, t);
+            if MenuItem::new(i18n::tr("menu.import")).shortcut(&shortcut(ui, &crate::IMPORT)).show(ui, t).clicked() {
+                app.import_dialog();
+            }
         }
-        if ui.add(egui::Button::new(i18n::tr("menu.save")).shortcut_text(ui.ctx().format_shortcut(&crate::SAVE))).clicked() {
-            app.save_project(false);
+        if MenuItem::new(i18n::tr("menu.clear")).enabled(has_models).show(ui, t).clicked() {
+            app.run("scene.clear", json!({}));
         }
-        if ui.add(egui::Button::new(i18n::tr("menu.save_as")).shortcut_text(ui.ctx().format_shortcut(&crate::SAVE_AS))).clicked() {
-            app.save_project(true);
+        ui_kit::menu_separator(ui, t);
+        let undo = history_step(app, false).is_some();
+        if MenuItem::new(i18n::tr("menu.undo")).shortcut(&shortcut(ui, &crate::UNDO)).enabled(undo).show(ui, t).clicked() {
+            app.step_history(false);
         }
-        let export = egui::Button::new(i18n::tr("menu.export_ctb")).shortcut_text(ui.ctx().format_shortcut(&crate::EXPORT_CTB));
-        if ui.add_enabled(!app.session.scene.models().is_empty(), export).clicked() {
-            app.export_dialog();
+        let redo = history_step(app, true).is_some();
+        if MenuItem::new(i18n::tr("menu.redo")).shortcut(&shortcut(ui, &crate::REDO)).enabled(redo).show(ui, t).clicked() {
+            app.step_history(true);
         }
-        ui.separator();
-        if ui.add(egui::Button::new(i18n::tr("menu.import")).shortcut_text(ui.ctx().format_shortcut(&crate::IMPORT))).clicked() {
-            app.import_dialog();
+        ui_kit::menu_separator(ui, t);
+        if MenuItem::new(i18n::tr("menu.quit")).show(ui, t).clicked() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
-    }
-    if ui.add_enabled(!app.session.scene.models().is_empty(), egui::Button::new(i18n::tr("menu.clear"))).clicked() {
-        app.run("scene.clear", json!({}));
-    }
-    ui.separator();
-    let undo = egui::Button::new(i18n::tr("menu.undo")).shortcut_text(ui.ctx().format_shortcut(&crate::UNDO));
-    if ui.add_enabled(history_step(app, false).is_some(), undo).clicked() {
-        app.step_history(false);
-    }
-    let redo = egui::Button::new(i18n::tr("menu.redo")).shortcut_text(ui.ctx().format_shortcut(&crate::REDO));
-    if ui.add_enabled(history_step(app, true).is_some(), redo).clicked() {
-        app.step_history(true);
-    }
-    ui.separator();
-    if ui.button(i18n::tr("menu.quit")).clicked() {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-    }
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -403,11 +407,13 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
                 painter.text(lr.center() - vec2(6.0, 0.0), Align2::CENTER_CENTER, name, FontId::proportional(FONT_CAPTION), ink);
                 dropdown_arrow(&painter, pos2(lr.center().x + lw / 2.0 + 1.0, lr.center().y + 0.5), ink);
                 egui::Popup::menu(&lresp).show(|ui| {
-                    for (label, id) in STANDARD_VIEWS {
-                        if ui.button(i18n::tr(label)).clicked() {
-                            view = Some(id);
+                    ui_kit::menu_list(ui, |ui| {
+                        for (label, id) in STANDARD_VIEWS {
+                            if MenuItem::new(i18n::tr(label)).show(ui, t).clicked() {
+                                view = Some(id);
+                            }
                         }
-                    }
+                    });
                 });
             } else {
                 painter.text(lr.center(), Align2::CENTER_CENTER, i18n::tr(g.name), FontId::proportional(FONT_CAPTION), t.text_dim);

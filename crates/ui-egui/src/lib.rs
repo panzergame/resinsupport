@@ -604,7 +604,7 @@ impl ResinApp {
         }
     }
 
-    fn models_panel(&mut self, ui: &mut egui::Ui) {
+    fn models_panel(&mut self, ui: &mut egui::Ui, tokens: &Tokens) {
         ui.heading(i18n::tr("models.heading"));
         ui.separator();
         let mut delete = None;
@@ -612,34 +612,26 @@ impl ResinApp {
         let shift = ui.input(|i| i.modifiers.shift);
         egui::ScrollArea::vertical().show(ui, |ui| {
             for m in self.session.scene.models() {
-                ui.horizontal(|ui| {
-                    let selected = self.session.scene.selected_models.contains(&m.id);
-                    let size = m.bounds.size();
-                    let title = object_label::titled(m);
-                    // Room is left for the delete button: a long name is cut short, whole in the tooltip.
-                    let h = ui.spacing().interact_size.y;
-                    let room = (ui.available_width() - h - ui.spacing().item_spacing.x).max(0.0);
-                    let label = ui.allocate_ui(egui::vec2(room, h), |ui| ui.add(egui::Button::selectable(selected, title.as_str()).truncate()));
-                    let label = label.inner.on_hover_text(i18n::format(
-                        "models.tip",
-                        &[
-                            ("name", &title),
-                            ("triangles", &m.mesh.triangle_count()),
-                            ("x", &format!("{:.2}", size.x)),
-                            ("y", &format!("{:.2}", size.y)),
-                            ("z", &format!("{:.2}", size.z)),
-                            ("volume", &format!("{:.1}", m.volume())),
-                        ],
-                    ));
-                    if label.clicked() {
-                        select = Some(m.id);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("🗑").on_hover_text(i18n::tr("models.delete")).clicked() {
-                            delete = Some(m.id);
-                        }
-                    });
-                });
+                let selected = self.session.scene.selected_models.contains(&m.id);
+                let size = m.bounds.size();
+                let title = object_label::titled(m);
+                let item = ui_kit::list_item(ui, tokens, m.id, &title, selected, "delete", i18n::tr("models.delete"));
+                let row = item.row.on_hover_text(i18n::format(
+                    "models.tip",
+                    &[
+                        ("name", &title),
+                        ("triangles", &m.mesh.triangle_count()),
+                        ("x", &format!("{:.2}", size.x)),
+                        ("y", &format!("{:.2}", size.y)),
+                        ("z", &format!("{:.2}", size.z)),
+                        ("volume", &format!("{:.1}", m.volume())),
+                    ],
+                ));
+                if item.action {
+                    delete = Some(m.id);
+                } else if row.clicked() {
+                    select = Some(m.id);
+                }
             }
         });
         if let Some(id) = delete {
@@ -1007,7 +999,7 @@ impl eframe::App for ResinApp {
         toolbar::app_bar(self, ui, &tokens);
         toolbar::ribbon(self, ui, &tokens);
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, &tokens));
-        egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui));
+        egui::Panel::left("models").default_size(200.0).show(ui, |ui| self.models_panel(ui, &tokens));
         egui::CentralPanel::no_frame().show(ui, |ui| viewport::show(self, ui, &tokens));
         transform::panel(self, &ctx);
         object_label::panel(self, &ctx);

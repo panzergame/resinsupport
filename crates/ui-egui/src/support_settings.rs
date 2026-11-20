@@ -4,7 +4,7 @@
 //! `support.configure` at once; settings are not undo steps, and `ResinApp::run` keeps them in
 //! the preferences.
 
-use egui::{DragValue, Painter, Pos2, Rect, Stroke, pos2, vec2};
+use egui::{Painter, Pos2, Rect, Stroke, pos2, vec2};
 use resin_engine::{BodyShape, ContactShape, GROUPS, PresetId, RaftEdge, SEGMENTS, SupportPreset, range};
 use serde_json::{Value, json};
 
@@ -72,7 +72,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             BASE => base_rows(ui, &t, &mut p),
             _ => raft_rows(ui, &t, &mut p),
         }
-        if ui_kit::button(ui, i18n::tr("ui.restore_defaults")).clicked() {
+        if ui_kit::action_row(ui, &t, i18n::tr("ui.restore_defaults")).clicked() {
             reset = true;
         }
         ui_kit::hint(ui, &t, i18n::tr("supports.preset"));
@@ -142,9 +142,7 @@ fn field<'a>(label: &'static str, value: &'a mut f64, group: &str, key: &str, su
 /// A number row without a dimension in the figure.
 fn number_row(ui: &mut egui::Ui, t: &Tokens, label: &'static str, value: &mut f64, group: &str, key: &str, suffix: &str) {
     let r = range(group, key).unwrap_or(0.0..=0.0);
-    ui_kit::row(ui, t, i18n::tr(label), |ui| {
-        ui.add_sized([ui.available_width(), CONTROL_HEIGHT], DragValue::new(value).range(r).speed(0.5).suffix(suffix).max_decimals(1));
-    });
+    ui_kit::row(ui, t, i18n::tr(label), |ui| ui_kit::number_field(ui, value, r, 0.5, suffix, 1));
 }
 
 fn shape_row<S: Copy + PartialEq>(
@@ -231,9 +229,7 @@ fn body_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {
     shape_row(ui, t, "supports.body.shape", "body_shape", &mut p.body.shape, &BodyShape::ALL, body_name);
     number_row(ui, t, "supports.body.max_angle", &mut p.body.max_angle, "body", "max_angle", "°");
     number_row(ui, t, "supports.body.clearance", &mut p.body.clearance, "body", "clearance", " mm");
-    ui_kit::row(ui, t, i18n::tr("supports.body.segments"), |ui| {
-        ui.add_sized([ui.available_width(), CONTROL_HEIGHT], DragValue::new(&mut p.body.segments).range(SEGMENTS).speed(0.1));
-    });
+    ui_kit::row(ui, t, i18n::tr("supports.body.segments"), |ui| ui_kit::number_field(ui, &mut p.body.segments, SEGMENTS, 0.1, "", 0));
 }
 
 fn base_rows(ui: &mut egui::Ui, t: &Tokens, p: &mut SupportPreset) {

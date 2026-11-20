@@ -15,13 +15,12 @@
 //! every model using it, as `model.label` does. A label following a preset no longer in the list
 //! shows its name as such, and Duplicate offers that name, to bring it back.
 
-use egui::DragValue;
 use resin_engine::Model;
 use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars};
 use serde_json::{Map, Value, json};
 
 use crate::theme::Tokens;
-use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card, PresetAction, PresetRow};
 use crate::{EditMode, ResinApp, i18n, object_slicing};
 
@@ -106,25 +105,13 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             };
             preset_action = row.show(ui, &t, rows.state(PRESET_ROW));
             ui_kit::row(ui, &t, i18n::tr("tool.label.size"), |ui| {
-                ui.add_sized(
-                    [ui.available_width(), CONTROL_HEIGHT],
-                    DragValue::new(&mut size).range(LABEL_SIZE_RANGE).speed(0.1).suffix(" mm").max_decimals(2),
-                )
-                .on_hover_text(i18n::tr("tool.label.size_tip"));
+                ui_kit::number_field(ui, &mut size, LABEL_SIZE_RANGE, 0.1, " mm", 2).on_hover_text(i18n::tr("tool.label.size_tip"));
             });
             ui_kit::row(ui, &t, i18n::tr("tool.label.depth"), |ui| {
-                ui.add_sized(
-                    [ui.available_width(), CONTROL_HEIGHT],
-                    DragValue::new(&mut depth).range(LABEL_DEPTH_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
-                )
-                .on_hover_text(i18n::tr("tool.label.depth_tip"));
+                ui_kit::number_field(ui, &mut depth, LABEL_DEPTH_RANGE, 0.05, " mm", 2).on_hover_text(i18n::tr("tool.label.depth_tip"));
             });
             ui_kit::row(ui, &t, i18n::tr("tool.label.margin"), |ui| {
-                ui.add_sized(
-                    [ui.available_width(), CONTROL_HEIGHT],
-                    DragValue::new(&mut margin).range(LABEL_MARGIN_RANGE).speed(0.05).suffix(" mm").max_decimals(2),
-                )
-                .on_hover_text(i18n::tr("tool.label.margin_tip"));
+                ui_kit::number_field(ui, &mut margin, LABEL_MARGIN_RANGE, 0.05, " mm", 2).on_hover_text(i18n::tr("tool.label.margin_tip"));
             });
         });
         ui_kit::section(ui, &t, "label_options", i18n::tr("ui.section.options"), true, |ui| {
@@ -132,13 +119,12 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                 let names = SIDES.map(i18n::tr);
                 ui_kit::segmented(ui, &t, &mut side, &names);
             });
-            ui_kit::row(ui, &t, i18n::tr("tool.label.text"), |_| {});
-            ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(f32::INFINITY));
+            ui_kit::multiline_text_field(ui, &t, i18n::tr("tool.label.text"), &mut text);
             if let Some(why) = &why_not {
-                ui.colored_label(t.warning, why);
+                ui_kit::status_line(ui, &t, why, ui_kit::StatusTone::Warning);
             }
         });
-        delete = ui_kit::button(ui, i18n::tr("tool.label.delete")).on_hover_text(i18n::tr("tool.label.delete_tip")).clicked();
+        delete = ui_kit::action_row(ui, &t, i18n::tr("tool.label.delete")).on_hover_text(i18n::tr("tool.label.delete_tip")).clicked();
     });
     app.preset_rows = rows;
     if action == Action::Cancel {
@@ -216,7 +202,7 @@ mod tests {
 
     use super::*;
     use crate::prefs::Prefs;
-    use crate::theme::metrics::SPACE_4;
+    use crate::theme::metrics::{CONTROL_HEIGHT, SPACE_4};
 
     fn frame(ctx: &egui::Context, app: &mut ResinApp) {
         frame_with(ctx, app, Vec::new());

@@ -279,11 +279,10 @@ pub(crate) fn screen(app: &mut ResinApp, ui: &mut egui::Ui, t: &Tokens) {
         buttons: Buttons::None,
     };
     card.show_anchored(&ctx, t, Align2::CENTER_BOTTOM, vec2(0.0, -SPACE_24), |ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, SPACE_8);
-        ui.label(line);
-        ui.add(egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).show_percentage());
+        ui_kit::status_line(ui, t, &line, ui_kit::StatusTone::Dim);
+        ui_kit::progress(ui, t, fraction);
         ui.add_enabled_ui(!cancelling, |ui| {
-            if ui_kit::button(ui, i18n::tr("export.cancel")).clicked() {
+            if ui_kit::action_row(ui, t, i18n::tr("export.cancel")).clicked() {
                 stop = true;
             }
         });
@@ -313,44 +312,42 @@ fn summary_card(ctx: &egui::Context, t: &Tokens, name: &str, s: &Summary) -> Act
         let bytes = match &s.outcome {
             Ok(bytes) => *bytes,
             Err(e) => {
-                ui.colored_label(t.error, e);
+                ui_kit::status_line(ui, t, e, ui_kit::StatusTone::Error);
                 return;
             }
         };
         let (job, st, settings) = (&s.job, &s.job.stats, &s.job.settings);
-        let value = |ui: &mut egui::Ui, text: String| {
-            ui.label(text);
+        let value = |ui: &mut egui::Ui, label: &'static str, text: String| {
+            ui_kit::value_row(ui, t, i18n::tr(label), &text);
         };
-        ui_kit::row(ui, t, i18n::tr("export.done.size"), |ui| value(ui, i18n::format("export.done.megabytes", &[("size", &megabytes(bytes))])));
-        ui_kit::row(ui, t, i18n::tr("export.done.layers"), |ui| {
-            let (bottom, transition) = (settings.layers.bottom_count, settings.layers.transition_count);
-            value(ui, i18n::format("export.done.layer_count", &[("layers", &job.layers.len()), ("bottom", &bottom), ("transition", &transition)]))
-        });
-        ui_kit::row(ui, t, i18n::tr("export.done.height"), |ui| {
-            value(ui, i18n::format("export.done.millimetres", &[("mm", &format!("{:.2}", job.height()))]))
-        });
-        ui_kit::row(ui, t, i18n::tr("export.done.print_time"), |ui| value(ui, crate::duration(st.print_time_s)));
-        ui_kit::row(ui, t, i18n::tr("export.done.resin"), |ui| {
-            let grams = st.volume_ml * settings.estimates.resin_density;
-            value(ui, i18n::format("export.done.resin_value", &[("ml", &format!("{:.1}", st.volume_ml)), ("g", &format!("{grams:.1}"))]))
-        });
+        value(ui, "export.done.size", i18n::format("export.done.megabytes", &[("size", &megabytes(bytes))]));
+        let (bottom, transition) = (settings.layers.bottom_count, settings.layers.transition_count);
+        value(
+            ui,
+            "export.done.layers",
+            i18n::format("export.done.layer_count", &[("layers", &job.layers.len()), ("bottom", &bottom), ("transition", &transition)]),
+        );
+        value(ui, "export.done.height", i18n::format("export.done.millimetres", &[("mm", &format!("{:.2}", job.height()))]));
+        value(ui, "export.done.print_time", crate::duration(st.print_time_s));
+        let grams = st.volume_ml * settings.estimates.resin_density;
+        value(
+            ui,
+            "export.done.resin",
+            i18n::format("export.done.resin_value", &[("ml", &format!("{:.1}", st.volume_ml)), ("g", &format!("{grams:.1}"))]),
+        );
         let e = &settings.estimates;
         if e.bottle_cost > 0.0 && e.bottle_volume > 0.0 {
-            ui_kit::row(ui, t, i18n::tr("export.done.cost"), |ui| value(ui, format!("{:.2}", st.volume_ml / e.bottle_volume * e.bottle_cost)));
+            value(ui, "export.done.cost", format!("{:.2}", st.volume_ml / e.bottle_volume * e.bottle_cost));
         }
-        ui_kit::row(ui, t, i18n::tr("export.done.time"), |ui| {
-            let total = s.slicing.unwrap_or_default() + s.writing;
-            value(
-                ui,
-                match s.slicing {
-                    Some(slicing) => i18n::format(
-                        "export.done.seconds_sliced",
-                        &[("s", &seconds(total)), ("slicing", &seconds(slicing)), ("writing", &seconds(s.writing))],
-                    ),
-                    None => i18n::format("export.done.seconds", &[("s", &seconds(total))]),
-                },
-            )
-        });
+        let total = s.slicing.unwrap_or_default() + s.writing;
+        let time = match s.slicing {
+            Some(slicing) => i18n::format(
+                "export.done.seconds_sliced",
+                &[("s", &seconds(total)), ("slicing", &seconds(slicing)), ("writing", &seconds(s.writing))],
+            ),
+            None => i18n::format("export.done.seconds", &[("s", &seconds(total))]),
+        };
+        value(ui, "export.done.time", time);
     })
 }
 

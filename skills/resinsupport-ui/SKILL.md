@@ -12,9 +12,11 @@ The UI is thin: it reads the session and acts through `app.run(id, params)` (`sk
 - `theme::apply` gives egui's own widgets the same style in both themes, once at start-up.
 
 ## Dialogs are cards
-- Every dialog is a `ui_kit::Card` (`crates/ui-egui/src/ui_kit.rs`): a 40 pt header (icon, title, close), a padded body, a 48 pt footer. Do not build a raw `egui::Window`, frame or shadow in a feature module.
+- Every dialog is a `ui_kit::Card` (`crates/ui-egui/src/ui_kit.rs`): a 40 pt header (icon, title, close), a padded body that scrolls when the viewport is too short, a 48 pt footer. Do not build a raw `egui::Window`, frame or shadow in a feature module.
 - Footers: `Buttons::OkCancel` for a tool (OK keeps, Cancel puts back what the tool opened with; Enter is OK, Esc Cancel) or `Buttons::ResetClose` for settings that apply as they change.
-- The body uses `ui_kit::row` (70 pt label column, 28 pt controls), `wide_row`, `check_row`, `choice_row`, `hint` and `button`; `ui_kit::section` folds rows under a heading, as SolidCraft's cards do (a preset's settings, then Options). A card stays inside the viewport (`bounds`).
+- The body is rows (`ui_kit/layout.rs`): `row` puts a label (in `dialog_label`, cut short to fit, whole on hover) in a label column and a 28 pt control after an 8 pt gap. The column is 70 pt, 104 pt with a 10 pt gap in a card wider than 312 pt, and every row of a card shares it, widened for the card's longest label up to 1.6 times, never past half the row. `sized_row` is a taller row, `value_row` read-only text that wraps, `action_row` a one-shot button across the control column (Restore defaults, Reset, Delete), `status_line` a wrapping warning or error, `hint` dim text, `caption` and `warning_caption` a line under a row's control.
+- Controls (`ui_kit/fields.rs`, `checks.rs`, `status.rs`): `number_field` (and `number_fields` side by side), `text_field`, `multiline_text_field`, `dropdown`, `dropdown_menu` with `dropdown_item`, `choice_row`, `slider`, `checkbox`, `check_row`, `mixed_check_row`, `segmented`, `progress`, `icon_button`. `ui_kit::section` folds rows under a heading, as SolidCraft's cards do (a preset's settings, then Options). A card stays inside the viewport (`bounds`).
+- Menus are `ui_kit::menu_list` of `MenuItem`s and `menu_separator`s; a list of things (the models) is `ui_kit::list_item`s; Preferences' pages are `ui_kit::page_list`.
 - Tool values apply live; a drag runs one command per frame from the values it began with.
 
 ## Presets on a card

@@ -3,7 +3,7 @@
 // Reduced: no count or method badge, compact variant, preferences search or scenario handles; the
 // chevron is drawn, not an icon.
 
-use egui::{Align2, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Color32, FontId, Painter, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
@@ -26,7 +26,7 @@ pub fn section<R>(ui: &mut Ui, t: &Tokens, id: impl egui::AsIdSalt, title: &str,
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let chevron = Rect::from_center_size(pos2(rect.left() + CHEVRON_SIZE / 2.0, rect.center().y), vec2(CHEVRON_SIZE, CHEVRON_SIZE));
-    paint_chevron(ui, chevron, open, t);
+    paint_chevron(ui.painter(), chevron, open, t.form_dim);
     let caption = title.to_uppercase();
     let font = FontId::proportional(FONT_CAPTION);
     let mut format = egui::TextFormat::simple(font, t.form_dim);
@@ -47,15 +47,15 @@ pub fn section<R>(ui: &mut Ui, t: &Tokens, id: impl egui::AsIdSalt, title: &str,
     open.then(|| ui.push_id(id, add).inner)
 }
 
-/// Pointing down when open, right when closed.
-fn paint_chevron(ui: &Ui, r: Rect, open: bool, t: &Tokens) {
+/// Pointing down when open, right when closed: the section's, and the drop-downs' arrow.
+pub(super) fn paint_chevron(painter: &Painter, r: Rect, open: bool, ink: Color32) {
     let (c, h) = (r.center(), r.width() * 0.25);
     let points = if open {
         [pos2(c.x - h * 1.6, c.y - h * 0.8), c + vec2(0.0, h * 0.8), pos2(c.x + h * 1.6, c.y - h * 0.8)]
     } else {
         [pos2(c.x - h * 0.8, c.y - h * 1.6), c + vec2(h * 0.8, 0.0), pos2(c.x - h * 0.8, c.y + h * 1.6)]
     };
-    ui.painter().add(egui::Shape::line(points.to_vec(), Stroke::new(1.5, t.form_dim)));
+    painter.add(egui::Shape::line(points.to_vec(), Stroke::new(1.5, ink)));
 }
 
 #[cfg(test)]

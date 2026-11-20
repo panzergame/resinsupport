@@ -8,8 +8,8 @@ use crate::theme::metrics::{FORM_WIDE_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{ResinApp, i18n};
 
-/// The page list's width.
-const PAGE_LIST_WIDTH: f32 = 130.0;
+/// The page list's width: SolidCraft's below a 700 pt window.
+const PAGE_LIST_WIDTH: f32 = 150.0;
 /// The body's least height: the longest page's.
 const PAGE_MIN_HEIGHT: f32 = 300.0;
 
@@ -36,11 +36,8 @@ pub fn window(app: &mut ResinApp, ctx: &egui::Context) {
             ui.set_min_height(PAGE_MIN_HEIGHT);
             ui.vertical(|ui| {
                 ui.set_width(PAGE_LIST_WIDTH);
-                for (i, (title, icon)) in PAGES.iter().enumerate() {
-                    if ui_kit::page_tab(ui, &t, icon, i18n::tr(title), i == page) {
-                        page = i;
-                    }
-                }
+                let pages: Vec<(&str, &str)> = PAGES.iter().map(|(title, icon)| (i18n::tr(title), *icon)).collect();
+                ui_kit::page_list(ui, &t, &mut page, &pages);
             });
             // A rule between list and page, drawn below at the content's height: egui's vertical
             // separator takes all the height it is offered and stretches the window to its bounds.

@@ -3,7 +3,9 @@
 //! [`apply`]) are SolidCraft's.
 //!
 //! Chrome values and `visuals`/`apply` ported from SolidCraft (MIT OR Apache-2.0),
-//! assets/styles/ui/palettes.rs and crates/ui-egui/src/theme.rs at 4bdffef0; see ATTRIBUTION.md.
+//! assets/styles/ui/palettes.rs and crates/ui-egui/src/theme.rs at 4bdffef0; `dialog_label`,
+//! `form_primary_fill`, `SPACE_14` and `FORM_INSET` from crates/theme/src/palettes.rs at a34756830;
+//! see ATTRIBUTION.md.
 
 use egui::{Color32, Stroke};
 use resin_engine::render::OverlayStyle;
@@ -17,6 +19,7 @@ pub mod metrics {
     pub const SPACE_8: f32 = 8.0;
     pub const SPACE_10: f32 = 10.0;
     pub const SPACE_12: f32 = 12.0;
+    pub const SPACE_14: f32 = 14.0;
     pub const SPACE_16: f32 = 16.0;
     pub const SPACE_24: f32 = 24.0;
     pub const RADIUS_SM: u8 = 4;
@@ -31,9 +34,9 @@ pub mod metrics {
     pub const FONT_HEADING: f32 = 14.0;
     pub const CONTROL_HEIGHT: f32 = 28.0;
     pub const CONTROL_RADIUS: u8 = 6;
+    /// A row's label column; rows of a wide card start from `FORM_LABEL_WIDTH + SPACE_24 +
+    /// SPACE_10` (104 pt) instead ([`crate::ui_kit::row`]).
     pub const FORM_LABEL_WIDTH: f32 = 70.0;
-    /// Settings rows: SolidCraft widens its 104 pt manager basis by up to 1.6 times for long names.
-    pub const FORM_WIDE_LABEL_WIDTH: f32 = 140.0;
     /// A settings window: SolidCraft's wide card.
     pub const FORM_WIDE_CARD_WIDTH: f32 = 520.0;
     pub const FORM_GAP_Y: f32 = 5.0;
@@ -45,6 +48,8 @@ pub mod metrics {
     pub const FORM_BUTTON_HEIGHT: f32 = 28.0;
     pub const FORM_ICON_SIZE: f32 = 19.0;
     pub const FORM_CLOSE_SIZE: f32 = 26.0;
+    /// A text field's text, from its left and right edges.
+    pub const FORM_INSET: f32 = 9.0;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +111,10 @@ pub struct Tokens {
     pub form_ink: Color32,
     pub form_dim: Color32,
     pub form_primary: Color32,
+    /// A ticked checkbox.
+    pub form_primary_fill: Color32,
+    /// A form row's label.
+    pub dialog_label: Color32,
     /// The application bar: always dark.
     pub app_bar: Color32,
     pub app_bar_text: Color32,
@@ -164,6 +173,8 @@ impl Tokens {
                 form_ink: Color32::from_rgb(222, 226, 232),
                 form_dim: Color32::from_rgb(180, 187, 200),
                 form_primary: Color32::from_rgb(58, 136, 238),
+                form_primary_fill: Color32::from_rgb(58, 136, 238),
+                dialog_label: Color32::from_rgb(222, 226, 232),
                 app_bar: Color32::from_rgb(28, 31, 38),
                 app_bar_text: Color32::from_rgb(230, 234, 242),
                 app_bar_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
@@ -218,6 +229,8 @@ impl Tokens {
                 form_ink: Color32::from_rgb(27, 36, 48),
                 form_dim: Color32::from_rgb(74, 88, 104),
                 form_primary: Color32::from_rgb(35, 110, 173),
+                form_primary_fill: Color32::from_rgb(35, 110, 173),
+                dialog_label: Color32::from_rgb(58, 70, 86),
                 app_bar: Color32::from_rgb(52, 56, 64),
                 app_bar_text: Color32::from_rgb(230, 234, 242),
                 app_bar_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),

@@ -54,7 +54,7 @@ macro_rules! preference_settings {
         ui_kit::check_row($ui, $t, i18n::tr($label), i18n::tr($help), &mut $p.$field)
     };
     (@control $p:ident, $ui:ident, $t:ident, $field:ident, slider($label:literal, $range:expr)) => {
-        ui_kit::wide_row($ui, $t, i18n::tr($label), |ui| ui.add(egui::Slider::new(&mut $p.$field, $range)))
+        ui_kit::row($ui, $t, i18n::tr($label), |ui| ui_kit::slider(ui, $t, &mut $p.$field, $range))
     };
     (@control $p:ident, $ui:ident, $t:ident, $field:ident, choice($label:literal, $options:expr)) => {
         ui_kit::choice_row($ui, $t, i18n::tr($label), stringify!($field), &mut $p.$field, $options)
@@ -114,13 +114,21 @@ const DOUBLE_CLICK: [(&str, &str); 3] = [("home", "prefs.double_click.home"), ("
 fn language_row(p: &mut Prefs, ui: &mut egui::Ui, t: &Tokens) {
     let system = i18n::format("prefs.language.system", &[("language", &language_name(i18n::system_language()))]);
     let shown = if p.language == i18n::SYSTEM { system.clone() } else { language_name(&p.language).to_string() };
-    ui_kit::wide_row(ui, t, i18n::tr("prefs.language"), |ui| {
-        egui::ComboBox::from_id_salt("language").selected_text(shown).width(ui.available_width()).show_ui(ui, |ui| {
-            ui.selectable_value(&mut p.language, i18n::SYSTEM.to_string(), system);
+    ui_kit::row(ui, t, i18n::tr("prefs.language"), |ui| {
+        let mut chosen = None;
+        ui_kit::dropdown_menu(ui, t, "language", &shown, |ui| {
+            if ui_kit::dropdown_item(ui, p.language == i18n::SYSTEM, &system).clicked() {
+                chosen = Some(i18n::SYSTEM);
+            }
             for c in i18n::CATALOGS {
-                ui.selectable_value(&mut p.language, c.id.to_string(), c.name);
+                if ui_kit::dropdown_item(ui, p.language == c.id, c.name).clicked() {
+                    chosen = Some(c.id);
+                }
             }
         });
+        if let Some(id) = chosen {
+            p.language = id.to_string();
+        }
     });
 }
 
@@ -130,11 +138,11 @@ fn language_name(id: &str) -> &'static str {
 
 fn nav_row(p: &mut Prefs, ui: &mut egui::Ui, t: &Tokens) {
     let current = nav_preset(&p.nav);
-    ui_kit::wide_row(ui, t, i18n::tr("prefs.nav"), |ui| {
+    ui_kit::row(ui, t, i18n::tr("prefs.nav"), |ui| {
         let mut chosen = None;
-        egui::ComboBox::from_id_salt("nav").selected_text(i18n::tr(current.label)).width(ui.available_width()).show_ui(ui, |ui| {
+        ui_kit::dropdown_menu(ui, t, "nav", i18n::tr(current.label), |ui| {
             for preset in NAV_PRESETS {
-                if ui.selectable_label(preset.id == current.id, i18n::tr(preset.label)).on_hover_text(i18n::tr(preset.help)).clicked() {
+                if ui_kit::dropdown_item(ui, preset.id == current.id, i18n::tr(preset.label)).on_hover_text(i18n::tr(preset.help)).clicked() {
                     chosen = Some(preset);
                 }
             }
@@ -149,14 +157,12 @@ fn nav_row(p: &mut Prefs, ui: &mut egui::Ui, t: &Tokens) {
 fn orbit_row(p: &mut Prefs, ui: &mut egui::Ui, t: &Tokens) {
     use OrbitAround::*;
     let options = [(ViewCentre, "prefs.orbit.view_centre"), (Cursor, "prefs.orbit.cursor"), (Origin, "prefs.orbit.origin")];
-    let shown = options.iter().find(|(o, _)| *o == p.orbit_around).map_or("", |(_, id)| i18n::tr(id));
-    ui_kit::wide_row(ui, t, i18n::tr("prefs.orbit_around"), |ui| {
-        egui::ComboBox::from_id_salt("orbit_around").selected_text(shown).width(ui.available_width()).show_ui(ui, |ui| {
-            for (o, id) in options {
-                ui.selectable_value(&mut p.orbit_around, o, i18n::tr(id));
-            }
-        });
-    });
+    let mut index = options.iter().position(|(o, _)| *o == p.orbit_around).unwrap_or(0);
+    let names = options.map(|(_, id)| i18n::tr(id));
+    ui_kit::row(ui, t, i18n::tr("prefs.orbit_around"), |ui| ui_kit::dropdown(ui, t, "orbit_around", &mut index, &names));
+    if let Some((o, _)) = options.get(index) {
+        p.orbit_around = *o;
+    }
 }
 
 /// Saved preferences, keeping every one that still reads, and the names of those that did not

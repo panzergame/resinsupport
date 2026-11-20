@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use egui::{Rect, Ui, vec2};
 use resin_engine::geom::{MAX_PRESET_NAME, same_preset_name};
 
-use super::{Action, Confirm, icon_button, row};
+use super::fields::{dropdown_item, dropdown_menu, text_input};
+use super::{Action, Confirm, StatusTone, icon_button, row, status_line};
 use crate::i18n;
 use crate::theme::Tokens;
 use crate::theme::metrics::{CONTROL_HEIGHT, SPACE_4};
@@ -106,14 +107,14 @@ impl PresetRow<'_> {
             let width = (ui.available_width() - 2.0 * (CONTROL_HEIGHT + SPACE_4)).max(CONTROL_HEIGHT);
             match state.editing.take() {
                 Some(mut editing) => {
-                    let (done, is_taken) = self.name_field(ui, width, &mut editing, &mut action);
+                    let (done, is_taken) = self.name_field(ui, t, width, &mut editing, &mut action);
                     taken = is_taken;
                     if !done {
                         state.editing = Some(editing);
                     }
                 }
                 None => {
-                    let combo = self.combo(ui, width, known, &mut action);
+                    let combo = self.combo(ui, t, width, known, &mut action);
                     state.combo = Some(combo.rect);
                     if let Some(name) = known.filter(|_| combo.double_clicked()) {
                         egui::Popup::close_id(ui.ctx(), combo.id.with("popup"));
@@ -135,7 +136,7 @@ impl PresetRow<'_> {
             }
         });
         if taken {
-            ui.colored_label(t.warning, i18n::tr("ui.preset.taken"));
+            status_line(ui, t, i18n::tr("ui.preset.taken"), StatusTone::Warning);
         }
         if let Some(name) = state.confirm_delete.clone() {
             let message = i18n::format("ui.preset.delete_message", &[("name", &name)]);
@@ -158,7 +159,7 @@ impl PresetRow<'_> {
         action
     }
 
-    fn combo(&self, ui: &mut Ui, width: f32, known: Option<&String>, action: &mut Option<PresetAction>) -> egui::Response {
+    fn combo(&self, ui: &mut Ui, t: &Tokens, width: f32, known: Option<&String>, action: &mut Option<PresetAction>) -> egui::Response {
         let shown = match (known, self.followed) {
             (Some(name), _) => name.clone(),
             (None, Some(missing)) => i18n::format("ui.preset.missing", &[("name", &missing)]),
@@ -169,21 +170,16 @@ impl PresetRow<'_> {
         let layout = egui::Layout::left_to_right(egui::Align::Center);
         let response = ui
             .allocate_ui_with_layout(vec2(width, CONTROL_HEIGHT), layout, |ui| {
-                egui::ComboBox::from_id_salt(("preset_row", self.row))
-                    .selected_text(shown)
-                    .width(width)
-                    .truncate()
-                    .show_ui(ui, |ui| {
-                        if ui.selectable_label(self.followed.is_none(), i18n::tr("ui.preset.none")).clicked() {
-                            *action = Some(PresetAction::Pick(None));
+                dropdown_menu(ui, t, ("preset_row", self.row), &shown, |ui| {
+                    if dropdown_item(ui, self.followed.is_none(), i18n::tr("ui.preset.none")).clicked() {
+                        *action = Some(PresetAction::Pick(None));
+                    }
+                    for name in self.names {
+                        if dropdown_item(ui, known == Some(name), name).clicked() {
+                            *action = Some(PresetAction::Pick(Some(name.clone())));
                         }
-                        for name in self.names {
-                            if ui.selectable_label(known == Some(name), name).clicked() {
-                                *action = Some(PresetAction::Pick(Some(name.clone())));
-                            }
-                        }
-                    })
-                    .response
+                    }
+                })
             })
             .inner;
         let tip = if known.is_some() { format!("{}\n{}", self.tip, i18n::tr("ui.preset.rename_hint")) } else { self.tip.to_string() };
@@ -192,14 +188,14 @@ impl PresetRow<'_> {
 
     /// The field naming a new preset or renaming one; whether it is done with, and whether the
     /// name is another preset's.
-    fn name_field(&self, ui: &mut Ui, width: f32, editing: &mut Editing, action: &mut Option<PresetAction>) -> (bool, bool) {
+    fn name_field(&self, ui: &mut Ui, t: &Tokens, width: f32, editing: &mut Editing, action: &mut Option<PresetAction>) -> (bool, bool) {
         let id = egui::Id::new(("preset_row_name", self.row));
-        let mut output = egui::TextEdit::singleline(&mut editing.name)
+        let mut output = text_input(egui::TextEdit::singleline(&mut editing.name))
             .id(id)
             .char_limit(MAX_PRESET_NAME)
             .desired_width(width)
             .min_size(vec2(width, CONTROL_HEIGHT))
-            .vertical_align(egui::Align::Center)
+            .background_color(t.field)
             .show(ui);
         if editing.fresh {
             editing.fresh = false;

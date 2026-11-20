@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::supports::Hover;
 use crate::theme::Tokens;
-use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -252,19 +252,12 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
     // Pinned to the view's top right, clear of the support settings at its top left: placed by
     // its top left, egui's first sizing pass, at its default width, would push it leftwards.
     let action = card.show_anchored(ctx, &t, egui::Align2::RIGHT_TOP, vec2(-SPACE_12, SPACE_12), |ui| {
-        ui_kit::row(ui, &t, i18n::tr("tool.line.spacing"), |ui| {
-            ui.add_sized(
-                [ui.available_width(), CONTROL_HEIGHT],
-                egui::DragValue::new(&mut spacing).speed(0.05).range(SPACING_RANGE).suffix(" mm").max_decimals(2),
-            )
-        });
+        ui_kit::row(ui, &t, i18n::tr("tool.line.spacing"), |ui| ui_kit::number_field(ui, &mut spacing, SPACING_RANGE, 0.05, " mm", 2));
         ui_kit::row(ui, &t, i18n::tr("tool.line.per_body"), |ui| {
-            ui.add_enabled_ui(!same, |ui| {
-                ui.add_sized([ui.available_width(), CONTROL_HEIGHT], egui::DragValue::new(&mut per_body).speed(0.05).range(1..=MAX_TIPS_PER_BODY))
-            })
-            .inner
-            .on_hover_text(i18n::tr("tool.line.per_body_tip"))
-            .on_disabled_hover_text(i18n::tr("tool.line.same_body"))
+            ui.add_enabled_ui(!same, |ui| ui_kit::number_field(ui, &mut per_body, 1..=MAX_TIPS_PER_BODY, 0.05, "", 0))
+                .inner
+                .on_hover_text(i18n::tr("tool.line.per_body_tip"))
+                .on_disabled_hover_text(i18n::tr("tool.line.same_body"))
         });
         if to.is_none() {
             ui_kit::hint(ui, &t, i18n::tr("status.line_place"));
@@ -272,7 +265,7 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
             ui_kit::hint(ui, &t, &i18n::count("tool.line.adds", adds, &[]));
         }
         if off > 0 {
-            ui.label(egui::RichText::new(i18n::count("tool.line.off_surface", off, &[])).color(t.warning));
+            ui_kit::status_line(ui, &t, &i18n::count("tool.line.off_surface", off, &[]), ui_kit::StatusTone::Warning);
         }
         ui_kit::hint(ui, &t, i18n::tr("tool.line.wheel"));
     });

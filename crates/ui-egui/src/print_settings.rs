@@ -7,7 +7,7 @@
 //! in the preferences. Shown for as long as the Slice edit mode lasts, and only then: nothing
 //! else opens or closes it.
 
-use egui::{DragValue, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::PrintConfig;
 use resin_engine::slice::{ANTI_ALIASING, CtbFormat, GROUPS, MAX_NAME_CHARS, Motion, SlicingOverride, field};
 use serde_json::{Value, json};
@@ -94,7 +94,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                 slicing_rows(ui, &t, &mut c, &mut Marks::default());
                 ui.add_enabled_ui(one_model, |ui| {
                     let help = if one_model { i18n::tr("printing.object.open.help") } else { i18n::tr("reason.select_one_model") };
-                    let open = ui_kit::button(ui, i18n::tr("printing.object.open"));
+                    let open = ui_kit::action_row(ui, &t, i18n::tr("printing.object.open"));
                     if open.on_hover_text(help).on_disabled_hover_text(help).clicked() {
                         overrides = true;
                     }
@@ -102,7 +102,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             }
             _ => rows(ui, &t, &mut c, RESIN_ROWS, &mut Marks::default()),
         }
-        if ui_kit::button(ui, i18n::tr("ui.restore_defaults")).clicked() {
+        if ui_kit::action_row(ui, &t, i18n::tr("ui.restore_defaults")).clicked() {
             reset = true;
         }
         ui_kit::hint(ui, &t, i18n::tr("printing.hint"));
@@ -183,12 +183,10 @@ impl Num {
         let Some(mut v) = f.get(&c.printer, &c.settings) else { return };
         let enabled = self.when.is_none_or(|when| when(c));
         let changed = marks.row(ui, t, &[self.key], |ui| {
-            ui_kit::wide_row(ui, t, i18n::tr(self.label), |ui| {
-                let mut drag = DragValue::new(&mut v).range(f.min..=f.max).speed(self.speed).suffix(self.suffix).max_decimals(self.decimals);
-                if f.integer {
-                    drag = drag.fixed_decimals(0);
-                }
-                let response = ui.add_enabled_ui(enabled, |ui| ui.add_sized([ui.available_width(), CONTROL_HEIGHT], drag)).inner;
+            ui_kit::row(ui, t, i18n::tr(self.label), |ui| {
+                let decimals = if f.integer { 0 } else { self.decimals };
+                let response =
+                    ui.add_enabled_ui(enabled, |ui| ui_kit::number_field(ui, &mut v, f.min..=f.max, self.speed, self.suffix, decimals)).inner;
                 let changed = response.changed();
                 if let Some(help) = self.help {
                     response.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help));
@@ -261,7 +259,7 @@ impl Pair {
     }
 
     fn row(&self, ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
-        ui_kit::wide_row(ui, t, i18n::tr(self.label), |ui| {
+        ui_kit::row(ui, t, i18n::tr(self.label), |ui| {
             let width = phase_width(ui);
             self.phase(ui, width, c, self.fast, None);
             self.phase(ui, width, c, self.slow, self.slow_max);
@@ -276,15 +274,16 @@ impl Pair {
         match phase {
             Phase::Derived(get) => {
                 let mut v = get(&c.settings.motion);
-                let drag = DragValue::new(&mut v).suffix(self.suffix).fixed_decimals(self.decimals);
-                help(ui.add_enabled_ui(false, |ui| ui.add_sized([width, CONTROL_HEIGHT], drag)).inner);
+                let only = v..=v;
+                help(cell(ui, width, |ui| {
+                    ui.add_enabled_ui(false, |ui| ui_kit::number_field(ui, &mut v, only, 0.0, self.suffix, self.decimals)).inner
+                }));
             }
             Phase::Setting(key) => {
                 let Some(f) = field("motion", key) else { return };
                 let Some(mut v) = f.get(&c.printer, &c.settings) else { return };
                 let max = max.map_or(f.max, |m| m(&c.settings.motion).clamp(f.min, f.max));
-                let drag = DragValue::new(&mut v).range(f.min..=max).speed(self.speed).suffix(self.suffix).max_decimals(self.decimals);
-                if help(ui.add_sized([width, CONTROL_HEIGHT], drag)).changed() {
+                if help(cell(ui, width, |ui| ui_kit::number_field(ui, &mut v, f.min..=max, self.speed, self.suffix, self.decimals))).changed() {
                     f.set(&mut c.printer, &mut c.settings, v);
                 }
             }
@@ -295,6 +294,11 @@ impl Pair {
 /// Each phase's share of a row's control column.
 fn phase_width(ui: &egui::Ui) -> f32 {
     ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(0.0)
+}
+
+/// `add`'s control in a phase's share of the row.
+fn cell(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> egui::Response) -> egui::Response {
+    ui.allocate_ui_with_layout(vec2(width, CONTROL_HEIGHT), egui::Layout::left_to_right(egui::Align::Center), add).inner
 }
 
 fn regular_retract_fast(m: &Motion) -> f64 {
@@ -344,7 +348,7 @@ const REGULAR_MOTION: &[Pair] = &[
 const PHASES: [&str; 2] = ["printing.motion.fast", "printing.motion.slow"];
 
 fn pairs(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig, pairs: &[Pair]) {
-    ui_kit::wide_row(ui, t, "", |ui| {
+    ui_kit::row(ui, t, "", |ui| {
         let width = phase_width(ui);
         for id in PHASES {
             let text = egui::RichText::new(i18n::tr(id)).size(FONT_CAPTION).color(t.form_dim);
@@ -405,25 +409,26 @@ const CURVE_HEIGHT: f32 = 88.0;
 /// Under the gamma row, in its control column: each grey in (along) and what it becomes (up),
 /// over the diagonal that leaves them as they are.
 fn gamma_curve(ui: &mut egui::Ui, t: &Tokens, table: &[u8; 256]) {
-    let (row, response) = ui.allocate_exact_size(vec2(ui.available_width(), CURVE_HEIGHT), Sense::hover());
-    let plot = Rect::from_min_max(pos2(row.left() + FORM_WIDE_LABEL_WIDTH, row.top()), row.max);
-    let painter = ui.painter_at(row);
+    ui_kit::sized_row(ui, t, "", CURVE_HEIGHT, |ui| {
+        let (plot, response) = ui.allocate_exact_size(vec2(ui.available_width(), CURVE_HEIGHT), Sense::hover());
+        plot_gamma(ui, t, plot, table);
+        response.on_hover_text(i18n::tr("printing.gamma.curve.help"));
+    });
+}
+
+fn plot_gamma(ui: &egui::Ui, t: &Tokens, plot: Rect, table: &[u8; 256]) {
+    let painter = ui.painter_at(plot);
     painter.rect(plot, RADIUS_SM, t.field, Stroke::new(1.0, t.control_border), egui::StrokeKind::Inside);
     let inner = plot.shrink(SPACE_3);
     let at = |i: usize, g: u8| pos2(inner.left() + inner.width() * i as f32 / 255.0, inner.bottom() - inner.height() * f32::from(g) / 255.0);
     painter.line_segment([at(0, 0), at(255, 255)], Stroke::new(1.0, t.form_dim));
     let points = table.iter().enumerate().map(|(i, &g)| at(i, g)).collect();
     painter.add(egui::Shape::line(points, Stroke::new(1.5, t.accent)));
-    response.on_hover_text(i18n::tr("printing.gamma.curve.help"));
 }
 
 fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
-    ui_kit::wide_row(ui, t, i18n::tr("printing.printer.name"), |ui| {
-        ui.add_sized(
-            [ui.available_width(), CONTROL_HEIGHT],
-            egui::TextEdit::singleline(&mut c.printer.name).char_limit(MAX_NAME_CHARS).vertical_align(egui::Align::Center),
-        )
-        .on_hover_text(i18n::tr("printing.printer.name.help"));
+    ui_kit::row(ui, t, i18n::tr("printing.printer.name"), |ui| {
+        ui_kit::text_field(ui, t, &mut c.printer.name, "", MAX_NAME_CHARS).on_hover_text(i18n::tr("printing.printer.name.help"));
     });
     rows(ui, t, c, PRINTER_ROWS, &mut Marks::default());
     let p = &mut c.printer;
@@ -485,14 +490,13 @@ impl Marks<'_> {
                 ui.set_width(width);
                 add(ui)
             });
-            let (rect, response) = ui.allocate_exact_size(vec2(CONTROL_HEIGHT, CONTROL_HEIGHT), if set { Sense::click() } else { Sense::hover() });
-            if set {
-                if response.hovered() {
-                    ui.painter().rect_filled(rect, RADIUS_SM, t.hover);
-                }
-                crate::icons::paint(ui.painter(), rect.shrink(SPACE_6), "undo", t.dark, 1.0);
-            }
-            (inner.inner, set && response.on_hover_text(i18n::tr("printing.object.use_plate")).clicked())
+            let back = if set {
+                ui_kit::icon_button(ui, t, "undo", i18n::tr("printing.object.use_plate"), true).clicked()
+            } else {
+                ui.allocate_exact_size(vec2(CONTROL_HEIGHT, CONTROL_HEIGHT), Sense::hover());
+                false
+            };
+            (inner.inner, back)
         });
         let (inner, back) = laid.inner;
         if set {

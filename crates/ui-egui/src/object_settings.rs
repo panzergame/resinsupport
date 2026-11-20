@@ -3,12 +3,11 @@
 //! selected models are lifted, and whether imports are. The height is scene state, so changing
 //! it is an undo step; `ResinApp::run` keeps it in the preferences.
 
-use egui::DragValue;
 use resin_engine::LIFT_RANGE;
 use serde_json::json;
 
 use crate::theme::Tokens;
-use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
+use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -41,11 +40,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     };
     card.show(ctx, &t, |ui| {
         ui_kit::row(ui, &t, i18n::tr("models.lift_height"), |ui| {
-            ui.add_sized(
-                [ui.available_width(), CONTROL_HEIGHT],
-                DragValue::new(&mut height).range(LIFT_RANGE).speed(0.1).suffix(" mm").max_decimals(2),
-            )
-            .on_hover_text(i18n::tr("models.lift_height.help"));
+            ui_kit::number_field(ui, &mut height, LIFT_RANGE, 0.1, " mm", 2).on_hover_text(i18n::tr("models.lift_height.help"));
         });
         ui.add_enabled_ui(selected > 0, |ui| {
             let help = if selected > 0 { i18n::tr("models.lift_selection.help") } else { i18n::tr("reason.select_model") };

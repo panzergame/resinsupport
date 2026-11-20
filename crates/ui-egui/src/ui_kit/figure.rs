@@ -1,10 +1,12 @@
 // Ported from SolidCraft (MIT OR Apache-2.0), crates/ui-egui/src/ui_kit/layout.rs (`figure_rows`,
-// `FigureSlot`) at 4bdffef0; see ATTRIBUTION.md. Adapted: number fields (`DragValue`) instead of
+// `FigureSlot`) at 4bdffef0; see ATTRIBUTION.md. Adapted: the kit's number fields instead of
 // expression fields; no scenario handles.
 
 use std::ops::RangeInclusive;
 
-use egui::{Align2, DragValue, FontId, Painter, Rect, Sense, Ui, pos2, vec2};
+use egui::{Align2, FontId, Painter, Rect, Sense, Ui, pos2, vec2};
+
+use super::{checks::checkbox, fields::number_field};
 
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
@@ -98,12 +100,9 @@ pub fn figure_rows(
                 if !f.enabled {
                     child.disable();
                 }
-                child.add_sized(
-                    control.size(),
-                    DragValue::new(f.value).range(f.range.clone()).speed(f.speed).suffix(f.suffix).max_decimals(f.decimals),
-                )
+                number_field(&mut child, f.value, f.range.clone(), f.speed, f.suffix, f.decimals)
             }
-            FigureRow::Check { label, help, value } => child.checkbox(value, *label).on_hover_text(*help),
+            FigureRow::Check { label, help, value } => checkbox(&mut child, t, label, value).on_hover_text(*help),
         };
         changed |= response.changed();
         let hot = response.hovered() || response.has_focus() || response.dragged();
