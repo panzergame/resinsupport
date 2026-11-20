@@ -17,7 +17,7 @@ use crate::supports::Hover;
 use crate::theme::Tokens;
 use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card};
-use crate::{EditMode, ResinApp, i18n};
+use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
 /// The spacing Shift+wheel and the card keep to, in mm.
 pub const SPACING_RANGE: std::ops::RangeInclusive<f64> = 0.2..=50.0;
@@ -49,16 +49,15 @@ pub struct LineTool {
     cache: Option<((u64, (Vec3, Vec3), (Vec3, Vec3), f64), Vec<LinePoint>)>,
 }
 
-/// The tool and what it keeps from one line to the next.
+/// What the tool keeps from one line to the next.
 pub struct LineState {
-    pub tool: Option<LineTool>,
     pub spacing: f64,
     pub per_body: usize,
 }
 
 impl Default for LineState {
     fn default() -> Self {
-        LineState { tool: None, spacing: DEFAULT_LINE_SPACING, per_body: DEFAULT_TIPS_PER_BODY }
+        LineState { spacing: DEFAULT_LINE_SPACING, per_body: DEFAULT_TIPS_PER_BODY }
     }
 }
 
@@ -122,28 +121,41 @@ pub fn open(app: &mut ResinApp) {
             return;
         }
     };
-    app.supports.branching = None;
-    app.supports.moving = None;
     app.status = None;
-    app.line.tool = Some(LineTool { from, to, cache: None });
+    app.tool = Some(ActiveTool::Line(LineTool { from, to, cache: None }));
+}
+
+/// The line, while it is the tool open.
+pub(crate) fn tool(app: &ResinApp) -> Option<&LineTool> {
+    match &app.tool {
+        Some(ActiveTool::Line(t)) => Some(t),
+        _ => None,
+    }
+}
+
+fn tool_mut(app: &mut ResinApp) -> Option<&mut LineTool> {
+    match &mut app.tool {
+        Some(ActiveTool::Line(t)) => Some(t),
+        _ => None,
+    }
 }
 
 /// Whether the line waits for its other end: the view then picks surfaces alone.
 pub fn placing(app: &ResinApp) -> bool {
-    app.line.tool.as_ref().is_some_and(|t| !matches!(t.to, Some(End::Support(_))))
+    tool(app).is_some_and(|t| !matches!(t.to, Some(End::Support(_))))
 }
 
 /// A press in the view while the line is out: on a surface, the other end goes there.
 pub fn press(app: &mut ResinApp, hit: Option<Hover>) {
     let waits = placing(app);
-    if let (Some(tool), Some(Hover::Surface { model, point, normal }), true) = (app.line.tool.as_mut(), hit, waits) {
+    if let (Some(tool), Some(Hover::Surface { model, point, normal }), true) = (tool_mut(app), hit, waits) {
         tool.to = Some(End::Surface { model, point, normal });
     }
 }
 
 /// Take Shift+wheel over the view for the spacing, before the camera sees it.
 pub fn wheel(app: &mut ResinApp, ui: &egui::Ui, resp: &egui::Response) {
-    if app.line.tool.is_none() || !resp.contains_pointer() {
+    if tool(app).is_none() || !resp.contains_pointer() {
         return;
     }
     let line = ui.ctx().options(|o| o.input_options.line_scroll_speed).max(1.0);
@@ -172,7 +184,7 @@ pub fn wheel(app: &mut ResinApp, ui: &egui::Ui, resp: &egui::Response) {
 /// The two ends, each a point and its outward normal: the other end while it is placed is the
 /// surface under the pointer.
 fn ends(app: &ResinApp) -> Option<((Vec3, Vec3), (Vec3, Vec3))> {
-    let tool = app.line.tool.as_ref()?;
+    let tool = tool(app)?;
     let scene = &app.session.scene;
     let tip = |id: u64| scene.supports().iter().find(|s| s.id == id).map(|s| (s.tip, s.normal));
     let b = match tool.to {
@@ -189,10 +201,10 @@ fn ends(app: &ResinApp) -> Option<((Vec3, Vec3), (Vec3, Vec3))> {
 /// Once a frame: put the line away when an end has gone, and cast its points afresh when an end,
 /// the spacing or the scene changed.
 pub fn refresh(app: &mut ResinApp) {
-    let Some(tool) = app.line.tool.as_ref() else { return };
+    let Some(tool) = tool(app) else { return };
     let known = |id: u64| app.session.scene.supports().iter().any(|s| s.id == id);
     if app.mode != EditMode::Support || !known(tool.from) || matches!(tool.to, Some(End::Support(id)) if !known(id)) {
-        app.line.tool = None;
+        app.tool = None;
         return;
     }
     let key = ends(app).map(|(a, b)| (app.session.scene.revision(), a, b, app.line.spacing));
@@ -201,20 +213,20 @@ pub fn refresh(app: &mut ResinApp) {
         Some(k) => line_points(&app.session.scene, k.1, k.2, k.3).map(|p| (k, p)),
         None => None,
     };
-    if let Some(tool) = app.line.tool.as_mut() {
+    if let Some(tool) = tool_mut(app) {
         tool.cache = fresh;
     }
 }
 
 /// The points as last cast, while the line is out.
 pub fn points(app: &ResinApp) -> &[LinePoint] {
-    app.line.tool.as_ref().and_then(|t| t.cache.as_ref()).map_or(&[], |(_, p)| p.as_slice())
+    tool(app).and_then(|t| t.cache.as_ref()).map_or(&[], |(_, p)| p.as_slice())
 }
 
 /// The straight line between the ends, and the other end when it is a new support, to draw.
 pub fn guide(app: &ResinApp) -> Option<(Vec3, Vec3, Option<Vec3>)> {
     let (a, b) = ends(app)?;
-    let new_end = match app.line.tool.as_ref()?.to {
+    let new_end = match tool(app)?.to {
         Some(End::Surface { point, .. }) => Some(point),
         _ => None,
     };
@@ -224,7 +236,7 @@ pub fn guide(app: &ResinApp) -> Option<(Vec3, Vec3, Option<Vec3>)> {
 /// Whether both ends share one body: the new tips then join it.
 fn same_body(app: &ResinApp) -> bool {
     let scene = &app.session.scene;
-    match app.line.tool.as_ref().and_then(|t| t.to.map(|to| (t.from, to))) {
+    match tool(app).and_then(|t| t.to.map(|to| (t.from, to))) {
         Some((from, End::Support(to))) => scene.root_of(from).is_some_and(|r| scene.root_of(to) == Some(r)),
         _ => false,
     }
@@ -232,7 +244,7 @@ fn same_body(app: &ResinApp) -> bool {
 
 /// The card: the spacing, how many tips share a body, and what Enter would add.
 pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
-    let Some(tool) = app.line.tool.as_ref() else { return };
+    let Some(tool) = tool(app) else { return };
     let (to, from) = (tool.to, tool.from);
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
     let landed = points(app).iter().filter(|p| p.hit.is_some()).count();
@@ -272,7 +284,7 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
     app.line.per_body = per_body.clamp(1, MAX_TIPS_PER_BODY);
     match action {
         Action::Ok => make(app, from, to),
-        Action::Cancel => app.line.tool = None,
+        Action::Cancel => app.tool = None,
         Action::Reset | Action::None => {}
     }
 }
@@ -288,7 +300,7 @@ fn make(app: &mut ResinApp, from: u64, to: Option<End>) {
     if let Some(v) = app.run("support.add_line", params) {
         let n = v["ids"].as_array().map_or(0, Vec::len);
         app.status = Some((i18n::count("status.line_added", n, &[]), false));
-        app.line.tool = None;
+        app.tool = None;
     }
 }
 
@@ -302,7 +314,7 @@ mod tests {
     /// L opens the line between the two selected tips, Shift+wheel changes its spacing and leaves
     /// the camera alone, Enter adds its tips in one step, Esc puts it away with no step; with one
     /// tip selected, or none (the newest then), a press on the model places the other end, a new
-    /// support.
+    /// support. The line and brace cards close each other.
     #[test]
     fn l_lays_a_line_of_tips_that_enter_adds() {
         let dir = std::env::temp_dir().join(format!("resin-ui-line-{}", std::process::id()));
@@ -354,8 +366,10 @@ mod tests {
         frame(&mut app, vec![Event::PointerMoved(centre)]);
 
         app.run("support.select", json!({ "ids": [a, b] }));
+        crate::support_brace::open(&mut app);
         frame(&mut app, key(egui::Key::L, Modifiers::NONE));
-        assert_eq!(app.line.tool.as_ref().map(|t| (t.from, t.to)), Some((a, Some(End::Support(b)))));
+        assert!(crate::support_brace::tool(&app).is_none());
+        assert_eq!(tool(&app).map(|t| (t.from, t.to)), Some((a, Some(End::Support(b)))));
         // 16 mm in gaps of at most 2: 7 points, all on the plate.
         assert_eq!(points(&app).iter().filter(|p| p.hit.is_some()).count(), 7);
 
@@ -371,14 +385,14 @@ mod tests {
         // Esc: nothing added, no step.
         let (revision, depth) = (app.session.scene.revision(), app.session.undo_depth());
         frame(&mut app, key(egui::Key::Escape, Modifiers::NONE));
-        assert!(app.line.tool.is_none());
+        assert!(tool(&app).is_none());
         assert_eq!((app.session.scene.revision(), app.session.undo_depth()), (revision, depth));
 
         // Enter: the 7 tips in one step.
         frame(&mut app, key(egui::Key::L, Modifiers::NONE));
         frame(&mut app, vec![]);
         frame(&mut app, key(egui::Key::Enter, Modifiers::NONE));
-        assert!(app.line.tool.is_none());
+        assert!(tool(&app).is_none());
         assert_eq!((app.session.scene.supports().len(), app.session.undo_depth()), (9, depth + 1));
 
         // One tip: the other end goes where the model is pressed, a new support with the line.
@@ -390,7 +404,7 @@ mod tests {
         frame(&mut app, vec![Event::PointerMoved(end)]);
         frame(&mut app, vec![Event::PointerMoved(end), press(true)]);
         frame(&mut app, vec![press(false)]);
-        assert!(matches!(app.line.tool.as_ref().and_then(|t| t.to), Some(End::Surface { .. })), "{:?}", app.line.tool);
+        assert!(matches!(tool(&app).and_then(|t| t.to), Some(End::Surface { .. })), "{:?}", tool(&app));
         assert_eq!(app.session.scene.supports().len(), 9, "nothing added before Enter");
         frame(&mut app, key(egui::Key::Enter, Modifiers::NONE));
         // About 11.3 mm in gaps of at most 2.2: 5 points, and the new end.
@@ -403,15 +417,17 @@ mod tests {
         assert!((newest.1 - Vec3::new(10.0, 2.0, 10.0)).len() < 1e-3, "{newest:?}");
         app.run("support.select", json!({ "ids": [] }));
         frame(&mut app, key(egui::Key::L, Modifiers::NONE));
-        assert_eq!(app.line.tool.as_ref().map(|t| (t.from, t.to)), Some((newest.0, None)));
-        frame(&mut app, key(egui::Key::Escape, Modifiers::NONE));
+        assert_eq!(tool(&app).map(|t| (t.from, t.to)), Some((newest.0, None)));
+        crate::support_brace::open(&mut app);
+        assert!(tool(&app).is_none() && crate::support_brace::tool(&app).is_some());
+        app.tool = None;
 
         // No tip at all: nothing to start from.
         let ids: Vec<u64> = app.session.scene.supports().iter().map(|s| s.id).collect();
         app.run("support.delete", json!({ "ids": ids })).unwrap();
         app.status = None;
         frame(&mut app, key(egui::Key::L, Modifiers::NONE));
-        assert!(app.line.tool.is_none());
+        assert!(tool(&app).is_none());
         assert_eq!(app.status.as_ref().map(|s| s.1), Some(true), "{:?}", app.status);
     }
 }

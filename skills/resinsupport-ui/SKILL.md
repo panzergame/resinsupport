@@ -19,6 +19,7 @@ The UI is thin: it reads the session and acts through `app.run(id, params)` (`sk
 - Menus are `ui_kit::menu_list` of `MenuItem`s and `menu_separator`s; a list of things (the models) is `ui_kit::list_item`s; Preferences' pages are `ui_kit::page_list`.
 - Feature modules never draw egui's own controls (`ComboBox`, `Button`, `Slider`, `Checkbox`, `TextEdit`, `DragValue`, `ProgressBar`, `.checkbox`, `.button`, `.selectable_label`, …): `raw_widgets_stay_in_the_kit` fails on them. A control the kit lacks is ported into it.
 - Tool values apply live; a drag runs one command per frame from the values it began with.
+- One tool at a time: a tool (its card, gizmo or gesture in the view) is an `ActiveTool` variant in `ResinApp::tool`, so opening one puts away the one open, keeping what it did, and leaving its edition puts it away. An edition's settings card (support, print, lift) is not a tool and stays beside it.
 
 ## Presets on a card
 User presets are generic (`docs/architecture.md`, Presets): one library per kind, one state per row. Label presets are the worked example (`crates/engine/src/label_presets.rs`, `crates/engine/src/cmd/label_preset.rs`, the label card in `crates/ui-egui/src/object_label.rs`). For a new kind:

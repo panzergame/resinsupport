@@ -18,7 +18,7 @@ use serde_json::json;
 use crate::theme::Tokens;
 use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card};
-use crate::{EditMode, ResinApp, i18n};
+use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
 /// What the preview was worked out from: the scene's revision, the routes' changes, the
 /// supports, the settings, the pairing and the reach.
@@ -40,10 +40,8 @@ pub struct Preview {
     pub replaced: usize,
 }
 
-/// The tool and what it keeps from one use to the next.
+/// What the tool keeps from one use to the next.
 pub struct BraceState {
-    /// `Some` while the card is open.
-    pub tool: Option<Preview>,
     pub params: BraceParams,
     pub pairing: BracePairing,
     pub max_distance: f64,
@@ -51,7 +49,7 @@ pub struct BraceState {
 
 impl Default for BraceState {
     fn default() -> Self {
-        BraceState { tool: None, params: BraceParams::default(), pairing: BracePairing::Tree, max_distance: DEFAULT_MAX_DISTANCE }
+        BraceState { params: BraceParams::default(), pairing: BracePairing::Tree, max_distance: DEFAULT_MAX_DISTANCE }
     }
 }
 
@@ -124,11 +122,16 @@ pub fn open(app: &mut ResinApp) {
         app.status = Some((i18n::format("tool.needs_support_edition", &[("tool", &i18n::tr("tool.brace"))]), true));
         return;
     }
-    app.supports.branching = None;
-    app.supports.moving = None;
-    app.line.tool = None;
     app.status = None;
-    app.brace.tool = Some(Preview::default());
+    app.tool = Some(ActiveTool::Brace(Preview::default()));
+}
+
+/// The preview, while the card is the tool open.
+pub(crate) fn tool(app: &ResinApp) -> Option<&Preview> {
+    match &app.tool {
+        Some(ActiveTool::Brace(t)) => Some(t),
+        _ => None,
+    }
 }
 
 /// The selected supports and those with selected parts, each the one whose body it shares.
@@ -144,17 +147,17 @@ fn selected_roots(app: &ResinApp) -> Vec<u64> {
 /// Once a frame: put the card away outside Support edition, and work the preview out afresh when
 /// the selection, a route or a setting changed. Uses the routes as drawn, so it waits on none.
 pub fn refresh(app: &mut ResinApp) {
-    if app.brace.tool.is_none() {
+    if tool(app).is_none() {
         return;
     }
     if app.mode != EditMode::Support {
-        app.brace.tool = None;
+        app.tool = None;
         return;
     }
     let supports = selected_roots(app);
     let b = &app.brace;
     let key = (app.session.scene.revision(), app.routes.changes(), supports.clone(), b.params, b.pairing, b.max_distance);
-    if app.brace.tool.as_ref().is_some_and(|t| t.key.as_ref() == Some(&key)) {
+    if tool(app).is_some_and(|t| t.key.as_ref() == Some(&key)) {
         return;
     }
     let scene = &app.session.scene;
@@ -167,7 +170,7 @@ pub fn refresh(app: &mut ResinApp) {
     let pairs = brace_pairs(&feet, app.brace.pairing, app.brace.max_distance);
     // The command refuses these; working out their struts here would stall the window first.
     if pairs.len() > MAX_BRACES {
-        app.brace.tool = Some(Preview { key: Some(key), supports, too_many: Some(pairs.len()), replaced, ..Default::default() });
+        app.tool = Some(ActiveTool::Brace(Preview { key: Some(key), supports, too_many: Some(pairs.len()), replaced, ..Default::default() }));
         return;
     }
     let mut braces = Vec::new();
@@ -181,12 +184,12 @@ pub fn refresh(app: &mut ResinApp) {
             braces.push((a, b, struts));
         }
     }
-    app.brace.tool = Some(Preview { key: Some(key), supports, braces, skipped, too_many: None, replaced });
+    app.tool = Some(ActiveTool::Brace(Preview { key: Some(key), supports, braces, skipped, too_many: None, replaced }));
 }
 
 /// The struts Enter would add, to draw.
 pub fn preview_struts(app: &ResinApp) -> impl Iterator<Item = (Vec3, Vec3)> + '_ {
-    app.brace.tool.iter().flat_map(|t| t.braces.iter().flat_map(|(.., s)| s.iter().copied()))
+    tool(app).into_iter().flat_map(|t| t.braces.iter().flat_map(|(.., s)| s.iter().copied()))
 }
 
 /// A number field in a row: `value` within `range`, shown with `suffix`.
@@ -196,7 +199,7 @@ fn number(ui: &mut egui::Ui, t: &Tokens, label: &str, tip: &str, value: &mut f64
 
 /// The card: the settings, and what Enter would add.
 pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
-    let Some(tool) = app.brace.tool.as_ref() else { return };
+    let Some(tool) = tool(app) else { return };
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
     let (adds, skipped, enough, too_many, replaced) = (tool.braces.len(), tool.skipped, tool.supports.len() >= 2, tool.too_many, tool.replaced);
     let mut p = app.brace.params;
@@ -250,14 +253,14 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
     app.brace.max_distance = reach.clamp(*MAX_DISTANCE_RANGE.start(), *MAX_DISTANCE_RANGE.end());
     match action {
         Action::Ok => make(app),
-        Action::Cancel => app.brace.tool = None,
+        Action::Cancel => app.tool = None,
         Action::Reset | Action::None => {}
     }
 }
 
 /// Run `support.add_braces` on the supports the preview showed, and put the card away.
 fn make(app: &mut ResinApp) {
-    let Some(tool) = app.brace.tool.as_ref() else { return };
+    let Some(tool) = tool(app) else { return };
     let p = app.brace.params;
     let params = json!({
         "ids": tool.supports,
@@ -275,7 +278,7 @@ fn make(app: &mut ResinApp) {
         let msg =
             if replaced > 0 { i18n::count("status.braces_replaced", n, &[("old", &replaced)]) } else { i18n::count("status.braces_added", n, &[]) };
         app.status = Some((msg, false));
-        app.brace.tool = None;
+        app.tool = None;
     }
 }
 
@@ -324,13 +327,13 @@ mod tests {
         };
 
         frame(&mut app, key(egui::Key::H));
-        assert!(app.brace.tool.is_none(), "Object edition: H does nothing but say so");
+        assert!(tool(&app).is_none(), "Object edition: H does nothing but say so");
         app.mode = EditMode::Support;
         // `a` itself, and `b` through a selected segment.
         app.run("support.select", json!({ "ids": [a], "parts": [{ "support": b, "segment": 0 }] }));
         frame(&mut app, key(egui::Key::H));
         frame(&mut app, vec![]);
-        let preview = app.brace.tool.as_ref().expect("the card is open");
+        let preview = tool(&app).expect("the card is open");
         assert_eq!(preview.supports, vec![a, b]);
         assert_eq!(preview.braces.iter().map(|(x, y, _)| (*x, *y)).collect::<Vec<_>>(), vec![(a, b)]);
         assert!(preview_struts(&app).count() > 0);
@@ -338,7 +341,7 @@ mod tests {
         // Esc: no step, nothing added.
         let depth = app.session.undo_depth();
         frame(&mut app, key(egui::Key::Escape));
-        assert!(app.brace.tool.is_none() && app.session.scene.braces().is_empty());
+        assert!(tool(&app).is_none() && app.session.scene.braces().is_empty());
         assert_eq!(app.session.undo_depth(), depth);
 
         // Again with all three, crossed: Enter adds two braces in one step.
@@ -351,7 +354,7 @@ mod tests {
         assert_eq!(braces.iter().map(|x| (x.a, x.b)).collect::<Vec<_>>(), vec![(a, b), (b, c)]);
         assert!(braces.iter().all(|x| x.params.pattern == BracePattern::Cross));
         assert_eq!(app.session.undo_depth(), depth + 1);
-        assert!(app.brace.tool.is_none());
+        assert!(tool(&app).is_none());
         assert_eq!(app.brace.params.pattern, BracePattern::Cross, "the settings stay");
 
         // Every pair in reach, then H again: the tree's two braces give way to three.
@@ -360,7 +363,7 @@ mod tests {
         app.brace.params.angle = 30.0;
         frame(&mut app, key(egui::Key::H));
         frame(&mut app, vec![]);
-        let preview = app.brace.tool.as_ref().expect("the card is open");
+        let preview = tool(&app).expect("the card is open");
         assert_eq!((preview.braces.len(), preview.replaced), (3, 2));
         frame(&mut app, key(egui::Key::Enter));
         assert_eq!(app.session.scene.braces().len(), 3);

@@ -107,7 +107,7 @@ impl Cmd {
 
     fn state(self, app: &ResinApp) -> State {
         let scene = &app.session.scene;
-        let tool = |op| app.tool.as_ref().is_some_and(|t| t.op == op);
+        let tool = |op| transform::tool(app).is_some_and(|t| t.op == op);
         let need_pick = scene.selected_models.is_empty().then_some("reason.select_model");
         let need_models = scene.models().is_empty();
         let state = |shortcut, disabled, pressed| State { shortcut, disabled, pressed };

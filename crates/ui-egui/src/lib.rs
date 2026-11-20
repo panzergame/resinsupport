@@ -85,12 +85,32 @@ impl EditMode {
     }
 }
 
+/// A tool of the current edition: its card, its gizmo or its gesture in the view. One slot holds
+/// it, so opening a tool puts away the one open (keeping what that one did to the scene), as
+/// Rotate does to Move. An edition's settings card is not a tool and stays beside it.
+pub(crate) enum ActiveTool {
+    /// Move, Rotate or Scale, in Object edition.
+    Transform(transform::Tool),
+    /// The label card of this model, in Object edition.
+    Label(u64),
+    /// The tip line, in Support edition.
+    Line(support_line::LineTool),
+    /// The brace card and the struts it would add, in Support edition.
+    Brace(support_brace::Preview),
+    /// Branches placed from this support, in Support edition. Each press on a surface is a step of
+    /// its own; putting the tool away leaves the undo history alone.
+    Branch(u64),
+    /// This support's tip being moved, hidden until the next press, in Support edition. As for a
+    /// branch, the scene is left alone until that press.
+    MoveTip(u64),
+}
+
 pub struct ResinApp {
     pub session: Session,
     pub prefs: Prefs,
     pub mode: EditMode,
-    /// The Move, Rotate or Scale tool in use.
-    pub(crate) tool: Option<transform::Tool>,
+    /// The one tool open.
+    pub(crate) tool: Option<ActiveTool>,
     /// A press this frame, or a drag, on the gizmo: neither the camera nor picking may take it.
     pub(crate) gizmo_grab: bool,
     /// The Preferences window is open, on this page.
@@ -124,8 +144,6 @@ pub struct ResinApp {
     pub(crate) confirm_print_reset: bool,
     /// The selected model's own slicing settings card is open.
     pub(crate) object_slicing: bool,
-    /// The model whose label card is open.
-    pub(crate) label_tool: Option<u64>,
     /// Every card's preset row: the name being typed, the delete being confirmed.
     pub(crate) preset_rows: ui_kit::PresetRows,
     /// The layers shown in Slice edition, and how.
@@ -206,7 +224,6 @@ impl ResinApp {
             slicer: Default::default(),
             confirm_print_reset: false,
             object_slicing: false,
-            label_tool: None,
             preset_rows: Default::default(),
             preview: Default::default(),
             max_texture: DEFAULT_MAX_TEXTURE,
@@ -273,14 +290,10 @@ impl ResinApp {
         if mode == self.mode {
             return;
         }
-        if mode != EditMode::Object {
-            self.cancel_pending();
-        }
+        // Every tool belongs to the edition left.
+        self.cancel_pending();
+        self.tool = None;
         self.mode = mode;
-        self.supports.branching = None;
-        self.supports.moving = None;
-        self.line.tool = None;
-        self.brace.tool = None;
         self.boxsel = None;
         if mode == EditMode::Slice && !self.slice_is_fresh() {
             self.slice_now();
@@ -354,10 +367,11 @@ impl ResinApp {
             transform::abort_typed(self);
             return;
         }
-        self.tool = None;
-        // Branching stays until Esc: its parent is checked every frame (`supports::handle`).
-        self.supports.moving = None;
-        self.line.tool = None;
+        // Branching stays until Esc: its parent is checked every frame (`supports::handle`), as the
+        // label and brace cards check their model and supports.
+        if !matches!(self.tool, Some(ActiveTool::Branch(_) | ActiveTool::Label(_) | ActiveTool::Brace(_))) {
+            self.tool = None;
+        }
         let (id, msg) = if forward { ("edit.redo", "status.redone") } else { ("edit.undo", "status.undone") };
         if let Some(v) = self.run(id, json!({})) {
             let step = i18n::tr_built(&format!("cmd.{}", v["command"].as_str().unwrap_or_default()));
@@ -678,15 +692,15 @@ impl ResinApp {
                     ));
                 }
             } else {
-                if self.supports.branching.is_some() {
+                let placing = match &self.tool {
+                    Some(ActiveTool::Branch(_)) => Some("status.branch_place"),
+                    Some(ActiveTool::MoveTip(_)) => Some("status.tip_place"),
+                    Some(ActiveTool::Line(t)) if t.to.is_none() => Some("status.line_place"),
+                    _ => None,
+                };
+                if let Some(msg) = placing {
                     ui.separator();
-                    ui.label(i18n::tr("status.branch_place"));
-                } else if self.supports.moving.is_some() {
-                    ui.separator();
-                    ui.label(i18n::tr("status.tip_place"));
-                } else if self.line.tool.as_ref().is_some_and(|t| t.to.is_none()) {
-                    ui.separator();
-                    ui.label(i18n::tr("status.line_place"));
+                    ui.label(i18n::tr(msg));
                 }
                 let unreachable = self.routes.unreachable(&self.session.scene);
                 if unreachable > 0 {
@@ -793,10 +807,6 @@ impl ResinApp {
                 egui::Key::Escape if plain => {
                     self.tool = None;
                     self.boxsel = None;
-                    self.supports.branching = None;
-                    self.supports.moving = None;
-                    self.line.tool = None;
-                    self.brace.tool = None;
                 }
                 egui::Key::H if plain => support_brace::open(self),
                 egui::Key::L if plain && self.mode == EditMode::Object => object_label::open(self),
@@ -1134,6 +1144,58 @@ mod tests {
         send(&mut app, vec![egui::Event::Paste("t".into())]);
         assert_eq!(app.session.scene.models().len(), 3, "models paste in Arrange only");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Each edition has one tool open at most: opening one puts the other away, with no step, and
+    /// leaving the edition puts it away.
+    #[test]
+    fn one_tool_is_open_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("resin-ui-one-tool-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stl = dir.join("tri.stl");
+        std::fs::write(
+            &stl,
+            "solid t\nfacet normal 0 0 -1\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 0 10\nendloop\nendfacet\nendsolid t\n",
+        )
+        .unwrap();
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let m = app.run("file.import_stl", json!({ "path": stl, "fit": false })).unwrap()["id"].as_u64().unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        let open = |app: &ResinApp| match app.tool {
+            None => "none",
+            Some(ActiveTool::Transform(_)) => "transform",
+            Some(ActiveTool::Label(_)) => "label",
+            Some(ActiveTool::Line(_)) => "line",
+            Some(ActiveTool::Brace(_)) => "brace",
+            Some(ActiveTool::Branch(_)) => "branch",
+            Some(ActiveTool::MoveTip(_)) => "move_tip",
+        };
+
+        app.run("model.select", json!({ "ids": [m] })).unwrap();
+        transform::open(&mut app, transform::Op::Move);
+        assert_eq!(open(&app), "transform");
+        object_label::open(&mut app);
+        assert_eq!(open(&app), "label");
+        transform::open(&mut app, transform::Op::Rotate);
+        assert_eq!(open(&app), "transform");
+        app.set_mode(EditMode::Support);
+        assert_eq!(open(&app), "none");
+
+        let add = |app: &mut ResinApp, x: f64| {
+            app.run("support.add", json!({ "model": m, "point": [x, 2, 10], "normal": [0, 0, -1] })).unwrap()["id"].as_u64().unwrap()
+        };
+        let ids = [add(&mut app, 2.0), add(&mut app, 12.0)];
+        app.run("support.select", json!({ "ids": ids })).unwrap();
+        let depth = app.session.undo_depth();
+        support_line::open(&mut app);
+        assert_eq!(open(&app), "line");
+        support_brace::open(&mut app);
+        assert_eq!(open(&app), "brace");
+        support_line::open(&mut app);
+        assert_eq!(open(&app), "line");
+        assert_eq!(app.session.undo_depth(), depth);
+        app.set_mode(EditMode::Object);
+        assert_eq!(open(&app), "none");
     }
 
     /// Drive the slicer until its job is in, as frames would.

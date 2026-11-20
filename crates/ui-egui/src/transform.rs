@@ -17,7 +17,7 @@ use crate::gizmo::{Change, Drag, Triad};
 use crate::theme::Tokens;
 use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card};
-use crate::{EditMode, ResinApp, i18n};
+use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -98,8 +98,34 @@ pub fn open(app: &mut ResinApp, op: Op) {
         app.status = Some((i18n::tr("reason.select_model").into(), true));
         return;
     }
-    let uniform = app.tool.as_ref().is_none_or(|t| t.uniform);
-    app.tool = Some(Tool { op, uniform, drag: None, before: placements(app), mark: app.session.history_mark(), typed: None });
+    let uniform = tool(app).is_none_or(|t| t.uniform);
+    app.tool = Some(ActiveTool::Transform(Tool { op, uniform, drag: None, before: placements(app), mark: app.session.history_mark(), typed: None }));
+}
+
+/// The Move, Rotate or Scale tool, when it is the one open.
+pub(crate) fn tool(app: &ResinApp) -> Option<&Tool> {
+    match &app.tool {
+        Some(ActiveTool::Transform(t)) => Some(t),
+        _ => None,
+    }
+}
+
+fn tool_mut(app: &mut ResinApp) -> Option<&mut Tool> {
+    match &mut app.tool {
+        Some(ActiveTool::Transform(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// Put the tool away and hand it over; another tool stays open.
+fn take(app: &mut ResinApp) -> Option<Tool> {
+    match app.tool.take() {
+        Some(ActiveTool::Transform(t)) => Some(t),
+        other => {
+            app.tool = other;
+            None
+        }
+    }
 }
 
 /// Where the selection turns about: a lone model's pivot, or the centre of several.
@@ -114,7 +140,7 @@ fn centre(app: &ResinApp) -> Vec3 {
 
 /// Whether the tool can act now: Object edition with something selected.
 fn active(app: &ResinApp) -> Option<Op> {
-    let op = app.tool.as_ref()?.op;
+    let op = tool(app)?.op;
     (app.mode == EditMode::Object && !app.session.scene.selected_models.is_empty()).then_some(op)
 }
 
@@ -132,7 +158,7 @@ pub fn triad(app: &ResinApp) -> Option<Triad> {
         [id] => scene.model(*id),
         _ => None,
     };
-    let center = match app.tool.as_ref().and_then(|t| t.drag.as_ref()) {
+    let center = match tool(app).and_then(|t| t.drag.as_ref()) {
         // Rotating about where the drag began; moving and scaling follow the model.
         Some((c, _)) if op == Op::Rotate => *c,
         _ => lone.map_or_else(|| scene.bounds_of(&ids).center(), |m| m.placement.position),
@@ -150,7 +176,7 @@ pub fn drag(app: &mut ResinApp, g: Drag) {
         abort_typed(app);
     }
     let (c, start) = (centre(app), placements(app));
-    let Some(tool) = app.tool.as_mut() else { return };
+    let Some(tool) = tool_mut(app) else { return };
     if g.started || tool.drag.is_none() {
         tool.drag = Some((c, start));
     }
@@ -206,13 +232,13 @@ fn placed(start: &[(u64, Placement, bool)], centre: Vec3, change: Change, unifor
 
 /// Whether an amount is being typed: its undo step stays open meanwhile.
 pub fn typing(app: &ResinApp) -> bool {
-    app.tool.as_ref().is_some_and(|t| t.typed.is_some())
+    tool(app).is_some_and(|t| t.typed.is_some())
 }
 
 /// The tool's op, when it can take typed keys: open, active and not dragged.
 fn typable(app: &ResinApp) -> Option<Op> {
     let op = active(app)?;
-    app.tool.as_ref().is_some_and(|t| t.drag.is_none()).then_some(op)
+    tool(app).is_some_and(|t| t.drag.is_none()).then_some(op)
 }
 
 /// Start typing, from the selection as it is now.
@@ -223,7 +249,7 @@ fn begin_typed(app: &mut ResinApp) {
     // The typed amount is a step of its own, apart from whatever came before.
     app.session.end_step();
     let typed = Typed { axis: None, text: String::new(), centre: centre(app), start: placements(app), mark: app.session.history_mark() };
-    if let Some(tool) = app.tool.as_mut() {
+    if let Some(tool) = tool_mut(app) {
         tool.typed = Some(typed);
     }
 }
@@ -244,13 +270,13 @@ pub fn key(app: &mut ResinApp, key: egui::Key, mods: egui::Modifiers) -> bool {
                 _ => 2,
             };
             begin_typed(app);
-            if let Some(t) = app.tool.as_mut().and_then(|t| t.typed.as_mut()) {
+            if let Some(t) = tool_mut(app).and_then(|t| t.typed.as_mut()) {
                 t.axis = (t.axis != Some(axis)).then_some(axis);
             }
             show_typed(app);
         }
         Key::Backspace if typing(app) => {
-            if let Some(t) = app.tool.as_mut().and_then(|t| t.typed.as_mut()) {
+            if let Some(t) = tool_mut(app).and_then(|t| t.typed.as_mut()) {
                 t.text.pop();
             }
             show_typed(app);
@@ -273,7 +299,7 @@ pub fn text(app: &mut ResinApp, text: &str) {
             continue;
         }
         begin_typed(app);
-        let Some(t) = app.tool.as_mut().and_then(|t| t.typed.as_mut()) else { return };
+        let Some(t) = tool_mut(app).and_then(|t| t.typed.as_mut()) else { return };
         match c {
             '-' => {
                 if t.text.starts_with('-') {
@@ -312,7 +338,7 @@ fn typed_change(op: Op, axis: Option<usize>, text: &str) -> Change {
 
 /// Place the selection as the typed amount says, from where the typing began.
 fn show_typed(app: &mut ResinApp) {
-    let Some(tool) = app.tool.as_ref() else { return };
+    let Some(tool) = tool(app) else { return };
     let Some(t) = &tool.typed else { return };
     // An axis typed for Scale is that axis alone, whatever the Uniform box says.
     let models = placed(&t.start, t.centre, typed_change(tool.op, t.axis, &t.text), false);
@@ -322,7 +348,7 @@ fn show_typed(app: &mut ResinApp) {
 
 /// Keep the typed amount and put the tool away, as Enter does.
 fn commit_typed(app: &mut ResinApp) {
-    let Some(t) = app.tool.take().and_then(|t| t.typed) else { return };
+    let Some(t) = take(app).and_then(|t| t.typed) else { return };
     // Nothing typed that changed anything: no empty step left in the history.
     if t.start == placements_of(app, &t.start) {
         app.session.forget_since(t.mark, "model.place");
@@ -339,7 +365,7 @@ fn placements_of(app: &ResinApp, start: &[(u64, Placement, bool)]) -> Vec<(u64, 
 /// Put the models back where the typing began and forget its step; the tool stays open. Nothing
 /// when nothing is typed.
 pub fn abort_typed(app: &mut ResinApp) {
-    let Some(t) = app.tool.as_mut().and_then(|t| t.typed.take()) else { return };
+    let Some(t) = tool_mut(app).and_then(|t| t.typed.take()) else { return };
     let models: Vec<Value> = t
         .start
         .iter()
@@ -353,7 +379,7 @@ pub fn abort_typed(app: &mut ResinApp) {
 /// The line the typed axis runs along, through where the typing began: world X, Y or Z, or the
 /// lone model's own axis while scaling.
 pub fn typed_axis(app: &ResinApp) -> Option<(Vec3, Vec3, usize)> {
-    let tool = app.tool.as_ref()?;
+    let tool = tool(app)?;
     let t = tool.typed.as_ref()?;
     let axis = match (tool.op, t.axis) {
         (_, Some(a)) => a,
@@ -399,13 +425,13 @@ fn place(app: &mut ResinApp, id: u64, fields: Value) {
 pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     // The selection changed under the typing (a click in the view): what was typed is kept.
     let now = placements(app);
-    if let Some(tool) = app.tool.as_mut()
+    if let Some(tool) = tool_mut(app)
         && tool.typed.as_ref().is_some_and(|t| !t.start.iter().map(|(id, ..)| *id).eq(now.iter().map(|(id, ..)| *id)))
     {
         tool.typed = None;
     }
     let Some(op) = active(app) else {
-        if app.tool.as_ref().is_some_and(|t| t.drag.is_none()) && app.mode != EditMode::Object {
+        if tool(app).is_some_and(|t| t.drag.is_none()) && app.mode != EditMode::Object {
             app.tool = None;
         }
         return;
@@ -413,7 +439,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let ids = selection(app);
     // Selecting other models keeps what was done to the last ones: Cancel now concerns these.
     let (now, mark) = (placements(app), app.session.history_mark());
-    if let Some(tool) = app.tool.as_mut()
+    if let Some(tool) = tool_mut(app)
         && !tool.before.iter().map(|(id, ..)| *id).eq(now.iter().map(|(id, ..)| *id))
     {
         tool.before = now;
@@ -426,7 +452,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);
     let at = app.viewport_rect.map_or(egui::pos2(220.0, 140.0), |r| r.left_top() + vec2(SPACE_12, SPACE_12));
     let mut edit: Option<Value> = None;
-    let mut uniform = app.tool.as_ref().is_some_and(|t| t.uniform);
+    let mut uniform = tool(app).is_some_and(|t| t.uniform);
     let card = Card {
         id: egui::Id::new("transform_tool"),
         title: i18n::tr(op.label()),
@@ -436,7 +462,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         width: FORM_CARD_WIDTH,
         buttons: Buttons::OkCancel { ok_enabled: true },
     };
-    let typed = app.tool.as_ref().and_then(|tool| tool.typed.as_ref()).map(|ty| typed_line(op, ty));
+    let typed = tool(app).and_then(|tool| tool.typed.as_ref()).map(|ty| typed_line(op, ty));
     let action = card.show(ctx, &t, |ui| {
         if let Some(line) = &typed {
             ui_kit::status_line(ui, &t, line, ui_kit::StatusTone::Dim);
@@ -522,7 +548,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             ui_kit::hint(ui, &t, i18n::tr("tool.typed.hint"));
         }
     });
-    if let Some(tool) = app.tool.as_mut() {
+    if let Some(tool) = tool_mut(app) {
         tool.uniform = uniform;
     }
     if let (Some(fields), Some(m)) = (edit, &lone) {
@@ -541,7 +567,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
 /// Put the tool away as its Cancel does: the placements it opened with come back and its undo
 /// steps go. Nothing when no tool is open.
 pub fn cancel(app: &mut ResinApp) {
-    if let Some(tool) = app.tool.take() {
+    if let Some(tool) = take(app) {
         // `lifted` too: a Z move let the models go, and Cancel must give them back their lift.
         let models: Vec<Value> = tool
             .before

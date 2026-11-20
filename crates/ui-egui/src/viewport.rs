@@ -128,7 +128,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         ctx.request_repaint();
     }
     let selection = if app.mode == EditMode::Support { Selection::Supports } else { Selection::Models };
-    let support_mesh = app.routes.mesh(&app.session.scene, &preset, selection, app.supports.moving);
+    let support_mesh = app.routes.mesh(&app.session.scene, &preset, selection, crate::supports::moving(app));
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, tokens);
     let joints = joint_spheres(&support_mesh, &colors, supports::body_alpha(app));

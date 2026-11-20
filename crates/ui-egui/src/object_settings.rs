@@ -14,7 +14,7 @@ use crate::{EditMode, ResinApp, i18n};
 pub(crate) const CARD_ID: &str = "object_settings";
 
 pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
-    if app.mode != EditMode::Object || app.tool.is_some() || app.label_tool.is_some() {
+    if app.mode != EditMode::Object || app.tool.is_some() {
         return;
     }
     let t = Tokens::for_dark(ctx.global_style().visuals.dark_mode);

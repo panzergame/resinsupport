@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use crate::theme::Tokens;
 use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
 use crate::ui_kit::{self, Action, Buttons, Card, PresetAction, PresetRow};
-use crate::{EditMode, ResinApp, i18n, object_slicing};
+use crate::{ActiveTool, EditMode, ResinApp, i18n, object_slicing};
 
 pub(crate) const CARD_ID: &str = "object_label";
 /// The card's preset row, in [`ResinApp::preset_rows`].
@@ -54,22 +54,31 @@ pub fn open(app: &mut ResinApp) {
     if app.session.scene.model(id).is_some_and(|m| m.label.is_none()) && app.run("model.label", json!({ "id": id })).is_none() {
         return;
     }
-    app.tool = None;
-    app.label_tool = Some(id);
+    app.tool = Some(ActiveTool::Label(id));
+}
+
+/// The model whose label card is open.
+pub(crate) fn tool(app: &ResinApp) -> Option<u64> {
+    match app.tool {
+        Some(ActiveTool::Label(id)) => Some(id),
+        _ => None,
+    }
 }
 
 fn close(app: &mut ResinApp) {
-    app.label_tool = None;
+    app.tool = None;
     app.preset_rows.close(PRESET_ROW);
 }
 
 pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
-    let Some(id) = app.label_tool else { return };
+    let Some(id) = tool(app) else {
+        // Put away by another tool or the edition: the name being typed goes with it.
+        app.preset_rows.close(PRESET_ROW);
+        return;
+    };
     let target = object_slicing::target(app);
     let label = app.session.scene.model(id).and_then(|m| m.label.clone());
-    let (Some(label), true, true, Some((_, index))) =
-        (label, app.mode == EditMode::Object && app.tool.is_none(), target.map(|t| t.0) == Some(id), target)
-    else {
+    let (Some(label), true, true, Some((_, index))) = (label, app.mode == EditMode::Object, target.map(|t| t.0) == Some(id), target) else {
         close(app);
         return;
     };
@@ -259,11 +268,11 @@ mod tests {
         let ctx = egui::Context::default();
         app.run("model.select", json!({ "ids": [a, b] }));
         open(&mut app);
-        assert_eq!(app.label_tool, None, "two models selected");
+        assert_eq!(tool(&app), None, "two models selected");
         app.run("model.select", json!({ "ids": [b] }));
         let depth = app.session.undo_depth();
         open(&mut app);
-        assert_eq!(app.label_tool, Some(b));
+        assert_eq!(tool(&app), Some(b));
         assert_eq!(app.session.undo_depth(), depth + 1, "the new label is one step");
         assert_eq!(app.session.scene.model(b).unwrap().label.as_ref().map(|l| l.text.as_str()), Some("2"));
         open(&mut app);
@@ -275,18 +284,18 @@ mod tests {
 
         app.run("model.select", json!({ "ids": [a] }));
         frame(&ctx, &mut app);
-        assert_eq!(app.label_tool, None, "closed once its model is not the one selected");
+        assert_eq!(tool(&app), None, "closed once its model is not the one selected");
         app.run("model.select", json!({ "ids": [b] }));
         open(&mut app);
         app.step_history(false);
         frame(&ctx, &mut app);
-        assert_eq!(app.label_tool, None, "closed when an undo takes the label away");
+        assert_eq!(tool(&app), None, "closed when an undo takes the label away");
         open(&mut app);
         app.mode = EditMode::Support;
         frame(&ctx, &mut app);
-        assert_eq!(app.label_tool, None, "closed with the mode");
+        assert_eq!(tool(&app), None, "closed with the mode");
         open(&mut app);
-        assert_eq!(app.label_tool, None, "Object edition only");
+        assert_eq!(tool(&app), None, "Object edition only");
     }
 
     /// The card's preset row runs the label preset commands: Duplicate saves a preset the label
@@ -353,7 +362,7 @@ mod tests {
         assert!(row(&app).editing());
         app.mode = EditMode::Support;
         frame(&ctx, &mut app);
-        assert_eq!((app.label_tool, app.preset_rows.get(PRESET_ROW).is_some()), (None, false), "closing forgets the name being typed");
+        assert_eq!((tool(&app), app.preset_rows.get(PRESET_ROW).is_some()), (None, false), "closing forgets the name being typed");
     }
 
     #[test]
