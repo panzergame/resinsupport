@@ -663,8 +663,7 @@ fn crypt(data: &mut [u8], key: u32, layer: u32) {
 }
 
 /// RGB565 with the repeat flag, green's lowest bit, cleared.
-fn rgb565(px: &[u8]) -> u16 {
-    let (r, g, b) = (px.first().copied().unwrap_or(0), px.get(1).copied().unwrap_or(0), px.get(2).copied().unwrap_or(0));
+fn rgb565(&[r, g, b]: &[u8; 3]) -> u16 {
     (u16::from(b >> 3) | u16::from(g >> 2) << 5 | u16::from(r >> 3) << 11) & !PREVIEW_REPEAT
 }
 
@@ -683,7 +682,7 @@ fn encode_preview(p: &Preview) -> Result<Vec<u8>, IoError> {
         }
     };
     let mut run: Option<(u16, u32)> = None;
-    for px in p.rgb.chunks_exact(3) {
+    for px in p.rgb.as_chunks::<3>().0 {
         let c = rgb565(px);
         match &mut run {
             Some((rc, n)) if *rc == c && *n < MAX_PREVIEW_RUN => *n += 1,
@@ -706,7 +705,7 @@ fn encode_preview(p: &Preview) -> Result<Vec<u8>, IoError> {
 fn decode_preview(data: &[u8], width: u32, height: u32) -> Result<Preview, IoError> {
     let total = width as usize * height as usize;
     let mut rgb = Vec::with_capacity(total * 3);
-    let mut words = data.chunks_exact(2).map(|w| u16::from_le_bytes([w[0], w[1]]));
+    let mut words = data.as_chunks::<2>().0.iter().map(|&w| u16::from_le_bytes(w));
     if !data.len().is_multiple_of(2) {
         return Err(IoError::Format("a preview's data has an odd length".into()));
     }

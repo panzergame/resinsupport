@@ -69,7 +69,7 @@ fn read_binary(bytes: &[u8], count: usize) -> Result<StlImport, IoError> {
     let table = bytes.get(HEADER + 4..).ok_or_else(|| IoError::Format("truncated binary STL".into()))?;
     let mut triangles = Vec::with_capacity(count);
     let mut dropped = 0;
-    for record in table.chunks_exact(RECORD).take(count) {
+    for record in table.as_chunks::<RECORD>().0.iter().take(count) {
         // Skip the stored normal (12 bytes): it is often wrong, the winding is what counts.
         let f = |i: usize| {
             let o = 12 + i * 4;

@@ -341,8 +341,7 @@ pub fn render_offscreen(rs: &egui_wgpu::RenderState, frame: &ViewFrame, width: u
     let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
     for y in 0..height as usize {
         let line = data.get(y * padded as usize..y * padded as usize + row as usize)?;
-        for px in line.chunks_exact(4) {
-            let [a, b, c] = [px[0], px[1], px[2]];
+        for &[a, b, c, _] in line.as_chunks::<4>().0 {
             rgb.extend_from_slice(&if bgra { [c, b, a] } else { [a, b, c] });
         }
     }

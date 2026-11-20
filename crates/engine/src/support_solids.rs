@@ -107,7 +107,7 @@ impl SupportTessellator {
             if let Primitive::Frustum { a, b, ra, rb, sides, smooth, .. } = prim {
                 scratch.clear();
                 frustum(a, b, ra, rb, sides, smooth, (true, true), scratch);
-                out.extend(scratch.chunks_exact(3).map(|t| [t[0].pos, t[1].pos, t[2].pos]));
+                out.extend(scratch.as_chunks::<3>().0.iter().map(|[a, b, c]| [a.pos, b.pos, c.pos]));
             }
         });
     }
@@ -119,7 +119,7 @@ impl SupportTessellator {
             Primitive::Frustum { a, b, ra, rb, sides, smooth, .. } => {
                 scratch.clear();
                 frustum(a, b, ra, rb, sides, smooth, (true, true), scratch);
-                out.extend(scratch.chunks_exact(3).map(|t| [t[0].pos, t[1].pos, t[2].pos]));
+                out.extend(scratch.as_chunks::<3>().0.iter().map(|[a, b, c]| [a.pos, b.pos, c.pos]));
             }
             Primitive::Sphere { center, radius } => {
                 if !(radius > 0.0) || !center.is_finite() {

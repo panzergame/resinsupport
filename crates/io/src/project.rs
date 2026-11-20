@@ -204,10 +204,10 @@ fn decode_mesh(bytes: &[u8]) -> Result<Mesh, IoError> {
     let table = bytes.get(MESH_HEADER..).filter(|t| t.len() == count * TRIANGLE_BYTES).ok_or_else(|| invalid("mesh blob length mismatch"))?;
     let mut triangles = Vec::new();
     triangles.try_reserve_exact(count).map_err(|_| invalid("could not reserve a mesh"))?;
-    for record in table.chunks_exact(TRIANGLE_BYTES) {
+    for record in table.as_chunks::<TRIANGLE_BYTES>().0 {
         let mut v = [0f32; 9];
-        for (x, b) in v.iter_mut().zip(record.chunks_exact(4)) {
-            *x = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        for (x, &b) in v.iter_mut().zip(record.as_chunks::<4>().0) {
+            *x = f32::from_le_bytes(b);
         }
         if v.iter().any(|x| !x.is_finite()) {
             return Err(invalid("a mesh has a non-finite coordinate"));
