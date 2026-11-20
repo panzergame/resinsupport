@@ -2,7 +2,9 @@
 
 mod edit;
 mod file;
+mod label_preset;
 mod model;
+mod preset;
 mod print_config;
 mod support;
 mod support_settings;
@@ -13,7 +15,7 @@ use std::collections::BTreeSet;
 use resin_geom::Vec3;
 use serde_json::Value;
 
-use crate::{EngineError, Result, Session};
+use crate::{EngineError, LabelPresetKind, Result, Session};
 
 /// One command: what it is called, what it takes, and what it does.
 pub struct CommandSpec {
@@ -22,15 +24,20 @@ pub struct CommandSpec {
     /// The parameters, for documentation and error messages.
     pub params: &'static str,
     pub run: fn(&mut Session, &Value) -> Result<Value>,
-    /// A run that changes the scene is an undo step. True unless `noundo`: only undo, redo and
-    /// opening a project (which starts a fresh history) opt out; a command that leaves the scene alone (the view, the support or print settings) makes no
-    /// step anyway.
+    /// A run that changes the scene is an undo step. True unless `noundo`: only undo, redo,
+    /// opening a project (which starts a fresh history) and the [`CommandSpec::across_history`]
+    /// ones opt out; a command that leaves the scene alone (the view, the support or print
+    /// settings) makes no step anyway.
     pub undoable: bool,
+    /// What it changes in the scene, it changes in every scene of the undo history too
+    /// ([`Session::every_scene`]), so no undo or redo takes it back: the preset commands, the
+    /// user's library never being an undo step, nor what follows from it. No step.
+    pub across_history: bool,
 }
 
 impl CommandSpec {
     pub const fn new(id: &'static str, label: &'static str, run: fn(&mut Session, &Value) -> Result<Value>) -> Self {
-        CommandSpec { id, label, params: "", run, undoable: true }
+        CommandSpec { id, label, params: "", run, undoable: true, across_history: false }
     }
     pub const fn params(mut self, p: &'static str) -> Self {
         self.params = p;
@@ -38,6 +45,11 @@ impl CommandSpec {
     }
     pub const fn noundo(mut self) -> Self {
         self.undoable = false;
+        self
+    }
+    pub const fn across_history(mut self) -> Self {
+        self.undoable = false;
+        self.across_history = true;
         self
     }
 }
@@ -63,12 +75,22 @@ pub fn commands() -> &'static [CommandSpec] {
         CommandSpec::new("file.save", "Save Project", file::save).params(
             "path?: string ending in .rsup (default the scene's file); the models (mesh, name, placement) and supports (tip, normal, placed corners), not the lift or any setting; the file it replaces is kept as <path>.bak",
         ),
+        CommandSpec::new("label.preset.delete", "Delete Label Preset", preset::delete::<LabelPresetKind>).params(
+            "name: string (ignoring case); the preset goes, and labels following it keep their settings and its name, so saving a preset of that name again takes them back. Returns the `preset` deleted",
+        ),
+        CommandSpec::new("label.preset.list", "List Label Presets", preset::list::<LabelPresetKind>).params("none; returns `presets`, each `name`, `side`, `size`, `depth`, `margin`, sorted by name"),
+        CommandSpec::new("label.preset.rename", "Rename Label Preset", preset::rename::<LabelPresetKind>).across_history().params(
+            "name: string (ignoring case), to: string (as for `label.preset.save`; another preset's name refused, a change of case allowed); the preset takes the new name, and every label following it follows it under that name, in the scene and through the undo history (no step: undo never brings the old name back; labels in other projects still name the old one). Returns `preset` and the ids `relinked`",
+        ),
+        CommandSpec::new("label.preset.save", "Save Label Preset", preset::save::<LabelPresetKind>).across_history().params(
+            "name: string (1-64 characters, no spaces round it, unique ignoring case; at most 64 presets), id?: integer (default the one selected model, which must have a label); a new preset of the label's side, size, depth and margin (not its text), the label then following it, as it does in every scene of the undo history where it has those settings. Presets are the user's own, kept with the preferences across projects, and never an undo step, nor is the link. Returns `target` (the model's id) and `preset`",
+        ),
         CommandSpec::new("model.arrange", "Arrange Models", model::arrange).params(
             "ids?: [integer] (default every model); arranges them, the largest first, each at the free spot nearest the plate's centre, around the other models: moved across, turned a quarter about Z to lay their long side along the plate's or when only that fits (not a model with supports), put down on the plate or at the lift height; those with no room go in a column right of the plate, listed in `beside`",
         ),
         CommandSpec::new("model.delete", "Delete Model", model::delete).params("id: integer"),
         CommandSpec::new("model.label", "Label Model", model::label).params(
-            "id?: integer (default the one selected model), text?: string (lines break at \\n; at most 200 characters, 8 lines), side?: \"front\" (-Y) | \"back\" (+Y) | \"left\" (-X) | \"right\" (+X), size?: 1-50 mm (the capital letters' height), depth?: 0.1-10 mm (how far the letters stand out), margin?: 0-20 mm (from the support's base to the letters; the raft's edge and rim keep their own room round the other sides); what is left out is kept, or for a model without a label its number in the model list, front, 2 mm, 0.5 mm and 1 mm. The label is printed past the base of the model's support farthest on that side, inset into the raft, the raft widened out round it, the letters standing on it, read from that side. Returns `id` and `label`",
+            "id?: integer (default the one selected model), preset?: string (a label preset's name: the label takes its settings and follows it) | null (it follows none), text?: string (lines break at \\n; at most 200 characters, 8 lines), side?: \"front\" (-Y) | \"back\" (+Y) | \"left\" (-X) | \"right\" (+X), size?: 1-50 mm (the capital letters' height), depth?: 0.1-10 mm (how far the letters stand out), margin?: 0-20 mm (from the support's base to the letters; the raft's edge and rim keep their own room round the other sides); what is left out is kept, or for a model without a label its number in the model list, front, 2 mm, 0.5 mm and 1 mm. The label is printed past the base of the model's support farthest on that side, inset into the raft, the raft widened out round it, the letters standing on it, read from that side. Side, size, depth or margin given for a label following a known preset change the preset to the label's settings, and every other model following it (one step). Returns `id`, `label` and the `followers` that changed with it",
         ),
         CommandSpec::new("model.label.delete", "Delete Model Label", model::delete_label).params("id?: integer (default the one selected model)"),
         CommandSpec::new("model.lift", "Lift Models", model::lift).params(

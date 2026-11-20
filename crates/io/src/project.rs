@@ -5,9 +5,9 @@
 //!
 //! A project is a ZIP with nothing in front of it:
 //! - `container.json`: `{"format": "resinsupport-container/1"}`, the package layout;
-//! - `document.json`: `{"format": "resinsupport/4", "models": […], "supports": […], "braces": […]}`,
+//! - `document.json`: `{"format": "resinsupport/5", "models": […], "supports": […], "braces": […]}`,
 //!   Deflated (`resinsupport/1` and `/2`, read too, have no braces and no model slicing settings,
-//!   `/3` no labels);
+//!   `/3` no labels, `/4` no label presets);
 //! - `blobs/<lowercase SHA-256>.mesh`: each distinct mesh once, stored, hashed over its bytes.
 //!
 //! A mesh blob is `RSMESH01`, a little-endian `u64` triangle count, then nine little-endian `f32`
@@ -37,7 +37,7 @@ use crate::stl::MAX_TRIANGLES;
 pub const EXTENSION: &str = "rsup";
 const CONTAINER_FORMAT: &str = "resinsupport-container/1";
 const FORMAT_NAME: &str = "resinsupport/";
-const FORMAT_VERSION: u64 = 4;
+const FORMAT_VERSION: u64 = 5;
 const MESH_MAGIC: &[u8; 8] = b"RSMESH01";
 const MESH_HEADER: usize = 16;
 const TRIANGLE_BYTES: usize = 36;
@@ -500,7 +500,14 @@ mod tests {
                     mesh,
                     placement: moved,
                     slicing: SlicingOverride { blur_passes: Some(2), dither_xy: Some(true), gamma: Some(0.5), ..SlicingOverride::default() },
-                    label: Some(Label { text: "2\nB é".into(), side: resin_geom::LabelSide::Right, size: 4.5, depth: 0.8, margin: 2.5 }),
+                    label: Some(Label {
+                        text: "2\nB é".into(),
+                        side: resin_geom::LabelSide::Right,
+                        size: 4.5,
+                        depth: 0.8,
+                        margin: 2.5,
+                        preset: Some("Calibration".into()),
+                    }),
                 },
             ],
             supports: vec![
@@ -583,12 +590,21 @@ mod tests {
     #[test]
     fn newer_formats_are_refused_with_a_reason() {
         let mut d = document();
-        d["format"] = "resinsupport/5".into();
+        d["format"] = "resinsupport/6".into();
         assert!(refused(&with_document(&d)).contains("newer"));
         let bytes = write_project(&sample()).unwrap();
         let mut list: Vec<(String, Vec<u8>)> = parts(&bytes).into_iter().filter(|(n, _)| n != "container.json").collect();
         list.push(("container.json".into(), br#"{"format":"resinsupport-container/9"}"#.to_vec()));
         assert!(refused(&package(&list.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect::<Vec<_>>())).contains("newer"));
+    }
+
+    #[test]
+    fn a_fourth_format_project_reads_with_labels_following_no_preset() {
+        let mut d = document();
+        d["format"] = "resinsupport/4".into();
+        d["models"][1]["label"].as_object_mut().unwrap().remove("preset");
+        let back = read_project(&with_document(&d)).unwrap();
+        assert_eq!(back.models[1].label.as_ref().map(|l| (l.size, l.preset.clone())), Some((4.5, None)));
     }
 
     #[test]
@@ -623,6 +639,10 @@ mod tests {
             ("text", serde_json::json!("x".repeat(10_000))),
             ("text", serde_json::json!(3)),
             ("font", serde_json::json!("x")),
+            ("preset", serde_json::json!("")),
+            ("preset", serde_json::json!(" x")),
+            ("preset", serde_json::json!(1)),
+            ("preset", serde_json::json!("x".repeat(65))),
         ] {
             let mut d = document();
             d["models"][1]["label"][key] = value;

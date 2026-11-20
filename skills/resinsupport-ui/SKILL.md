@@ -1,6 +1,6 @@
 ---
 name: resinsupport-ui
-description: "Use when adding or changing a ResinSupport dialog, ribbon button, panel, overlay, viewport drawing, camera input, gizmo, icon or colour in crates/ui-egui. Covers the design system ported from SolidCraft: theme tokens, the UI kit's card and rows, the ribbon, icons and the one camera path."
+description: "Use when adding or changing a ResinSupport dialog, ribbon button, panel, overlay, viewport drawing, camera input, gizmo, icon or colour in crates/ui-egui, or giving a card presets. Covers the design system ported from SolidCraft: theme tokens, the UI kit's card and rows, the preset row, the ribbon, icons and the one camera path."
 ---
 
 # Dialogs and UI
@@ -16,6 +16,15 @@ The UI is thin: it reads the session and acts through `app.run(id, params)` (`sk
 - Footers: `Buttons::OkCancel` for a tool (OK keeps, Cancel puts back what the tool opened with; Enter is OK, Esc Cancel) or `Buttons::ResetClose` for settings that apply as they change.
 - The body uses `ui_kit::row` (70 pt label column, 28 pt controls), `wide_row`, `check_row`, `choice_row`, `hint` and `button`. A card stays inside the viewport (`bounds`).
 - Tool values apply live; a drag runs one command per frame from the values it began with.
+
+## Presets on a card
+User presets are generic (`docs/architecture.md`, Presets): one library per kind, one state per row. Label presets are the worked example (`crates/engine/src/label_presets.rs`, `crates/engine/src/cmd/label_preset.rs`, the label card in `crates/ui-egui/src/object_label.rs`). For a new kind:
+1. Engine, the settings: a `PresetKind` (`KIND`, the `Settings` type, `check`) beside the settings it holds, and a field of `PresetLibraries` (`crates/engine/src/presets.rs`) read in its `from_stored` and checked in its `validate`.
+2. Engine, the followers: what follows a preset gets the preset's name to store (in `Scene`, so a project format bump, `skills/resinsupport-file-formats/SKILL.md`; on the session, beside the settings). A `Follow` impl in `crates/engine/src/cmd/` gives the target (`TARGET_PARAMS`), its settings, `follow` and `relink`; one followed from two places takes an enum `Target`, never a second kind.
+3. Engine, the commands: `<area>.preset.{delete,list,rename,save}` in `cmd.rs`, each `preset::<name>::<Kind>` with its own documented parameters, and following a preset by name in the command that edits the settings, which calls `presets::edited` with what it changed, for the live edit.
+4. UI: a `ui_kit::PresetRow` on the card with a row id of its own (two rows of one kind shown together take two ids), its state from `app.preset_rows.state(row)`, forgotten in the card's `close`; map each `PresetAction` to the kind's commands. The row's words are `ui.preset.*`; the card adds its row label, tooltip and live hint (`skills/resinsupport-ui-text/SKILL.md`).
+5. Tests: a `sample` row and junk parameters for each command (`crates/engine/src/tests.rs`), an engine test of save, edit, rename and delete with their undo steps, and a card test driving the row.
+6. Docs: the command table, the Presets section's list of kinds, `docs/features.md`.
 
 ## Ribbon and application bar
 - `crates/ui-egui/src/toolbar.rs`: the application bar, then the ribbon's workspace card, a tab per edit mode and the tab's groups. A new button is a `Cmd` variant with a label id, an icon, a `state` (shortcut, the catalog id of why it can't act, pressed) and a `run`, placed in `groups`.

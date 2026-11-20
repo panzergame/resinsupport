@@ -87,6 +87,10 @@ preference_settings! {
     /// The print settings card's printer profile and print settings: tool data, on no page, like
     /// `support_settings`. Read field by field ([`resin_engine::PrintConfig::from_stored`]).
     print_config: resin_engine::PrintConfig = resin_engine::PrintConfig::default();
+    /// The user's presets of every kind (the label card's today), across projects: tool data, on
+    /// no page, like `support_settings`. A kind or a row that does not read is left out
+    /// ([`resin_engine::PresetLibraries::from_stored`]).
+    presets: resin_engine::PresetLibraries = resin_engine::PresetLibraries::default();
     /// Imported models are lifted (off: they stay where the file puts them, as before lifting).
     lift_on_import: bool = true, GENERAL => check("prefs.lift_on_import", "prefs.lift_on_import.help");
     /// Imported models are arranged on the plate around the others (off: they stay where the
@@ -167,6 +171,9 @@ pub fn lenient(saved: &serde_json::Value) -> (Prefs, Vec<String>) {
         .unwrap_or_default();
     if let Some(v) = saved.get("print_config") {
         problems.extend(resin_engine::PrintConfig::from_stored(v).1.into_iter().map(|p| format!("print_config.{p}")));
+    }
+    if let Some(v) = saved.get("presets") {
+        problems.extend(resin_engine::PresetLibraries::from_stored(v).1);
     }
     if let Ok(p) = serde_json::from_value::<Prefs>(saved.clone()) {
         return (p, problems);
@@ -523,7 +530,7 @@ mod tests {
     #[test]
     fn every_setting_has_a_page_and_restore_defaults_restores_it() {
         // Tool data has no page, so no page's Restore defaults wipes it.
-        const TOOL_DATA: &[&str] = &["support_settings", "print_config", "lift_height", "brace_tool", "line_tool"];
+        const TOOL_DATA: &[&str] = &["support_settings", "print_config", "presets", "lift_height", "brace_tool", "line_tool"];
         for (field, page) in FIELD_PAGES {
             assert!(page.is_some_and(|p| p < PAGES.len()) || (page.is_none() && TOOL_DATA.contains(field)), "{field}");
         }

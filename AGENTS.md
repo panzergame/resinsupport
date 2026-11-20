@@ -24,6 +24,7 @@ ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resi
 | Non-test Rust, hostile input, a crash | `skills/resinsupport-crash-safety/SKILL.md` |
 | A command, a crate boundary | `skills/resinsupport-commands/SKILL.md` |
 | A dialog, ribbon button, panel, camera, gizmo, icon, colour | `skills/resinsupport-ui/SKILL.md` |
+| Presets on a card (labels', and later supports', slicing's) | `skills/resinsupport-ui/SKILL.md`, Presets on a card |
 | Labels, messages, languages | `skills/resinsupport-ui-text/SKILL.md` |
 | Preferences, a changed default | `skills/resinsupport-preferences/SKILL.md` |
 | Writing or running tests | `skills/resinsupport-tests/SKILL.md` |

@@ -4,18 +4,27 @@
 //! a dragged or typed value is one undo step. Delete runs `model.label.delete` and closes it.
 //! It closes with the mode, when another tool opens, or once its model is not the one selected or
 //! has no label (an undo).
+//!
+//! Its Preset row ([`ui_kit::PresetRow`], row `"label"`) picks one of the user's label presets
+//! (`model.label` with `preset`), duplicates what is shown as a new one (`label.preset.save`),
+//! renames the one followed on a double click (`label.preset.rename`) or deletes it, once
+//! confirmed (`label.preset.delete`). Editing a followed preset's settings here changes it and
+//! every model using it, as `model.label` does. A label following a preset no longer in the list
+//! shows its name as such, and Duplicate offers that name, to bring it back.
 
 use egui::DragValue;
 use resin_engine::Model;
-use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars};
+use resin_engine::geom::{LABEL_DEPTH_RANGE, LABEL_MARGIN_RANGE, LABEL_SIZE_RANGE, LabelSide, missing_chars, same_preset_name};
 use serde_json::{Map, Value, json};
 
 use crate::theme::Tokens;
 use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH, SPACE_12};
-use crate::ui_kit::{self, Action, Buttons, Card};
+use crate::ui_kit::{self, Action, Buttons, Card, PresetAction, PresetRow};
 use crate::{EditMode, ResinApp, i18n, object_slicing};
 
 pub(crate) const CARD_ID: &str = "object_label";
+/// The card's preset row, in [`ResinApp::preset_rows`].
+const PRESET_ROW: &str = "label";
 
 /// The sides' names, in [`LabelSide::ALL`]'s order.
 const SIDES: [&str; 4] = ["tool.label.front", "tool.label.back", "tool.label.left", "tool.label.right"];
@@ -47,6 +56,11 @@ pub fn open(app: &mut ResinApp) {
     app.label_tool = Some(id);
 }
 
+fn close(app: &mut ResinApp) {
+    app.label_tool = None;
+    app.preset_rows.close(PRESET_ROW);
+}
+
 pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let Some(id) = app.label_tool else { return };
     let target = object_slicing::target(app);
@@ -54,7 +68,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let (Some(label), true, true, Some((_, index))) =
         (label, app.mode == EditMode::Object && app.tool.is_none(), target.map(|t| t.0) == Some(id), target)
     else {
-        app.label_tool = None;
+        close(app);
         return;
     };
     let name = app.session.scene.model(id).map_or_else(String::new, |m| m.name.clone());
@@ -64,6 +78,15 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let why_not = why_not_printed(app, id, &label.text);
     let (mut side, mut size, mut depth, mut margin, mut text) =
         (LabelSide::ALL.iter().position(|s| *s == label.side).unwrap_or(0), label.size, label.depth, label.margin, label.text.clone());
+    let library = &app.session.presets().label;
+    let names: Vec<String> = library.presets().iter().map(|p| p.name.clone()).collect();
+    let followed = label.preset.as_deref().and_then(|n| library.find(n)).map(|p| p.name.clone());
+    let others = followed.as_ref().map_or(0, |name| {
+        let follows = |m: &Model| m.label.as_ref().and_then(|l| l.preset.as_deref()).is_some_and(|n| same_preset_name(n, name));
+        app.session.scene.models().iter().filter(|m| m.id != id && follows(m)).count()
+    });
+    let mut rows = std::mem::take(&mut app.preset_rows);
+    let mut preset_action = None;
     let mut delete = false;
     let card = Card {
         id: egui::Id::new(CARD_ID),
@@ -75,6 +98,19 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         buttons: Buttons::CloseOnly,
     };
     let action = card.show(ctx, &t, |ui| {
+        let row = PresetRow {
+            row: PRESET_ROW,
+            label: i18n::tr("tool.label.preset"),
+            tip: i18n::tr("tool.label.preset_tip"),
+            names: &names,
+            followed: label.preset.as_deref(),
+        };
+        preset_action = row.show(ui, &t, rows.state(PRESET_ROW));
+        if followed.is_some() {
+            let live =
+                if others == 0 { i18n::tr("tool.label.preset.live").to_string() } else { i18n::count("tool.label.preset.live_others", others, &[]) };
+            ui_kit::hint(ui, &t, &live);
+        }
         ui_kit::row(ui, &t, i18n::tr("tool.label.side"), |ui| {
             let names = SIDES.map(i18n::tr);
             ui_kit::segmented(ui, &t, &mut side, &names);
@@ -108,13 +144,33 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
         ui_kit::hint(ui, &t, i18n::tr("tool.label.hint"));
         delete = ui_kit::button(ui, i18n::tr("tool.label.delete")).on_hover_text(i18n::tr("tool.label.delete_tip")).clicked();
     });
+    app.preset_rows = rows;
     if action == Action::Cancel {
-        app.label_tool = None;
+        close(app);
     }
     if delete {
         app.run("model.label.delete", json!({ "id": id }));
-        app.label_tool = None;
+        close(app);
         return;
+    }
+    match preset_action {
+        Some(PresetAction::Pick(preset)) => {
+            app.run("model.label", json!({ "id": id, "preset": preset }));
+            return;
+        }
+        Some(PresetAction::Save(name)) => {
+            app.run("label.preset.save", json!({ "id": id, "name": name }));
+            return;
+        }
+        Some(PresetAction::Rename { from, to }) => {
+            app.run("label.preset.rename", json!({ "name": from, "to": to }));
+            return;
+        }
+        Some(PresetAction::Delete(name)) => {
+            app.run("label.preset.delete", json!({ "name": name }));
+            return;
+        }
+        None => {}
     }
     let mut set = Map::new();
     if let Some(s) = LabelSide::ALL.get(side).filter(|s| **s != label.side) {
@@ -164,11 +220,29 @@ mod tests {
 
     use super::*;
     use crate::prefs::Prefs;
+    use crate::theme::metrics::SPACE_4;
 
     fn frame(ctx: &egui::Context, app: &mut ResinApp) {
-        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), ..Default::default() };
+        frame_with(ctx, app, Vec::new());
+    }
+
+    fn frame_with(ctx: &egui::Context, app: &mut ResinApp, events: Vec<egui::Event>) {
+        // A quarter of a second a frame: clicks on following frames make a double click; clicks
+        // three or more frames apart are not taken for a triple one.
+        let time = Some(ctx.input(|i| i.time) + 0.25);
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0))), time, events, ..Default::default() };
         let mut out = ctx.run_ui(raw, |ui| panel(app, ui.ctx()));
         out.textures_delta.clear();
+    }
+
+    fn click(at: egui::Pos2) -> Vec<egui::Event> {
+        let button =
+            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        vec![egui::Event::PointerMoved(at), button(true), button(false)]
+    }
+
+    fn enter() -> egui::Event {
+        egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
     }
 
     fn shown(ctx: &egui::Context) -> bool {
@@ -233,6 +307,73 @@ mod tests {
         assert_eq!(app.label_tool, None, "Object edition only");
     }
 
+    /// The card's preset row runs the label preset commands: Duplicate saves a preset the label
+    /// then follows, kept in the preferences and back at the next start; a double click renames
+    /// it; deleted once confirmed, the label keeps its name, which the card shows as missing.
+    #[test]
+    fn the_preset_row_saves_renames_and_deletes_label_presets() {
+        let (mut app, [a, b]) = app_with_two_cubes();
+        let ctx = egui::Context::default();
+        let preset_of = |app: &ResinApp, id: u64| app.session.scene.model(id).unwrap().label.as_ref().and_then(|l| l.preset.clone());
+        let names = |app: &ResinApp| app.prefs.presets.label.presets().iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        let row = |app: &ResinApp| app.preset_rows.get(PRESET_ROW).cloned().unwrap_or_default();
+        app.run("model.select", json!({ "ids": [a] }));
+        open(&mut app);
+        // The card's first frame only sizes it.
+        frame(&ctx, &mut app);
+        frame(&ctx, &mut app);
+        let combo = row(&app).combo.unwrap();
+        // Duplicate, with no preset followed: a new one, named as typed.
+        let duplicate = egui::pos2(combo.right() + SPACE_4 + CONTROL_HEIGHT / 2.0, combo.center().y);
+        frame_with(&ctx, &mut app, click(duplicate));
+        assert!(row(&app).editing(), "the name field is open");
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![egui::Event::Text(" Cal ".into())]);
+        frame_with(&ctx, &mut app, vec![enter()]);
+        assert!(!row(&app).editing());
+        assert_eq!(preset_of(&app, a).as_deref(), Some("Cal"), "trimmed, and followed");
+        assert_eq!(names(&app), ["Cal"], "kept in the preferences");
+        let again = ResinApp::build(app.prefs.clone(), &[]);
+        assert_eq!(again.session.presets(), &app.prefs.presets, "back at the next start");
+
+        app.run("model.label", json!({ "id": b, "preset": "Cal" }));
+        app.run("model.label", json!({ "id": a, "size": 7 }));
+        assert_eq!(app.prefs.presets.label.find("Cal").map(|p| p.settings.size), Some(7.0), "the edited preset is kept");
+        assert_eq!(app.session.scene.model(b).unwrap().label.as_ref().map(|l| l.size), Some(7.0), "b follows");
+
+        // A double click renames it, and both models follow the new name.
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, click(combo.center()));
+        frame_with(&ctx, &mut app, click(combo.center()));
+        assert!(row(&app).editing(), "a double click renames");
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![egui::Event::Text("Calibration".into())]);
+        frame_with(&ctx, &mut app, vec![enter()]);
+        assert_eq!(names(&app), ["Calibration"]);
+        assert_eq!((preset_of(&app, a), preset_of(&app, b)), (Some("Calibration".into()), Some("Calibration".into())));
+
+        // Delete, once confirmed: no step; the label keeps the name, shown as missing.
+        let depth = app.session.undo_depth();
+        frame(&ctx, &mut app);
+        let delete = egui::pos2(combo.right() + 2.0 * SPACE_4 + 1.5 * CONTROL_HEIGHT, combo.center().y);
+        frame_with(&ctx, &mut app, click(delete));
+        assert!(row(&app).confirming());
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, vec![enter()]);
+        assert!(names(&app).is_empty(), "deleted");
+        assert_eq!((preset_of(&app, a).as_deref(), app.session.undo_depth()), (Some("Calibration"), depth), "the label keeps its name; no step");
+        frame(&ctx, &mut app);
+        assert!(shown(&ctx), "the card shows the missing preset");
+
+        // Duplicate offers the missing name, to bring the preset back.
+        frame(&ctx, &mut app);
+        frame_with(&ctx, &mut app, click(duplicate));
+        assert!(row(&app).editing());
+        app.mode = EditMode::Support;
+        frame(&ctx, &mut app);
+        assert_eq!((app.label_tool, app.preset_rows.get(PRESET_ROW).is_some()), (None, false), "closing forgets the name being typed");
+    }
+
     #[test]
     fn a_labelled_model_is_named_with_its_label() {
         let (mut app, [a, _]) = app_with_two_cubes();
@@ -275,6 +416,23 @@ mod tests {
             "tool.label.no_feet",
             "tool.label.empty",
             "tool.label.missing",
+            "tool.label.preset",
+            "tool.label.preset_tip",
+            "tool.label.preset.live",
+            "ui.preset.copy_name",
+            "ui.preset.delete_message",
+            "ui.preset.delete_ok",
+            "ui.preset.delete_tip",
+            "ui.preset.delete_title",
+            "ui.preset.duplicate_tip",
+            "ui.preset.missing",
+            "ui.preset.none",
+            "ui.preset.rename_hint",
+            "ui.preset.restore_tip",
+            "ui.preset.save_tip",
+            "ui.preset.taken",
+            "tool.label.preset.live_others.one",
+            "tool.label.preset.live_others.other",
             "models.labelled",
             "tool.needs_object_edition",
             "reason.select_one_model",

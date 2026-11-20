@@ -8,7 +8,7 @@ use resin_render::Camera;
 use resin_slice::SlicingOverride;
 use serde_json::Value;
 
-use crate::{Brace, BraceParams, CommandSpec, EngineError, PrintConfig, Result, SupportPreset, SupportSettings, cmd};
+use crate::{Brace, BraceParams, CommandSpec, EngineError, PresetLibraries, PrintConfig, Result, SupportPreset, SupportSettings, cmd};
 
 /// How far from the origin a model may be moved or grown, in millimetres: well past any build
 /// plate, and still exact enough in the f32 the mesh is stored in.
@@ -802,6 +802,8 @@ pub struct Session {
     pub(crate) support_settings: SupportSettings,
     /// The printer profile and print settings: outside `scene` for the same reason.
     pub(crate) print_config: PrintConfig,
+    /// The user's presets of every kind, across projects: outside `scene` for the same reason.
+    pub(crate) presets: PresetLibraries,
     pub(crate) history: History,
     /// The scene's file and the scene revision last saved to or opened from it.
     pub(crate) file: Option<(String, u64)>,
@@ -835,11 +837,13 @@ impl Session {
         let (scene, camera, settings) = (self.scene.clone(), self.camera, self.support_settings);
         let history = if spec.undoable { None } else { Some(self.history.clone()) };
         let print = self.print_config.clone();
+        let presets = self.presets.clone();
         let restore = |s: &mut Session| {
             s.scene = scene.clone();
             s.camera = camera;
             s.support_settings = settings;
             s.print_config = print.clone();
+            s.presets = presets.clone();
             if let Some(h) = &history {
                 s.history = h.clone();
             }
@@ -901,6 +905,16 @@ impl Session {
         if self.history.open.is_none() {
             self.history.open = Some(false);
         }
+    }
+
+    /// Apply `f` to the scene and to every scene of the undo and redo history: a change no undo
+    /// or redo may take back (a renamed preset's name on what follows it).
+    pub(crate) fn every_scene(&mut self, mut f: impl FnMut(&mut Scene) -> Result<()>) -> Result<()> {
+        f(&mut self.scene)?;
+        for step in self.history.undo.iter_mut().chain(self.history.redo.iter_mut()) {
+            f(&mut step.scene)?;
+        }
+        Ok(())
     }
 
     /// Whether `edit.paste` has something to paste.
@@ -1003,6 +1017,18 @@ impl Session {
     pub fn set_print_config(&mut self, c: PrintConfig) -> Result<()> {
         c.validate()?;
         self.print_config = c;
+        Ok(())
+    }
+
+    pub fn presets(&self) -> &PresetLibraries {
+        &self.presets
+    }
+
+    /// Replace the presets (the stored ones, at start), if they pass
+    /// [`PresetLibraries::validate`]. No undo step, as for `label.preset.save`.
+    pub fn set_presets(&mut self, p: PresetLibraries) -> Result<()> {
+        p.validate()?;
+        self.presets = p;
         Ok(())
     }
 }

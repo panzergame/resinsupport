@@ -40,6 +40,7 @@ const MASTERS: &[(&str, &str)] = &[
     ("box", include_str!("../icons/box.svg")),
     ("close", include_str!("../icons/close.svg")),
     ("cone", include_str!("../icons/cone.svg")),
+    ("copy", include_str!("../icons/copy.svg")),
     ("delete", include_str!("../icons/delete.svg")),
     ("export", include_str!("../icons/export.svg")),
     ("fit", include_str!("../icons/fit.svg")),

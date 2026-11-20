@@ -6,6 +6,8 @@
 mod brace;
 mod cmd;
 mod label;
+mod label_presets;
+mod presets;
 mod print_config;
 mod raft;
 mod route;
@@ -21,6 +23,8 @@ pub use brace::{
 };
 pub use cmd::{CommandSpec, commands};
 pub use label::{label_sites, label_triangles};
+pub use label_presets::{LabelPreset, LabelPresetKind, LabelPresets, LabelSettings};
+pub use presets::{Follow, MAX_PRESETS, Preset, PresetKind, PresetLibraries, Presets};
 pub use print_config::PrintConfig;
 pub use raft::{raft_feet, raft_triangles};
 pub use resin_geom as geom;

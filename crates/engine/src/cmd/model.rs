@@ -5,7 +5,7 @@ use resin_geom::{Affine3, Label, LabelSide, Placement, Vec3};
 use super::{ids_param, num_param, select_ids, str_param, vec3_param};
 use resin_slice::{SLICING_KEYS, field};
 
-use crate::{EngineError, Result, SCALE_RANGE, Session};
+use crate::{EngineError, LabelPresetKind, LabelSettings, Result, SCALE_RANGE, Session};
 
 fn bool_param(p: &Value, key: &str) -> Result<Option<bool>> {
     match p.get(key) {
@@ -178,7 +178,7 @@ pub(crate) fn slicing(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The `id` parameter, or the one selected model.
-fn one_target(s: &Session, p: &Value) -> Result<u64> {
+pub(super) fn one_target(s: &Session, p: &Value) -> Result<u64> {
     let id = match p.get("id") {
         None | Some(Value::Null) => match s.scene.selected_models.iter().copied().collect::<Vec<_>>()[..] {
             [id] => id,
@@ -190,7 +190,7 @@ fn one_target(s: &Session, p: &Value) -> Result<u64> {
     Ok(id)
 }
 
-fn refuse_unknown(p: &Value, known: &[&str]) -> Result<()> {
+pub(super) fn refuse_unknown(p: &Value, known: &[&str]) -> Result<()> {
     if let Value::Object(o) = p
         && let Some(k) = o.keys().find(|k| !known.contains(&k.as_str()))
     {
@@ -199,14 +199,25 @@ fn refuse_unknown(p: &Value, known: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// `id?` (default the one selected model), `text?`, `side?`, `size?`, `depth?`, `margin?`: change what is
-/// given of the model's label, giving it one first if it has none (its text the model's place in
-/// the model list, from 1).
+/// `id?` (default the one selected model), `preset?`, `text?`, `side?`, `size?`, `depth?`,
+/// `margin?`: change what is given of the model's label, giving it one first if it has none (its
+/// text the model's place in the model list, from 1). `preset` (a name, or null for none) comes
+/// first; settings given for a label following a known preset change the preset too, and every
+/// other model of the scene following it.
 pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
-    refuse_unknown(p, &["id", "text", "side", "size", "depth", "margin"])?;
+    refuse_unknown(p, &["id", "preset", "text", "side", "size", "depth", "margin"])?;
     let id = one_target(s, p)?;
     let index = s.scene.models().iter().position(|m| m.id == id).map_or(0, |i| i + 1);
     let mut label = s.scene.model(id).and_then(|m| m.label.clone()).unwrap_or_else(|| Label { text: index.to_string(), ..Label::default() });
+    match p.get("preset") {
+        None => {}
+        Some(Value::Null) => label.preset = None,
+        Some(Value::String(name)) => {
+            let preset = s.presets.label.find(name).ok_or_else(|| EngineError::BadParams(format!("there is no label preset named {name}")))?;
+            label = preset.applied(&label);
+        }
+        Some(_) => return Err(EngineError::BadParams("`preset` must be a string or null".into())),
+    }
     match p.get("text") {
         None | Some(Value::Null) => {}
         Some(Value::String(t)) => label.text = t.clone(),
@@ -229,7 +240,10 @@ pub(crate) fn label(s: &mut Session, p: &Value) -> Result<Value> {
         label.margin = margin;
     }
     s.scene.set_label(id, Some(label.clone()))?;
-    Ok(json!({ "id": id, "label": label }))
+    let settings_given = ["side", "size", "depth", "margin"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null()));
+    let followers =
+        if settings_given { crate::presets::edited::<LabelPresetKind>(s, label.preset.as_deref(), &LabelSettings::of(&label))? } else { Vec::new() };
+    Ok(json!({ "id": id, "label": label, "followers": followers }))
 }
 
 /// `id?` (default the one selected model): take the model's label away.

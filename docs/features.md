@@ -177,6 +177,14 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 - Size and depth set on the card; Delete removes it; saved in projects and copies.
 - Commands: `model.label`, `model.label.delete`
 
+### Reuse label settings as presets
+**As a** maker, **I want** named presets of a label's side, size, depth and margin, **so that** every print I label looks the same without setting it up again.
+- On the label card: pick a preset (or None) in the drop-down; the copy icon beside it saves what is shown as a new preset (a copy of the one used, named in place); a double click on the drop-down renames the preset in place; the delete icon deletes it once confirmed; kept with my preferences across projects.
+- Changing a preset's settings on a model using it changes the preset and every model in the scene using it; the text stays each model's own.
+- Saving, renaming and deleting a preset are not undone by Undo, nor is what they did to my labels (a renamed preset stays renamed on every model using it); projects not open keep the old name, shown as not in my presets.
+- A deleted preset's labels keep their settings and its name, shown as not in my presets; the copy icon offers that name, taking them back.
+- Commands: `label.preset.save`, `label.preset.list`, `label.preset.rename`, `label.preset.delete`, `model.label` (`preset`)
+
 **Not yet**
 - **As a** maker, **I want** overhangs and islands detected and supported automatically, **so that** I only touch up what the generator missed.
 - **As a** maker, **I want** ribbon buttons for tip lines, braces and resetting a support's path, **so that** I don't need to know the shortcuts.

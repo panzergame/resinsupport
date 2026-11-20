@@ -1,6 +1,6 @@
 // Ported from SolidCraft (MIT OR Apache-2.0), crates/ui-egui/src/ui_kit/panel.rs (`header`,
-// `Panel::feature`), ui_kit/actions.rs (`footer`, `action_button`) and ui_kit/layout.rs (`scope`,
-// `row`) at 4bdffef0; see ATTRIBUTION.md. Reduced: no docking, top buttons, compute status or
+// `Panel::feature`), ui_kit/actions.rs (`footer`, `action_button`, `icon_button_at`) and
+// ui_kit/layout.rs (`scope`, `row`) at 4bdffef0; see ATTRIBUTION.md. Reduced: no docking, top buttons, compute status or
 // scenario handles.
 
 //! The card every dialog uses: a 40 pt header (icon, title, close), a padded body of form rows,
@@ -11,10 +11,12 @@
 mod choice;
 mod confirm;
 mod figure;
+mod preset_row;
 
 pub use choice::segmented;
 pub use confirm::Confirm;
 pub use figure::{FigureField, FigureRow, FigureSlot, figure_height, figure_rows};
+pub use preset_row::{PresetAction, PresetRow, PresetRowState, PresetRows};
 
 use egui::{Align2, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
@@ -318,6 +320,20 @@ pub fn hint(ui: &mut Ui, t: &Tokens, text: &str) {
 /// A text button in the form's style, `CONTROL_HEIGHT` tall.
 pub fn button(ui: &mut Ui, label: &str) -> Response {
     ui.add(egui::Button::new(label).min_size(vec2(0.0, CONTROL_HEIGHT)))
+}
+
+/// An icon action, `CONTROL_HEIGHT` square, beside a row's control: filled when hovered, `tip` on
+/// hover, dimmed and inert when not `enabled`.
+pub fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tip: &str, enabled: bool) -> Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(vec2(CONTROL_HEIGHT, CONTROL_HEIGHT), sense);
+    if enabled && response.hovered() {
+        ui.painter().rect_filled(rect, CONTROL_RADIUS, t.hover);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    icons::paint(ui.painter(), rect.shrink(SPACE_6), icon, t.dark, if enabled { 1.0 } else { 0.35 });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, tip));
+    response.on_hover_text(tip)
 }
 
 /// One entry of a settings window's page list: its icon and title, filled when selected. Whether

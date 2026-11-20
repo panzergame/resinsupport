@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::text::{TextOutline, text_outline};
-use crate::{Field2, RaftProfile, raft_solid};
+use crate::{Field2, RaftProfile, check_preset_name, raft_solid};
 
 /// Capital letters' heights, mm.
 pub const LABEL_SIZE_RANGE: std::ops::RangeInclusive<f64> = 1.0..=50.0;
@@ -83,6 +83,10 @@ pub struct Label {
     /// the default.
     #[serde(default = "default_margin")]
     pub margin: f64,
+    /// The label preset its side, size, depth and margin follow, by name. The values above stay
+    /// the label's own, so it prints the same where no preset of that name is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 fn default_margin() -> f64 {
@@ -91,7 +95,14 @@ fn default_margin() -> f64 {
 
 impl Default for Label {
     fn default() -> Label {
-        Label { text: String::new(), side: LabelSide::Front, size: DEFAULT_LABEL_SIZE, depth: DEFAULT_LABEL_DEPTH, margin: DEFAULT_LABEL_MARGIN }
+        Label {
+            text: String::new(),
+            side: LabelSide::Front,
+            size: DEFAULT_LABEL_SIZE,
+            depth: DEFAULT_LABEL_DEPTH,
+            margin: DEFAULT_LABEL_MARGIN,
+            preset: None,
+        }
     }
 }
 
@@ -117,7 +128,7 @@ impl Label {
         if self.text.chars().any(|c| c.is_control() && c != '\n') {
             return Err("the label's text must have no control characters but line breaks".into());
         }
-        Ok(())
+        self.preset.as_deref().map_or(Ok(()), check_preset_name)
     }
 }
 
@@ -218,7 +229,7 @@ mod tests {
     use crate::Mesh;
 
     fn label(text: &str, side: LabelSide) -> Label {
-        Label { text: text.into(), side, size: 5.0, depth: 0.5, margin: 1.5 }
+        Label { text: text.into(), side, size: 5.0, depth: 0.5, margin: 1.5, preset: None }
     }
 
     fn flat(thickness: f64) -> RaftProfile {
@@ -346,11 +357,16 @@ mod tests {
             label(&"1".repeat(MAX_LABEL_CHARS + 1), LabelSide::Front),
             label(&"1\n".repeat(MAX_LABEL_LINES), LabelSide::Front),
             label("1\r2", LabelSide::Front),
+            Label { preset: Some(String::new()), ..label("1", LabelSide::Front) },
+            Label { preset: Some(" A".into()), ..label("1", LabelSide::Front) },
+            Label { preset: Some("A\tB".into()), ..label("1", LabelSide::Front) },
+            Label { preset: Some("x".repeat(crate::MAX_PRESET_NAME + 1)), ..label("1", LabelSide::Front) },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
             assert!(none(&bad, &feet, 2.0, 1.0));
         }
         assert!(label(&"1".repeat(MAX_LABEL_CHARS), LabelSide::Back).validate().is_ok());
+        assert!(Label { preset: Some("é".repeat(crate::MAX_PRESET_NAME)), ..label("1", LabelSide::Back) }.validate().is_ok());
         assert_eq!(LabelSide::parse("left"), Some(LabelSide::Left));
         assert_eq!(LabelSide::parse("up"), None);
     }

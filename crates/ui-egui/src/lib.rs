@@ -124,6 +124,8 @@ pub struct ResinApp {
     pub(crate) object_slicing: bool,
     /// The model whose label card is open.
     pub(crate) label_tool: Option<u64>,
+    /// Every card's preset row: the name being typed, the delete being confirmed.
+    pub(crate) preset_rows: ui_kit::PresetRows,
     /// The layers shown in Slice edition, and how.
     pub(crate) preview: layer_preview::LayerPreview,
     /// The device's largest texture side: a layer is cut into tiles no bigger.
@@ -164,6 +166,9 @@ impl ResinApp {
         if let Err(e) = session.set_print_config(prefs.print_config.clone()) {
             log::warn!("print settings: {e}");
         }
+        if let Err(e) = session.set_presets(prefs.presets.clone()) {
+            log::warn!("presets: {e}");
+        }
         if let Err(e) = session.set_lift_height(prefs.lift_height) {
             log::warn!("lift height: {e}");
         }
@@ -200,6 +205,7 @@ impl ResinApp {
             confirm_print_reset: false,
             object_slicing: false,
             label_tool: None,
+            preset_rows: Default::default(),
             preview: Default::default(),
             max_texture: DEFAULT_MAX_TEXTURE,
             prefs_writer: writer,
@@ -233,7 +239,7 @@ impl ResinApp {
         }
     }
 
-    /// Copy the session's support and print settings and lift height, and the brace and tip line
+    /// Copy the session's support and print settings, presets and lift height, and the brace and tip line
     /// tools' settings, into the preferences when they changed, whoever changed them (a card, a
     /// script, undo), so they are saved.
     fn keep_settings(&mut self) {
@@ -242,6 +248,9 @@ impl ResinApp {
         }
         if self.prefs.print_config != *self.session.print_config() {
             self.prefs.print_config = self.session.print_config().clone();
+        }
+        if self.prefs.presets != *self.session.presets() {
+            self.prefs.presets = self.session.presets().clone();
         }
         let lift = self.session.scene.lift_height();
         if self.prefs.lift_height != lift {

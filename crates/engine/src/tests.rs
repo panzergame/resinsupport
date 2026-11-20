@@ -530,6 +530,13 @@ fn hostile_params_never_panic() {
         json!({ "id": 1, "text": "x".repeat(100_000), "side": "up", "size": 1e308, "depth": -1, "margin": 1e308 }),
         json!({ "id": 1, "text": ["a"], "side": 3, "size": "5", "depth": null, "margin": "1" }),
         json!({ "id": 1, "text": "\u{0}\r\u{1b}", "side": null, "size": 0, "depth": 1e-300, "margin": -0.0 }),
+        json!({ "id": 1, "name": 1, "preset": [] }),
+        json!({ "id": u64::MAX, "name": "x".repeat(100_000), "preset": "\u{0}" }),
+        json!({ "name": "", "preset": "", "size": 5 }),
+        json!({ "name": null, "preset": null }),
+        json!({ "name": "Slab", "to": 1 }),
+        json!({ "name": "\u{0}", "to": "x".repeat(100_000) }),
+        json!({ "name": [], "to": "" }),
     ];
     for spec in commands() {
         for params in &junk {
@@ -948,6 +955,7 @@ fn fixture(dir: &std::path::Path) -> Fixture {
     let made = s.execute("support.add_braces", &json!({ "ids": braced })).unwrap();
     assert_eq!(made["ids"].as_array().map(Vec::len), Some(1), "{made}");
     s.execute("model.label", &json!({ "id": slab })).unwrap();
+    s.execute("label.preset.save", &json!({ "id": slab, "name": "Slab" })).unwrap();
     s.execute("model.select", &json!({ "ids": [a] })).unwrap();
     s.execute("support.select", &json!({ "ids": [tip] })).unwrap();
     // Something for `edit.paste` to paste.
@@ -970,6 +978,10 @@ fn sample(id: &str, f: &Fixture) -> Option<Option<Value>> {
         "file.import_stl" => Some(json!({ "path": f.path, "fit": false, "arrange": true })),
         "file.open" => None,
         "file.save" => Some(json!({ "path": f.project.with_file_name("saved.rsup") })),
+        "label.preset.delete" => Some(json!({ "name": "slab" })),
+        "label.preset.list" => Some(json!({})),
+        "label.preset.rename" => Some(json!({ "name": "slab", "to": "Raft" })),
+        "label.preset.save" => Some(json!({ "id": f.labelled, "name": "Other" })),
         "model.arrange" => Some(json!({})),
         "model.delete" => Some(json!({ "id": a })),
         "model.label" => Some(json!({ "id": b, "text": "B\n2", "side": "left", "size": 4, "margin": 2 })),
@@ -1029,6 +1041,11 @@ fn every_scene_change_is_undoable() {
         let after = fingerprint(s);
         if content(s) == changed_from {
             assert_eq!(s.undo_depth(), depth, "{} changed nothing in the scene but made an undo step", spec.id);
+            continue;
+        }
+        if spec.across_history {
+            // Its own tests check the history follows it (`label_presets_are_saved_…`).
+            assert_eq!(s.undo_depth(), depth, "{} reaches across the history, so it makes no step", spec.id);
             continue;
         }
         assert!(spec.undoable, "{} changes the scene but is noundo", spec.id);
@@ -1125,7 +1142,7 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     assert_eq!(s.undo_depth(), depth + 1);
     s.execute("model.label", &json!({ "side": "back", "size": 6, "margin": 1.8 })).unwrap();
     s.execute("model.label", &json!({ "text": "A\n1" })).unwrap();
-    let want = resin_geom::Label { text: "A\n1".into(), side: resin_geom::LabelSide::Back, size: 6.0, depth: 0.5, margin: 1.8 };
+    let want = resin_geom::Label { text: "A\n1".into(), side: resin_geom::LabelSide::Back, size: 6.0, depth: 0.5, margin: 1.8, preset: None };
     assert_eq!(label(&s, a), Some(want.clone()), "what is left out is kept");
     let depth = s.undo_depth();
     s.execute("model.label", &json!({ "size": 6 })).unwrap();
@@ -1178,6 +1195,123 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     assert_eq!(s.undo_depth(), depth + 1, "nothing to take away is no step");
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(label(&s, copy), Some(want));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Label presets: saved from a model's label, applied to another, its settings followed live by
+/// every model of the scene using it; deleted, the models keep a copy and come back with a new
+/// preset of the name; renamed, they follow the new name. Saving, renaming and deleting are no
+/// undo step, and no undo takes back what they did to the labels. The presets are never an undo step; the models' labels are.
+#[test]
+fn label_presets_are_saved_applied_followed_and_deleted() {
+    let dir = temp_dir("label-presets");
+    let f = fixture(&dir);
+    let (mut s, a, b, slab) = (f.session, f.a, f.b, f.labelled);
+    let label = |s: &Session, id: u64| s.scene.model(id).unwrap().label.clone();
+    let names = |s: &Session| s.presets().label.presets().iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&s), ["Slab"], "the fixture's");
+    assert!(s.execute("label.preset.save", &json!({ "id": a, "name": "Cal" })).is_err(), "a has no label");
+    assert!(s.execute("label.preset.save", &json!({ "id": slab, "name": "SLAB" })).is_err(), "names are unique ignoring case");
+    assert!(s.execute("label.preset.save", &json!({ "id": slab, "name": " Cal" })).is_err());
+    assert!(s.execute("label.preset.save", &json!({ "id": slab, "name": "" })).is_err());
+    assert!(s.execute("model.label", &json!({ "id": a, "preset": "nope" })).is_err());
+    assert_eq!(label(&s, a), None, "a refused preset changes nothing");
+
+    s.execute("model.label", &json!({ "id": a, "text": "A0", "size": 4, "side": "left" })).unwrap();
+    s.execute("model.label", &json!({ "id": a, "text": "A" })).unwrap();
+    let depth = s.undo_depth();
+    let r = s.execute("label.preset.save", &json!({ "id": a, "name": "Cal" })).unwrap();
+    assert_eq!(r["preset"], json!({ "name": "Cal", "side": "left", "size": 4.0, "depth": 0.5, "margin": 1.0 }));
+    assert_eq!(label(&s, a).unwrap().preset.as_deref(), Some("Cal"), "the label follows it");
+    assert_eq!(s.undo_depth(), depth, "saving is no step, nor is the link");
+    // The link reaches the history wherever the label had these settings: undoing the text keeps it.
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((label(&s, a).unwrap().text.as_str(), label(&s, a).unwrap().preset.as_deref()), ("A0", Some("Cal")));
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!((label(&s, a).unwrap().text.as_str(), label(&s, a).unwrap().preset.as_deref()), ("A", Some("Cal")));
+    assert_eq!(names(&s), ["Cal", "Slab"], "sorted");
+    assert_eq!(s.execute("label.preset.list", &json!({})).unwrap()["presets"][0]["size"], json!(4.0));
+
+    // Applied to b, which gets a label with its number, the preset's settings and its own text.
+    s.execute("model.label", &json!({ "id": b, "preset": "cal" })).unwrap();
+    let lb = label(&s, b).unwrap();
+    assert_eq!((lb.text.as_str(), lb.side, lb.size, lb.preset.as_deref()), ("2", resin_geom::LabelSide::Left, 4.0, Some("Cal")));
+
+    // Edited through b: the preset and a follow, in the same step; the slab, on another preset, does not.
+    let slab_before = label(&s, slab);
+    let depth = s.undo_depth();
+    let r = s.execute("model.label", &json!({ "id": b, "size": 6, "depth": 1 })).unwrap();
+    assert_eq!(r["followers"], json!([a]));
+    assert_eq!(s.undo_depth(), depth + 1);
+    assert_eq!((label(&s, a).unwrap().size, label(&s, a).unwrap().depth, label(&s, a).unwrap().text), (6.0, 1.0, "A".into()));
+    assert_eq!(s.presets().label.find("Cal").map(|p| (p.settings.size, p.settings.depth)), Some((6.0, 1.0)));
+    assert_eq!(label(&s, slab), slab_before);
+    // Text is the model's own; setting a preset's value again is no step.
+    let depth = s.undo_depth();
+    let r = s.execute("model.label", &json!({ "id": b, "text": "B" })).unwrap();
+    assert_eq!((r["followers"].clone(), label(&s, a).unwrap().text), (json!([]), "A".into()));
+    s.execute("model.label", &json!({ "id": b, "size": 6 })).unwrap();
+    assert_eq!(s.undo_depth(), depth + 1);
+
+    // Undone, the models go back; the preset, the user's own, stays. The next edit of a setting
+    // makes the preset the label's settings again.
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(label(&s, a).unwrap().size, 4.0);
+    assert_eq!(s.presets().label.find("Cal").map(|p| p.settings.size), Some(6.0));
+    s.execute("model.label", &json!({ "id": a, "margin": 2 })).unwrap();
+    assert_eq!(s.presets().label.find("Cal").map(|p| (p.settings.size, p.settings.margin)), Some((4.0, 2.0)));
+    assert_eq!(label(&s, b).unwrap().margin, 2.0, "b follows");
+    // Unlinked, b changes alone.
+    s.execute("model.label", &json!({ "id": b, "preset": null, "size": 9 })).unwrap();
+    assert_eq!((label(&s, a).unwrap().size, label(&s, b).unwrap().preset), (4.0, None));
+
+    // Deleted: the labels keep their settings and the name; a preset of the name takes them back.
+    let depth = s.undo_depth();
+    s.execute("label.preset.delete", &json!({ "name": "CAL" })).unwrap();
+    assert_eq!((names(&s), s.undo_depth()), (vec!["Slab".to_string()], depth), "no step");
+    assert!(s.execute("label.preset.delete", &json!({ "name": "Cal" })).is_err());
+    let la = label(&s, a).unwrap();
+    assert_eq!((la.size, la.preset.as_deref()), (4.0, Some("Cal")));
+    let r = s.execute("model.label", &json!({ "id": a, "size": 5 })).unwrap();
+    assert_eq!(r["followers"], json!([]), "no preset of the name, nothing follows");
+    s.execute("label.preset.save", &json!({ "id": a, "name": "Cal" })).unwrap();
+    s.execute("model.label", &json!({ "id": a, "size": 3 })).unwrap();
+    assert_eq!(s.presets().label.find("Cal").map(|p| p.settings.size), Some(3.0));
+
+    // Renamed: every label following it follows the new name, with no step; another preset's name
+    // is refused, a change of case is not. The history follows the new name too: no undo or redo
+    // brings the old one back.
+    s.execute("model.label", &json!({ "id": b, "preset": "Cal" })).unwrap();
+    assert!(s.execute("label.preset.rename", &json!({ "name": "Cal", "to": "slab" })).is_err());
+    assert!(s.execute("label.preset.rename", &json!({ "name": "Nope", "to": "Other" })).is_err());
+    let depth = s.undo_depth();
+    let r = s.execute("label.preset.rename", &json!({ "name": "cal", "to": "Calibration" })).unwrap();
+    assert_eq!((r["relinked"].clone(), s.undo_depth()), (json!([a, b]), depth));
+    assert_eq!(names(&s), ["Calibration", "Slab"]);
+    assert_eq!((label(&s, a).unwrap().preset.as_deref(), label(&s, a).unwrap().size), (Some("Calibration"), 3.0));
+    let r = s.execute("label.preset.rename", &json!({ "name": "Calibration", "to": "CALIBRATION" })).unwrap();
+    assert_eq!((r["preset"]["name"].clone(), s.undo_depth()), (json!("CALIBRATION"), depth));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(
+        (label(&s, a).unwrap().preset.as_deref(), label(&s, b).unwrap().preset),
+        (Some("CALIBRATION"), None),
+        "b's link undone, a's name kept"
+    );
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(label(&s, a).unwrap().preset.as_deref(), Some("CALIBRATION"), "further back too");
+    s.execute("edit.redo", &json!({})).unwrap();
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert_eq!(label(&s, b).unwrap().preset.as_deref(), Some("CALIBRATION"), "and forward");
+    s.execute("label.preset.rename", &json!({ "name": "Calibration", "to": "Cal" })).unwrap();
+    assert_eq!(s.execute("model.label", &json!({ "id": a, "size": 3.5 })).unwrap()["followers"], json!([b]), "followed");
+
+    // A copy and a saved project follow it by name.
+    let path = dir.join("presets.rsup");
+    s.execute("file.save", &json!({ "path": path })).unwrap();
+    let mut t = Session::new();
+    t.execute("file.open", &json!({ "path": path })).unwrap();
+    assert_eq!(t.scene.models().iter().filter_map(|m| m.label.as_ref()?.preset.clone()).collect::<Vec<_>>(), ["Cal", "Cal", "Slab"]);
     std::fs::remove_dir_all(dir).ok();
 }
 

@@ -102,7 +102,7 @@ mod tests {
         p.raft.edge = RaftEdge::Straight;
         (p.raft.rim_height, p.raft.rim_width) = (1.0, 1.0);
         let feet = [foot(0.0, 0.0), foot(10.0, 3.0)];
-        let label = resin_geom::Label { text: "7".into(), side: resin_geom::LabelSide::Front, size: 5.0, depth: 0.5, margin: 1.5 };
+        let label = resin_geom::Label { text: "7".into(), side: resin_geom::LabelSide::Front, size: 5.0, depth: 0.5, margin: 1.5, preset: None };
         // The foot farthest to the front is (0, 0): the label is centred on it.
         let sites = [(label, vec![[0.0, 0.0], [10.0, 3.0]])];
         let bare = Mesh::new(raft_triangles(&feet, &[], &p));

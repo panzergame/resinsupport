@@ -9,7 +9,7 @@ The layout and much of the wording are adapted from SolidCraft's `skills/` (MIT 
 | [`resinsupport-ground-rules`](resinsupport-ground-rules/SKILL.md) | adds a dependency, asset or wording, or ports code: independence, licences, SolidCraft ports, attribution, units |
 | [`resinsupport-crash-safety`](resinsupport-crash-safety/SKILL.md) | writes non-test Rust, handles hostile input or investigates a crash |
 | [`resinsupport-commands`](resinsupport-commands/SKILL.md) | adds a command or decides which crate code belongs in |
-| [`resinsupport-ui`](resinsupport-ui/SKILL.md) | adds a dialog, ribbon button, panel, camera input, gizmo, icon or colour |
+| [`resinsupport-ui`](resinsupport-ui/SKILL.md) | adds a dialog, ribbon button, panel, camera input, gizmo, icon or colour, or gives a card presets |
 | [`resinsupport-ui-text`](resinsupport-ui-text/SKILL.md) | adds a label, message or language |
 | [`resinsupport-preferences`](resinsupport-preferences/SKILL.md) | adds a setting or changes a default |
 | [`resinsupport-tests`](resinsupport-tests/SKILL.md) | places or runs tests |

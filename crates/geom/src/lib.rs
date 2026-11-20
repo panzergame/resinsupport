@@ -9,6 +9,7 @@ mod distance;
 mod field2d;
 mod label;
 mod mesh;
+mod preset;
 mod raft;
 mod ray;
 mod solid;
@@ -27,6 +28,7 @@ pub use label::{
     LabelSide, MAX_LABEL_CHARS, MAX_LABEL_LINES,
 };
 pub use mesh::{Mesh, RayHit};
+pub use preset::{MAX_PRESET_NAME, check_preset_name, same_preset_name};
 pub use raft::{RaftProfile, raft_solid};
 pub use solid::{ShadedVertex, frustum, smooth_shaded};
 pub use sphere::{ray_capsule, ray_sphere, unit_sphere};
