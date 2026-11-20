@@ -44,6 +44,14 @@ use crate::theme::Tokens;
 use crate::theme::metrics::*;
 use crate::{i18n, icons};
 
+/// Names a control for the design capture (`crate::design_capture`), which builds the design
+/// file's components from what each control painted. Nothing outside tests.
+#[cfg(not(test))]
+#[inline(always)]
+pub(crate) fn mark(_layer: egui::LayerId, _kind: &'static str, _rect: Rect, _label: &str) {}
+#[cfg(test)]
+pub(crate) use crate::design_capture::mark;
+
 /// What the user did with a card this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -127,7 +135,7 @@ impl Card<'_> {
             Placement::Anchored(corner, offset) => window.anchor(corner, offset),
             Placement::Placed(corner, offset) => window.pivot(corner).default_pos(corner.pos_in_rect(&room) + offset),
         };
-        window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).show(ctx, |ui| {
+        let shown = window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).show(ctx, |ui| {
             ui.set_width(self.width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             if header(ui, t, self.icon, self.title, self.buttons != Buttons::None) {
@@ -155,6 +163,9 @@ impl Card<'_> {
                 }
             }
         });
+        if let Some(shown) = &shown {
+            mark(shown.response.layer_id, "card", shown.response.rect, self.title);
+        }
         // Read after the body: an Enter that ends typing in a field has already set its value.
         let enter_ok = matches!(self.buttons, Buttons::OkCancel { ok_enabled: true } | Buttons::Close);
         ctx.input(|i| {
@@ -191,6 +202,7 @@ fn card_frame(t: &Tokens) -> egui::Frame {
 /// tooltip), a 26 pt close target (when `closable`) and a rule under it. Whether close was clicked.
 fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, closable: bool) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), FORM_HEADER_HEIGHT), Sense::hover());
+    mark(ui.layer_id(), "card_header", rect, title);
     let icon_rect =
         Rect::from_center_size(pos2(rect.left() + SPACE_12 + FORM_ICON_SIZE / 2.0, rect.center().y), vec2(FORM_ICON_SIZE, FORM_ICON_SIZE));
     if icon.is_empty() {
@@ -217,6 +229,7 @@ fn header(ui: &mut Ui, t: &Tokens, icon: &str, title: &str, closable: bool) -> b
 fn close_button(ui: &mut Ui, t: &Tokens, at: Pos2) -> bool {
     let close_rect = Rect::from_center_size(at, vec2(FORM_CLOSE_SIZE, FORM_CLOSE_SIZE));
     let close = ui.interact(close_rect, ui.id().with("close"), Sense::click());
+    mark(ui.layer_id(), "close_button", close_rect, "");
     if close.hovered() {
         ui.painter().rect_filled(close_rect, RADIUS_SM, t.hover);
     }
@@ -228,6 +241,7 @@ fn close_button(ui: &mut Ui, t: &Tokens, at: Pos2) -> bool {
 /// right-aligned with 10 pt above and below and 12 pt at the sides; Restore defaults on the left.
 fn footer(ui: &mut Ui, t: &Tokens, buttons: Buttons) -> Action {
     let (band, _) = ui.allocate_exact_size(vec2(ui.available_width(), FORM_FOOTER_HEIGHT), Sense::hover());
+    mark(ui.layer_id(), "card_footer", band, "");
     let r = RADIUS_XL.saturating_sub(1);
     ui.painter().rect_filled(band, CornerRadius { nw: 0, ne: 0, sw: r, se: r }, t.dialog_footer);
     ui.painter().hline(band.x_range(), band.top() + 0.5, Stroke::new(1.0, t.dialog_rule));
@@ -269,6 +283,7 @@ fn footer(ui: &mut Ui, t: &Tokens, buttons: Buttons) -> Action {
 /// One OK or Cancel button: OK filled with the accent, Cancel outlined.
 fn action_button(ui: &mut Ui, t: &Tokens, rect: Rect, label: &str, primary: bool, enabled: bool) -> Response {
     let response = ui.interact(rect, ui.id().with(("action", label)), if enabled { Sense::click() } else { Sense::hover() });
+    mark(ui.layer_id(), if primary { "primary_button" } else { "secondary_button" }, rect, label);
     let hot = enabled && response.hovered();
     let (fill, stroke, ink) = if primary && enabled {
         (if hot { t.form_primary.gamma_multiply(0.85) } else { t.form_primary }, Stroke::NONE, t.on_accent)
@@ -285,7 +300,9 @@ fn action_button(ui: &mut Ui, t: &Tokens, rect: Rect, label: &str, primary: bool
 
 /// A text button in the form's style, `CONTROL_HEIGHT` tall.
 pub fn button(ui: &mut Ui, label: &str) -> Response {
-    ui.add(egui::Button::new(label).min_size(vec2(0.0, CONTROL_HEIGHT)))
+    let response = ui.add(egui::Button::new(label).min_size(vec2(0.0, CONTROL_HEIGHT)));
+    mark(ui.layer_id(), "button", response.rect, label);
+    response
 }
 
 /// An icon action, `CONTROL_HEIGHT` square, beside a row's control: filled when hovered, `tip` on
@@ -293,6 +310,7 @@ pub fn button(ui: &mut Ui, label: &str) -> Response {
 pub fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tip: &str, enabled: bool) -> Response {
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(vec2(CONTROL_HEIGHT, CONTROL_HEIGHT), sense);
+    mark(ui.layer_id(), "icon_button", rect, tip);
     if enabled && response.hovered() {
         ui.painter().rect_filled(rect, CONTROL_RADIUS, t.hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -309,6 +327,7 @@ pub fn page_list(ui: &mut Ui, t: &Tokens, selected: &mut usize, pages: &[(&str, 
     ui.spacing_mut().item_spacing.y = SPACE_2;
     for (index, (title, icon)) in pages.iter().enumerate() {
         let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT + SPACE_4), Sense::click());
+        mark(ui.layer_id(), "page", rect, title);
         if response.clicked() {
             *selected = index;
             clicked = true;

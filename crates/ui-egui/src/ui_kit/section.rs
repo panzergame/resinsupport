@@ -21,6 +21,7 @@ pub fn section<R>(ui: &mut Ui, t: &Tokens, id: impl egui::AsIdSalt, title: &str,
     let id = ui.make_persistent_id(id);
     let mut open = ui.ctx().data_mut(|d| d.get_persisted::<bool>(id)).unwrap_or(default_open);
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::click());
+    super::mark(ui.layer_id(), "section", rect, title);
     if response.hovered() || response.has_focus() {
         ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), RADIUS_SM, t.hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

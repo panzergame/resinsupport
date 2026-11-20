@@ -1,6 +1,8 @@
 //! Colour tokens. Every colour the UI or the viewport uses comes from here, so a theme is one
 //! place to change. The chrome's colours, sizes and egui style (`ui_*` fields, [`metrics`],
-//! [`apply`]) are SolidCraft's.
+//! [`apply`]) are SolidCraft's. The design file (`design/resinsupport.figcraft`) owns the values
+//! between `design-tokens` markers: `cargo xtask design-pull` writes them, and a hand edit there
+//! fails `cargo xtask ci`.
 //!
 //! Chrome values and `visuals`/`apply` ported from SolidCraft (MIT OR Apache-2.0),
 //! assets/styles/ui/palettes.rs and crates/ui-egui/src/theme.rs at 4bdffef0; `dialog_label`,
@@ -12,6 +14,7 @@ use resin_engine::render::OverlayStyle;
 
 /// Chrome dimensions, in points: the same in both themes.
 pub mod metrics {
+    // design-tokens: Metrics (values from design/tokens.json: edit the design file, then `cargo xtask design-pull`)
     pub const SPACE_2: f32 = 2.0;
     pub const SPACE_3: f32 = 3.0;
     pub const SPACE_4: f32 = 4.0;
@@ -50,6 +53,7 @@ pub mod metrics {
     pub const FORM_CLOSE_SIZE: f32 = 26.0;
     /// A text field's text, from its left and right edges.
     pub const FORM_INSET: f32 = 9.0;
+    // design-tokens: end
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,38 +152,40 @@ impl Tokens {
                 gizmo_hot: Color32::from_rgb(0xff, 0xd2, 0x4a),
                 gizmo_ball: Color32::from_gray(235),
                 gizmo_ball_edge: Color32::from_gray(60),
-                text_dim: Color32::from_rgb(148, 155, 168),
-                error: Color32::from_rgb(240, 100, 96),
-                warning: Color32::from_rgb(236, 170, 70),
-                backdrop: Color32::from_black_alpha(120),
                 dark: true,
-                panel: Color32::from_rgb(39, 43, 52),
-                panel_header: Color32::from_rgb(47, 52, 62),
-                border: Color32::from_rgb(63, 69, 82),
-                text: Color32::from_rgb(222, 226, 232),
-                accent: Color32::from_rgb(58, 136, 238),
-                accent_soft: Color32::from_rgb(42, 70, 110),
-                selected_ink: Color32::from_rgb(156, 199, 245),
-                selected_bg: Color32::from_rgb(42, 70, 110),
-                hover: Color32::from_rgb(54, 61, 74),
-                field: Color32::from_rgb(30, 34, 41),
-                control_fill: Color32::from_rgb(28, 31, 38),
-                control_border: Color32::from_rgb(74, 82, 98),
-                on_accent: Color32::WHITE,
-                dialog_body: Color32::from_rgb(39, 43, 52),
-                dialog_footer: Color32::from_rgb(47, 52, 62),
-                dialog_rule: Color32::from_rgb(53, 59, 71),
-                dialog_border: Color32::from_rgb(63, 69, 82),
-                form_ink: Color32::from_rgb(222, 226, 232),
-                form_dim: Color32::from_rgb(180, 187, 200),
-                form_primary: Color32::from_rgb(58, 136, 238),
-                form_primary_fill: Color32::from_rgb(58, 136, 238),
-                dialog_label: Color32::from_rgb(222, 226, 232),
-                app_bar: Color32::from_rgb(28, 31, 38),
-                app_bar_text: Color32::from_rgb(230, 234, 242),
-                app_bar_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
-                app_bar_hover_button: Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                toolbar: Color32::from_rgb(39, 43, 52),
+                // design-tokens: Colour/Dark (values from design/tokens.json: edit the design file, then `cargo xtask design-pull`)
+                text_dim: Color32::from_rgb(0x94, 0x9b, 0xa8),
+                error: Color32::from_rgb(0xf0, 0x64, 0x60),
+                warning: Color32::from_rgb(0xec, 0xaa, 0x46),
+                backdrop: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x78),
+                panel: Color32::from_rgb(0x27, 0x2b, 0x34),
+                panel_header: Color32::from_rgb(0x2f, 0x34, 0x3e),
+                border: Color32::from_rgb(0x3f, 0x45, 0x52),
+                text: Color32::from_rgb(0xde, 0xe2, 0xe8),
+                accent: Color32::from_rgb(0x3a, 0x88, 0xee),
+                accent_soft: Color32::from_rgb(0x2a, 0x46, 0x6e),
+                selected_ink: Color32::from_rgb(0x9c, 0xc7, 0xf5),
+                selected_bg: Color32::from_rgb(0x2a, 0x46, 0x6e),
+                hover: Color32::from_rgb(0x36, 0x3d, 0x4a),
+                field: Color32::from_rgb(0x1e, 0x22, 0x29),
+                control_fill: Color32::from_rgb(0x1c, 0x1f, 0x26),
+                control_border: Color32::from_rgb(0x4a, 0x52, 0x62),
+                on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
+                dialog_body: Color32::from_rgb(0x27, 0x2b, 0x34),
+                dialog_footer: Color32::from_rgb(0x2f, 0x34, 0x3e),
+                dialog_rule: Color32::from_rgb(0x35, 0x3b, 0x47),
+                dialog_border: Color32::from_rgb(0x3f, 0x45, 0x52),
+                form_ink: Color32::from_rgb(0xde, 0xe2, 0xe8),
+                form_dim: Color32::from_rgb(0xb4, 0xbb, 0xc8),
+                form_primary: Color32::from_rgb(0x3a, 0x88, 0xee),
+                form_primary_fill: Color32::from_rgb(0x3a, 0x88, 0xee),
+                dialog_label: Color32::from_rgb(0xde, 0xe2, 0xe8),
+                app_bar: Color32::from_rgb(0x1c, 0x1f, 0x26),
+                app_bar_text: Color32::from_rgb(0xe6, 0xea, 0xf2),
+                app_bar_hover: Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 0x1c),
+                app_bar_hover_button: Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 0x1e),
+                toolbar: Color32::from_rgb(0x27, 0x2b, 0x34),
+                // design-tokens: end
             }
         } else {
             Tokens {
@@ -204,38 +210,40 @@ impl Tokens {
                 gizmo_hot: Color32::from_rgb(0xe0, 0xa0, 0x00),
                 gizmo_ball: Color32::from_gray(250),
                 gizmo_ball_edge: Color32::from_gray(50),
-                text_dim: Color32::from_rgb(110, 116, 128),
-                error: Color32::from_rgb(214, 54, 54),
-                warning: Color32::from_rgb(222, 150, 30),
-                backdrop: Color32::from_black_alpha(80),
                 dark: false,
-                panel: Color32::from_rgb(250, 251, 252),
-                panel_header: Color32::from_rgb(236, 238, 242),
-                border: Color32::from_rgb(208, 212, 220),
-                text: Color32::from_rgb(38, 42, 50),
-                accent: Color32::from_rgb(38, 120, 218),
-                accent_soft: Color32::from_rgb(214, 230, 250),
-                selected_ink: Color32::from_rgb(26, 80, 127),
-                selected_bg: Color32::from_rgb(232, 241, 250),
-                hover: Color32::from_rgb(226, 234, 246),
-                field: Color32::WHITE,
-                control_fill: Color32::WHITE,
-                control_border: Color32::from_rgb(195, 203, 214),
-                on_accent: Color32::WHITE,
-                dialog_body: Color32::WHITE,
-                dialog_footer: Color32::from_rgb(244, 246, 249),
-                dialog_rule: Color32::from_rgb(230, 234, 240),
-                dialog_border: Color32::from_rgb(213, 219, 227),
-                form_ink: Color32::from_rgb(27, 36, 48),
-                form_dim: Color32::from_rgb(74, 88, 104),
-                form_primary: Color32::from_rgb(35, 110, 173),
-                form_primary_fill: Color32::from_rgb(35, 110, 173),
-                dialog_label: Color32::from_rgb(58, 70, 86),
-                app_bar: Color32::from_rgb(52, 56, 64),
-                app_bar_text: Color32::from_rgb(230, 234, 242),
-                app_bar_hover: Color32::from_rgba_unmultiplied(255, 255, 255, 28),
-                app_bar_hover_button: Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                toolbar: Color32::from_rgb(246, 247, 249),
+                // design-tokens: Colour/Light (values from design/tokens.json: edit the design file, then `cargo xtask design-pull`)
+                text_dim: Color32::from_rgb(0x6e, 0x74, 0x80),
+                error: Color32::from_rgb(0xd6, 0x36, 0x36),
+                warning: Color32::from_rgb(0xde, 0x96, 0x1e),
+                backdrop: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x50),
+                panel: Color32::from_rgb(0xfa, 0xfb, 0xfc),
+                panel_header: Color32::from_rgb(0xec, 0xee, 0xf2),
+                border: Color32::from_rgb(0xd0, 0xd4, 0xdc),
+                text: Color32::from_rgb(0x26, 0x2a, 0x32),
+                accent: Color32::from_rgb(0x26, 0x78, 0xda),
+                accent_soft: Color32::from_rgb(0xd6, 0xe6, 0xfa),
+                selected_ink: Color32::from_rgb(0x1a, 0x50, 0x7f),
+                selected_bg: Color32::from_rgb(0xe8, 0xf1, 0xfa),
+                hover: Color32::from_rgb(0xe2, 0xea, 0xf6),
+                field: Color32::from_rgb(0xff, 0xff, 0xff),
+                control_fill: Color32::from_rgb(0xff, 0xff, 0xff),
+                control_border: Color32::from_rgb(0xc3, 0xcb, 0xd6),
+                on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
+                dialog_body: Color32::from_rgb(0xff, 0xff, 0xff),
+                dialog_footer: Color32::from_rgb(0xf4, 0xf6, 0xf9),
+                dialog_rule: Color32::from_rgb(0xe6, 0xea, 0xf0),
+                dialog_border: Color32::from_rgb(0xd5, 0xdb, 0xe3),
+                form_ink: Color32::from_rgb(0x1b, 0x24, 0x30),
+                form_dim: Color32::from_rgb(0x4a, 0x58, 0x68),
+                form_primary: Color32::from_rgb(0x23, 0x6e, 0xad),
+                form_primary_fill: Color32::from_rgb(0x23, 0x6e, 0xad),
+                dialog_label: Color32::from_rgb(0x3a, 0x46, 0x56),
+                app_bar: Color32::from_rgb(0x34, 0x38, 0x40),
+                app_bar_text: Color32::from_rgb(0xe6, 0xea, 0xf2),
+                app_bar_hover: Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 0x1c),
+                app_bar_hover_button: Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 0x1e),
+                toolbar: Color32::from_rgb(0xf6, 0xf7, 0xf9),
+                // design-tokens: end
             }
         }
     }

@@ -13,6 +13,7 @@ use crate::theme::metrics::*;
 pub fn progress(ui: &mut Ui, t: &Tokens, fraction: f32) -> Response {
     let fraction = if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 0.0 };
     let (bar, response) = ui.allocate_exact_size(vec2(ui.available_width().max(0.0), SPACE_6), egui::Sense::hover());
+    super::mark(ui.layer_id(), "progress", bar, "");
     ui.painter().rect_filled(bar, SPACE_3, t.dialog_rule);
     if fraction > 0.0 {
         ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, vec2(bar.width() * fraction, bar.height())), SPACE_3, t.form_primary);

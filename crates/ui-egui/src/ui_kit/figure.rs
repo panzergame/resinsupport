@@ -78,6 +78,7 @@ pub fn figure_rows(
     let stack = rows.iter().map(FigureRow::height).sum::<f32>() + rows.len().saturating_sub(1) as f32 * SPACE_4;
     let height = stack.max(CONTROL_HEIGHT * 4.0).max(min_height);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    super::mark(ui.layer_id(), "figure", rect, id);
     let figure = Rect::from_min_size(rect.min, vec2((FORM_LABEL_WIDTH * 1.4).min(width * 0.45), height));
     let left = (figure.right() + SPACE_12).min(rect.right());
     let mut changed = false;

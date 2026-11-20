@@ -39,7 +39,9 @@ pub fn parse_number(text: &str) -> Option<f64> {
 pub fn number_field<T: Numeric>(ui: &mut Ui, value: &mut T, range: RangeInclusive<T>, speed: f64, suffix: &str, decimals: usize) -> Response {
     let mut drag = egui::DragValue::new(value).range(range).speed(speed).suffix(suffix).custom_parser(parse_number);
     drag = if T::INTEGRAL { drag.fixed_decimals(0) } else { drag.max_decimals(decimals) };
-    ui.add_sized([ui.available_width().max(0.0), CONTROL_HEIGHT], drag)
+    let response = ui.add_sized([ui.available_width().max(0.0), CONTROL_HEIGHT], drag);
+    super::mark(ui.layer_id(), "number_field", response.rect, "");
+    response
 }
 
 /// Equal number fields sharing the control column, gaps included; each field's response in order.
@@ -70,7 +72,9 @@ pub fn number_fields<T: Numeric>(
 /// A one-line text field across the control column, at most `limit` characters.
 pub fn text_field(ui: &mut Ui, t: &Tokens, value: &mut String, hint: &str, limit: usize) -> Response {
     let edit = text_input(egui::TextEdit::singleline(value)).hint_text(hint).char_limit(limit).background_color(t.field).clip_text(true);
-    ui.add_sized([ui.available_width().max(0.0), CONTROL_HEIGHT], edit)
+    let response = ui.add_sized([ui.available_width().max(0.0), CONTROL_HEIGHT], edit);
+    super::mark(ui.layer_id(), "text_field", response.rect, hint);
+    response
 }
 
 /// A three-line text row: `label` in the label column, the field in the control column.
@@ -78,7 +82,9 @@ pub fn multiline_text_field(ui: &mut Ui, t: &Tokens, label: &str, value: &mut St
     let height = CONTROL_HEIGHT * 3.0;
     sized_row(ui, t, label, height, |ui| {
         let edit = egui::TextEdit::multiline(value).margin(vec2(FORM_INSET, SPACE_6)).desired_rows(3).background_color(t.field);
-        ui.add_sized([ui.available_width().max(0.0), height], edit)
+        let response = ui.add_sized([ui.available_width().max(0.0), height], edit);
+        super::mark(ui.layer_id(), "multiline_text_field", response.rect, "");
+        response
     })
 }
 
@@ -102,6 +108,7 @@ pub fn dropdown_menu(ui: &mut Ui, t: &Tokens, id: impl std::hash::Hash + std::fm
         .icon(dropdown_arrow(*t))
         .show_ui(ui, add);
     let response = popup.response;
+    super::mark(ui.layer_id(), "dropdown", response.rect, current);
     if popup.inner.is_some() && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         response.request_focus();
     }
@@ -110,7 +117,9 @@ pub fn dropdown_menu(ui: &mut Ui, t: &Tokens, id: impl std::hash::Hash + std::fm
 
 /// One entry of a [`dropdown_menu`], highlighted when `selected`.
 pub fn dropdown_item(ui: &mut Ui, selected: bool, label: &str) -> Response {
-    ui.selectable_label(selected, label)
+    let response = ui.selectable_label(selected, label);
+    super::mark(ui.layer_id(), "dropdown_item", response.rect, label);
+    response
 }
 
 /// A drop-down of `options` (already translated), `selected` their index.
@@ -227,6 +236,7 @@ pub fn slider<T: Numeric>(ui: &mut Ui, t: &Tokens, value: &mut T, range: RangeIn
         ui.painter().rect_filled(track, CONTROL_RADIUS, t.dialog_rule);
         ui.painter().rect_filled(egui::Rect::from_min_max(track.min, egui::pos2(center.x, track.bottom())), CONTROL_RADIUS, t.form_primary);
         ui.painter().circle(center, SPACE_8, t.control_fill, egui::Stroke::new(SPACE_2, t.form_primary));
+        super::mark(ui.layer_id(), "slider", ui.min_rect(), "");
         response
     })
     .inner

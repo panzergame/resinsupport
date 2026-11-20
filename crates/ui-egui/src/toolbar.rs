@@ -217,6 +217,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
     let frame = egui::Frame::NONE.fill(t.app_bar);
     egui::Panel::top("app_bar").exact_size(APP_BAR_HEIGHT).resizable(false).show_separator_line(false).frame(frame).show(ui, |ui| {
         let r = ui.max_rect();
+        ui_kit::mark(ui.layer_id(), "app_bar", r, "");
         let left = r.left();
         // Brand mark and name.
         ui.painter().circle_filled(pos2(left + 20.0, r.center().y), 7.0, t.accent);
@@ -224,6 +225,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
         let mut x = left + 148.0;
         let home = Rect::from_center_size(pos2(x - 4.0, r.center().y), vec2(32.0, 32.0));
         let resp = ui.interact(home, ui.id().with("appbar_home"), Sense::click());
+        ui_kit::mark(ui.layer_id(), "app_bar_button", home, "home");
         if resp.hovered() {
             ui.painter().rect_filled(home.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
         }
@@ -238,6 +240,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
         let galley = ui.painter().layout_no_wrap(i18n::tr("appbar.file").into(), FontId::proportional(FONT_BUTTON), t.app_bar_text);
         let fr = Rect::from_min_size(pos2(x - 13.0, r.center().y - 13.0), vec2(galley.size().x + 16.0, 26.0));
         let file = ui.interact(fr, ui.id().with("appbar_file"), Sense::click());
+        ui_kit::mark(ui.layer_id(), "app_bar_menu", fr, i18n::tr("appbar.file"));
         let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&file));
         if file.hovered() || open {
             ui.painter().rect_filled(fr, RADIUS_SM, t.app_bar_hover);
@@ -251,6 +254,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             let (icon, tip) = history_button(app, ui.ctx(), forward);
             let enabled = history_step(app, forward).is_some();
             let resp = ui.interact(b, ui.id().with(icon), if enabled { Sense::click() } else { Sense::hover() });
+            ui_kit::mark(ui.layer_id(), "app_bar_button", b, icon);
             if enabled && resp.hovered() {
                 ui.painter().rect_filled(b.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
             }
@@ -267,6 +271,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
         ui.painter().galley(pos2(vx, r.center().y - vg.size().y / 2.0), vg, t.app_bar_text);
         let gear = Rect::from_center_size(pos2(vx - SPACE_12 - 16.0, r.center().y), vec2(32.0, 32.0));
         let resp = ui.interact(gear, ui.id().with("appbar_settings"), Sense::click());
+        ui_kit::mark(ui.layer_id(), "app_bar_button", gear, "settings");
         if resp.hovered() || app.prefs_open {
             ui.painter().rect_filled(gear.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
         }
@@ -350,9 +355,11 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
     let frame = egui::Frame::NONE.fill(t.toolbar);
     egui::Panel::top("ribbon").exact_size(RIBBON_HEIGHT).resizable(false).show_separator_line(false).frame(frame).show(ui, |ui| {
         let r = ui.max_rect();
+        ui_kit::mark(ui.layer_id(), "ribbon", r, "");
         let painter = ui.painter().clone();
         // Workspace card.
         let ws = Rect::from_min_size(r.left_top(), vec2(WORKSPACE_WIDTH, RIBBON_HEIGHT - 1.0));
+        ui_kit::mark(ui.layer_id(), "workspace", ws, i18n::tr("workspace.prepare"));
         painter.rect_filled(Rect::from_min_size(ws.left_top(), vec2(ws.width(), SPACE_3)), 0, t.accent);
         painter.vline(ws.right() - 0.5, ws.y_range(), Stroke::new(1.0, t.border));
         icons::paint(&painter, Rect::from_center_size(pos2(ws.center().x, ws.top() + 39.0), vec2(30.0, 30.0)), "ws_design", t.dark, 1.0);
@@ -383,6 +390,7 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             let content = widths.iter().sum::<f32>() + widths.len().saturating_sub(1) as f32 * BUTTON_GAP;
             let width = (content + 8.0).max(COLLAPSED_WIDTH);
             let mut bx = px + (width - content) / 2.0;
+            ui_kit::mark(ui.layer_id(), "ribbon_group", Rect::from_min_size(pos2(px, top), vec2(width, GROUP_HEIGHT)), i18n::tr(g.name));
             for (cmd, w) in g.cmds.iter().zip(widths) {
                 let whole = Rect::from_min_size(pos2(bx, top + 2.0), vec2(w, BUTTON_HEIGHT));
                 bx += w + BUTTON_GAP;
@@ -397,6 +405,7 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             );
             if g.views {
                 let lresp = ui.interact(lr, ui.id().with(("group", g.name)), Sense::click());
+                ui_kit::mark(ui.layer_id(), "ribbon_group_menu", lr, i18n::tr(g.name));
                 let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&lresp));
                 if lresp.hovered() || open {
                     painter.rect_filled(lr, RADIUS_SM, if open { t.accent_soft } else { t.hover });
@@ -441,6 +450,7 @@ fn tabs(app: &mut ResinApp, ui: &mut Ui, row: Rect, t: &Tokens) {
         let width = ui.painter().layout_no_wrap(label.into(), font.clone(), t.text).size().x + 24.0;
         let tr = Rect::from_min_size(pos2(x, row.top() + RIBBON_TAB_INSET), vec2(width, TAB_ROW_HEIGHT - 2.0 * RIBBON_TAB_INSET));
         let resp = ui.interact(tr, ui.id().with(("tab", label)), Sense::click());
+        ui_kit::mark(ui.layer_id(), "ribbon_tab", tr, label);
         let active = app.mode == mode;
         let (fill, ink) = match (active, resp.hovered()) {
             (true, _) => (t.accent_soft, t.selected_ink),
@@ -463,6 +473,7 @@ fn ribbon_button(ui: &Ui, painter: &egui::Painter, whole: Rect, cmd: Cmd, app: &
     let info = cmd.state(app);
     let enabled = info.disabled.is_none();
     let resp = ui.interact(whole, ui.id().with(("cmd", cmd as u8)), Sense::click());
+    ui_kit::mark(ui.layer_id(), "ribbon_button", whole, i18n::tr(cmd.label()));
     if info.pressed || (enabled && resp.is_pointer_button_down_on()) {
         painter.rect(whole, RADIUS_SM, t.accent_soft, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
     } else if enabled && resp.hovered() {

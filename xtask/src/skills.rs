@@ -5,7 +5,7 @@
 use std::path::Path;
 
 /// The tasks `main` knows.
-pub const TASKS: &[&str] = &["ci", "crash-guards", "i18n", "layers", "lists", "skills"];
+pub const TASKS: &[&str] = &["ci", "crash-guards", "design-export", "design-pull", "design-tokens", "i18n", "layers", "lists", "skills"];
 
 pub fn skills(root: &Path) -> Vec<String> {
     let mut problems = Vec::new();
@@ -68,7 +68,8 @@ pub fn skills(root: &Path) -> Vec<String> {
 /// A repository path: no spaces, placeholders or wildcards, and a slash or a file extension.
 fn looks_like_path(s: &str) -> bool {
     let plain = !s.is_empty() && !s.contains([' ', '<', '>', '*', '{', '(', ':', '=', '|', '~', '$', '#', '@']) && !s.starts_with("http");
-    let rooted = s.split('/').next().is_some_and(|first| ["apps", "assets", "crates", "docs", "skills", "xtask", ".claude"].contains(&first));
+    let rooted =
+        s.split('/').next().is_some_and(|first| ["apps", "assets", "crates", "design", "docs", "skills", "xtask", ".claude"].contains(&first));
     let file = ["AGENTS.md", "ATTRIBUTION.md", "CLAUDE.md", "README.md", "ROADMAP.md", "Cargo.toml"].contains(&s);
     plain && (rooted || file)
 }

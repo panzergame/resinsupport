@@ -3,6 +3,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod box_select;
+#[cfg(test)]
+mod design_capture;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod export;
 pub mod gizmo;
@@ -978,8 +980,10 @@ fn file_name(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-impl eframe::App for ResinApp {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+impl ResinApp {
+    /// One frame of the window, but for writing the preferences (which needs eframe's frame, and
+    /// so stays in [`eframe::App::ui`]). False when a CTB export took the whole frame.
+    fn frame(&mut self, ui: &mut egui::Ui) -> bool {
         let ctx = ui.ctx().clone();
         self.time = ctx.input(|i| i.time);
         i18n::set_language(i18n::effective_language(&self.prefs.language));
@@ -995,7 +999,7 @@ impl eframe::App for ResinApp {
                 // Files dropped meanwhile are imported once the export is done.
                 self.pending.extend(dropped);
                 export::screen(self, ui, &tokens);
-                return;
+                return false;
             }
         }
         self.import_all(dropped);
@@ -1032,6 +1036,16 @@ impl eframe::App for ResinApp {
         if self.session.step_open() && !ctx.input(|i| i.pointer.any_down()) && !ctx.text_edit_focused() && !transform::typing(self) {
             self.session.end_step();
         }
+        true
+    }
+}
+
+impl eframe::App for ResinApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        if !self.frame(ui) {
+            return;
+        }
+        let ctx = ui.ctx().clone();
         // After the frame's UI, so a setting changed in it is written now. `Instant` is not there
         // in the browser, where eframe's own saves are left to do it.
         #[cfg(not(target_arch = "wasm32"))]

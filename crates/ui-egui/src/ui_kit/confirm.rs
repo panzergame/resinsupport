@@ -54,6 +54,7 @@ impl Confirm<'_> {
             }
             action
         });
+        super::mark(response.response.layer_id, "confirm", response.response.rect, self.title);
         let mut action = response.inner;
         if action == Action::None && response.should_close() {
             action = Action::Cancel;

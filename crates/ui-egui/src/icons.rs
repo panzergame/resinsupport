@@ -17,6 +17,7 @@ use tiny_skia as sk;
 
 /// Palette roles: name, the hex the SVG masters use, and the light and dark display colours.
 const ROLES: &[(&str, &str, [u8; 3], [u8; 3])] = &[
+    // design-tokens: Icon (values from design/tokens.json: edit the design file, then `cargo xtask design-pull`)
     ("ink", "#34465b", [0x34, 0x46, 0x5b], [0x1f, 0x20, 0x21]),
     ("line", "#34465b", [0x34, 0x46, 0x5b], [0xdb, 0xe4, 0xee]),
     ("passive-1", "#e2e8ef", [0xe2, 0xe8, 0xef], [0x8d, 0xa3, 0xc3]),
@@ -33,6 +34,7 @@ const ROLES: &[(&str, &str, [u8; 3], [u8; 3])] = &[
     ("component-yellow-1", "#e5d99b", [0xe5, 0xd9, 0x9b], [0xa9, 0x98, 0x5f]),
     ("component-yellow-2", "#a28200", [0xa2, 0x82, 0x00], [0x9a, 0x81, 0x00]),
     ("component-yellow-3", "#826700", [0x82, 0x67, 0x00], [0x85, 0x71, 0x00]),
+    // design-tokens: end
 ];
 
 /// Every icon by name.
@@ -538,6 +540,7 @@ struct Cache(Arc<Mutex<HashMap<(&'static str, bool, u32), TextureHandle>>>);
 
 /// Draw icon `name` filling `r`, for a dark or light surface, at `opacity` (0 to 1).
 pub fn paint(p: &Painter, r: Rect, name: &str, dark: bool, opacity: f32) {
+    crate::ui_kit::mark(p.layer_id(), if dark { "icon_dark" } else { "icon_light" }, r, name);
     let Some((key, doc)) = docs().get_key_value(name) else { return };
     let px = (r.width().max(r.height()) * p.ctx().pixels_per_point()).round().clamp(1.0, 512.0) as u32;
     let cache = p.ctx().data_mut(|d| d.get_temp_mut_or_insert_with(egui::Id::new("resin_icon_cache"), Cache::default).clone());

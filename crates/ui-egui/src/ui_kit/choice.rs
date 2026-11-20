@@ -13,6 +13,7 @@ use crate::theme::metrics::*;
 pub fn segmented(ui: &mut Ui, t: &Tokens, selected: &mut usize, options: &[&str]) -> bool {
     // Segments are keyed on the strip, so two strips in one card keep apart.
     let (rect, strip) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::hover());
+    super::mark(ui.layer_id(), "segmented", rect, &options.join(" | "));
     ui.painter().rect_filled(rect, CONTROL_RADIUS, t.control_fill);
     let width = rect.width() / options.len().max(1) as f32;
     let font = FontId::proportional(FONT_LABEL);

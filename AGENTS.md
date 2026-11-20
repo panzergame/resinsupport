@@ -10,7 +10,7 @@ ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resi
 - Every scene change is undoable: state the user edits lives in `engine::Scene`, changed only through its methods (which bump the revision); a gesture is one step (`Session::begin_step`); a tool's Cancel leaves the undo history alone. `every_scene_change_is_undoable`: `skills/resinsupport-commands/SKILL.md`.
 - Layering: `geom` (L0) → `render` (L1) → `slice` (L2) → `io` (L3) → `engine` (L4) → `ui-egui` (L5) → apps; nothing below L5 uses egui, eframe, wgpu, winit or rfd. `cargo xtask layers`.
 - Application code is Rust only and wasm-friendly: no `std::fs` outside `io` and the apps. `skills/resinsupport-performance/SKILL.md`.
-- The UI is SolidCraft's design system: colours from `theme::Tokens`, dialogs are `ui_kit::Card`s, controls from `ui_kit` only, one camera path `navigation::handle`. `raw_widgets_stay_in_the_kit`: `skills/resinsupport-ui/SKILL.md`.
+- The UI is SolidCraft's design system: colours from `theme::Tokens` (their values owned by `design/resinsupport.figcraft`, `cargo xtask design-tokens`), dialogs are `ui_kit::Card`s, controls from `ui_kit` only, one camera path `navigation::handle`. `raw_widgets_stay_in_the_kit`: `skills/resinsupport-ui/SKILL.md`.
 - Every word on screen is a catalog message with a stable id. `cargo xtask lists`, `cargo xtask i18n`: `skills/resinsupport-ui-text/SKILL.md`.
 - A changed default keeps the old behaviour behind a preference, and the commit says `Changes a default:`. `skills/resinsupport-preferences/SKILL.md`.
 - Model units are millimetres, Z up.
@@ -25,6 +25,7 @@ ResinSupport is a pure-Rust, multiplatform app that prepares STL models for resi
 | A command, a crate boundary | `skills/resinsupport-commands/SKILL.md` |
 | A dialog, ribbon button, panel, camera, gizmo, icon, colour | `skills/resinsupport-ui/SKILL.md` |
 | Presets on a card (labels', and later supports', slicing's) | `skills/resinsupport-ui/SKILL.md`, Presets on a card |
+| The design file (FigCraft), a token's value, an icon's artwork | `skills/resinsupport-ui/SKILL.md`, The design file |
 | Labels, messages, languages | `skills/resinsupport-ui-text/SKILL.md` |
 | Preferences, a changed default | `skills/resinsupport-preferences/SKILL.md` |
 | Writing or running tests | `skills/resinsupport-tests/SKILL.md` |

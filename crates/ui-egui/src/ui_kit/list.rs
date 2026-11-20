@@ -33,6 +33,7 @@ pub fn list_item(
 ) -> ListItem {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().max(0.0), CONTROL_HEIGHT), Sense::hover());
     let row = ui.interact(r, ui.id().with(("list_item", &id)), Sense::click());
+    super::mark(ui.layer_id(), "list_item", r, label);
     if selected {
         ui.painter().rect_filled(r, RADIUS_SM.saturating_sub(1), t.accent_soft);
     } else if row.hovered() {

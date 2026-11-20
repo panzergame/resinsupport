@@ -60,6 +60,7 @@ pub fn checkbox_indeterminate(ui: &mut Ui, t: &Tokens, label: &str, value: &mut 
     let width = (SPACE_14 + gap + text.x).max(ui.spacing().interact_size.y).min(ui.available_width().max(0.0));
     let height = ui.spacing().interact_size.y.max(SPACE_14).max(text.y);
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    super::mark(ui.layer_id(), "checkbox", rect, label);
     if response.clicked() {
         *value = mixed || !*value;
         response.mark_changed();
@@ -90,6 +91,7 @@ pub fn check_row(ui: &mut Ui, t: &Tokens, label: &str, help: &str, value: &mut b
 /// ticked nor clear.
 pub fn mixed_check_row(ui: &mut Ui, t: &Tokens, label: &str, help: &str, value: &mut bool, mixed: bool) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CONTROL_HEIGHT), Sense::hover());
+    super::mark(ui.layer_id(), "check_row", rect, label);
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     let response =
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(layout), |ui| checkbox_indeterminate(ui, t, label, value, mixed)).inner;

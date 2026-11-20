@@ -17,7 +17,9 @@ const MENU_WIDTH: f32 = 250.0;
 pub fn menu_list<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.set_width(MENU_WIDTH - SPACE_6 * 2.0 - 2.0);
     ui.spacing_mut().item_spacing.y = 0.0;
-    add(ui)
+    let inner = add(ui);
+    super::mark(ui.layer_id(), "menu", ui.min_rect(), "");
+    inner
 }
 
 /// One menu entry.
@@ -56,6 +58,7 @@ impl<'a> MenuItem<'a> {
             ui.available_width()
         };
         let (r, response) = ui.allocate_exact_size(vec2(width, CONTROL_HEIGHT + SPACE_2), if self.enabled { Sense::click() } else { Sense::hover() });
+        super::mark(ui.layer_id(), "menu_item", r, self.label);
         self.paint(ui, t, r, &response);
         response
     }
@@ -97,5 +100,6 @@ impl<'a> MenuItem<'a> {
 /// A rule between groups of menu entries.
 pub fn menu_separator(ui: &mut Ui, t: &Tokens) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), SPACE_10 + 1.0), Sense::hover());
+    super::mark(ui.layer_id(), "menu_separator", r, "");
     ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, t.dialog_rule));
 }

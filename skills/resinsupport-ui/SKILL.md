@@ -1,6 +1,6 @@
 ---
 name: resinsupport-ui
-description: "Use when adding or changing a ResinSupport dialog, ribbon button, panel, overlay, viewport drawing, camera input, gizmo, icon or colour in crates/ui-egui, or giving a card presets. Covers the design system ported from SolidCraft: theme tokens, the UI kit's card and rows, the preset row, the ribbon, icons and the one camera path."
+description: "Use when adding or changing a ResinSupport dialog, ribbon button, panel, overlay, viewport drawing, camera input, gizmo, icon or colour in crates/ui-egui, giving a card presets, or working with the FigCraft design file. Covers the design system ported from SolidCraft: theme tokens and the design file that owns them, the UI kit's card and rows, the preset row, the ribbon, icons and the one camera path."
 ---
 
 # Dialogs and UI
@@ -9,7 +9,18 @@ The UI is thin: it reads the session and acts through `app.run(id, params)` (`sk
 
 ## Colours, sizes, style
 - Colours come from `theme::Tokens` (`crates/ui-egui/src/theme.rs`), in light and dark pairs; sizes and spacing from `theme::metrics`. No literal colours or magic sizes in feature code: add a token.
+- The chrome's colours, the metrics and the icon roles' colours are owned by the design file (below): their values sit between `// design-tokens:` markers and are never edited by hand.
 - `theme::apply` gives egui's own widgets the same style in both themes, once at start-up.
+
+## The design file
+`design/resinsupport.figcraft` is the UI in FigCraft: its variables are the tokens, its `icon/<name>` components the icon masters, its other components the kit's controls as they paint, and its screens every edition, card and menu in both themes, built from instances of those components.
+- It owns the token values: `design/tokens.json` is its `variable.export`. `cargo xtask design-pull` exports the tokens and the changed icons from it, then writes the tokens into the code's marked regions (the chrome in `theme.rs`, the roles in `icons.rs`). `cargo xtask design-tokens` does only that last step; `cargo xtask ci` runs its `--check`.
+- A name the code uses that the design file lacks refuses the whole write: give the design file the variable, or remove its use from the code. A variable the code does not use yet is only reported: add its field or constant (inside the region), then pull again.
+- A new token: add it in the design file (Colour: Light and Dark; Metrics; Icon: Light, Dark and the colour masters write for it in Source), add its field or constant inside the region with any value, then pull. The viewport's colours stay outside the regions: the GPU draws them, not the design file.
+- Icons: an `icon/<name>` component edited in FigCraft comes back as `crates/ui-egui/icons/<name>.svg` on a pull; only one whose export changed since `design/icons.lock` is rewritten. Its colours must be bound to the Icon variables; FigCraft stretches dash patterns to fit their path, so a dashed icon edited there comes back with its dashes slightly longer. A new icon component also needs its `MASTERS` row and an `ATTRIBUTION.md` row.
+- Layouts are a reference, not a source: a change to a component or screen is ported to the kit by hand. Mark the frame ready for dev in FigCraft first; its compare view (`dev.compare`) then lists each property changed.
+- `cargo xtask design-export` builds the file from the code, once (`--force` rebuilds it, losing its edits): it runs `design_capture` (`crates/ui-egui/src/design_capture.rs`, an ignored test), which drives the app headlessly into each screen in both themes and records what each layer painted and which kit control painted it (`ui_kit::mark`, nothing outside tests). A control new to the kit gets a `mark` call; a new card or menu gets a screen in `screens()`.
+- FigCraft runs without a window: `FIGCRAFT_CLI` names `figcraft-cli` or the FigCraft AppImage. Only the export and the pull need it; `cargo xtask ci` does not.
 
 ## Dialogs are cards
 - Every dialog is a `ui_kit::Card` (`crates/ui-egui/src/ui_kit.rs`): a 40 pt header (icon, title, close), a padded body that scrolls when the viewport is too short, a 48 pt footer. Do not build a raw `egui::Window`, frame or shadow in a feature module.
@@ -36,7 +47,7 @@ User presets are generic (`docs/architecture.md`, Presets): one library per kind
 
 ## Icons
 - `crates/ui-egui/src/icons.rs` draws the SVG masters in `crates/ui-egui/icons`, SolidCraft's artwork, copied unchanged. Colours are palette roles resolved for the theme, never caller tints.
-- A new icon: copy the closest SolidCraft master, add it to `MASTERS` and its row to `ATTRIBUTION.md`. `every_master_parses_and_draws_in_both_themes` checks it.
+- A new icon: copy the closest SolidCraft master, add it to `MASTERS` and its row to `ATTRIBUTION.md`. `every_master_parses_and_draws_in_both_themes` checks it. An icon drawn in the design file comes back through `cargo xtask design-pull` (The design file, above).
 
 ## One camera path and the gizmo
 - All pointer, wheel and trackpad camera input goes through `navigation::handle` (`crates/ui-egui/src/navigation.rs`); never read drags or the wheel for the camera elsewhere.

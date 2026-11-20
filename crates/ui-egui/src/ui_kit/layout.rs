@@ -104,6 +104,7 @@ pub fn row<R>(ui: &mut Ui, t: &Tokens, label: &str, control: impl FnOnce(&mut Ui
 pub fn sized_row<R>(ui: &mut Ui, t: &Tokens, label: &str, height: f32, control: impl FnOnce(&mut Ui) -> R) -> R {
     let width = ui.available_width().max(0.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height.max(0.0)), egui::Sense::hover());
+    super::mark(ui.layer_id(), "row", rect, label);
     let left = control_left(ui, label, rect);
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     // Children, not scopes: a scope allocates what it holds, and a control shorter than the row
@@ -134,7 +135,11 @@ pub fn value_row(ui: &mut Ui, t: &Tokens, label: &str, value: &str) -> Response 
 /// A one-shot action in a card: a button across the control column, under the other rows'
 /// controls. Its response, for its tooltip and click.
 pub fn action_row(ui: &mut Ui, t: &Tokens, label: &str) -> Response {
-    row(ui, t, "", |ui| ui.add_sized([ui.available_width(), CONTROL_HEIGHT], egui::Button::new(label)))
+    row(ui, t, "", |ui| {
+        let response = ui.add_sized([ui.available_width(), CONTROL_HEIGHT], egui::Button::new(label));
+        super::mark(ui.layer_id(), "button", response.rect, label);
+        response
+    })
 }
 
 /// What a [`status_line`] says.
@@ -153,12 +158,15 @@ pub fn status_line(ui: &mut Ui, t: &Tokens, text: &str, tone: StatusTone) -> Res
         StatusTone::Warning => t.warning,
         StatusTone::Error => t.error,
     };
-    ui.add(egui::Label::new(RichText::new(text).size(FONT_LABEL).color(ink)).wrap())
+    let response = ui.add(egui::Label::new(RichText::new(text).size(FONT_LABEL).color(ink)).wrap());
+    super::mark(ui.layer_id(), "status_line", response.rect, text);
+    response
 }
 
 /// A full-width line of dim, smaller text: a hint under the rows.
 pub fn hint(ui: &mut Ui, t: &Tokens, text: &str) {
-    ui.add(egui::Label::new(RichText::new(text).size(FONT_CAPTION).color(t.form_dim)).wrap());
+    let response = ui.add(egui::Label::new(RichText::new(text).size(FONT_CAPTION).color(t.form_dim)).wrap());
+    super::mark(ui.layer_id(), "hint", response.rect, text);
 }
 
 /// A dim one-line caption in the control column of the row labelled `aligned_to`, under its
@@ -175,6 +183,7 @@ pub fn warning_caption(ui: &mut Ui, t: &Tokens, aligned_to: &str, text: &str) {
 fn caption_in(ui: &mut Ui, aligned_to: &str, text: &str, color: egui::Color32) {
     let width = ui.available_width().max(0.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, FORM_ICON_SIZE), egui::Sense::hover());
+    super::mark(ui.layer_id(), "caption", rect, text);
     let text_rect = Rect::from_min_max(pos2(control_left(ui, aligned_to, rect), rect.top()), rect.max);
     paint_text(ui, text_rect, text, FontId::proportional(FONT_SMALL), color);
 }

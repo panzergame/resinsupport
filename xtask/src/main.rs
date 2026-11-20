@@ -1,8 +1,13 @@
 //! Repository checks. `cargo xtask ci` runs everything a change must pass.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod design_export;
+mod design_pull;
+mod design_tokens;
+mod figcraft;
 mod i18n;
 mod skills;
+mod svg_norm;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -33,8 +38,14 @@ fn main() -> ExitCode {
         "lists" => report("lists", i18n::lists(&root, flag("--fix"))),
         "i18n" => report("i18n", i18n::i18n(&root, flag("--check"), flag("--add-missing"))),
         "skills" => report("skills", skills::skills(&root)),
+        "design-tokens" => report("design-tokens", design_tokens::design_tokens(&root, flag("--check"))),
+        "design-export" => report("design-export", design_export::design_export(&root, flag("--force"))),
+        "design-pull" => report("design-pull", design_pull::design_pull(&root)),
         _ => {
-            eprintln!("usage: cargo xtask <{}> (lists --fix, i18n --check | --add-missing)", skills::TASKS.join(" | "));
+            eprintln!(
+                "usage: cargo xtask <{}> (lists --fix, i18n --check | --add-missing, design-tokens --check, design-export --force)",
+                skills::TASKS.join(" | ")
+            );
             false
         }
     };
@@ -56,6 +67,7 @@ fn ci(root: &Path) -> bool {
         && report("lists", i18n::lists(root, false))
         && report("i18n", i18n::i18n(root, true, false))
         && report("skills", skills::skills(root))
+        && report("design-tokens", design_tokens::design_tokens(root, true))
         && steps.iter().all(|(name, args)| {
             eprintln!("== {name}");
             let ok = Command::new(env!("CARGO")).args(*args).current_dir(root).status().is_ok_and(|s| s.success());
