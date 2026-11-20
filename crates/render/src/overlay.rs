@@ -36,6 +36,38 @@ pub struct Overlay {
 const MAX_HALF_LINES: i64 = 100;
 /// Every this many minor lines, a major one.
 const MAJOR_EVERY: i64 = 10;
+/// The build plate's grid spacing, mm.
+pub const PLATE_STEP: f64 = 10.0;
+
+/// The build plate's solid parts, each triangle wound counter-clockwise seen from above: the
+/// plate, and an arrow outside its front (−Y) edge pointing into it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlateSurface {
+    pub plate: [[Vec3; 3]; 2],
+    pub arrow: [[Vec3; 3]; 3],
+}
+
+/// Half the plate's sides, for a plate `x` by `y` mm; `None` for a size that is not one.
+fn plate_half(x: f64, y: f64) -> Option<(f64, f64)> {
+    (x.is_finite() && y.is_finite() && x > 0.0 && y > 0.0).then_some((x / 2.0, y / 2.0))
+}
+
+/// The build plate `x` by `y` mm centred on the origin, on the ground, and its front arrow.
+pub fn plate_surface(x: f64, y: f64) -> Option<PlateSurface> {
+    let (hx, hy) = plate_half(x, y)?;
+    let quad = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        let [a, b, c, d] = [Vec3::new(x0, y0, 0.0), Vec3::new(x1, y0, 0.0), Vec3::new(x1, y1, 0.0), Vec3::new(x0, y1, 0.0)];
+        [[a, b, c], [a, c, d]]
+    };
+    // Big enough to read from across the plate, small enough not to crowd a small one.
+    let size = (x * 0.08).clamp(10.0, 25.0);
+    let tip = -hy - size * 0.25;
+    let head = tip - size * 0.5;
+    let tail = tip - size;
+    let [s0, s1] = quad(-size * 0.18, tail, size * 0.18, head);
+    let point = [Vec3::new(-size * 0.5, head, 0.0), Vec3::new(size * 0.5, head, 0.0), Vec3::new(0.0, tip, 0.0)];
+    Some(PlateSurface { plate: quad(-hx, -hy, hx, hy), arrow: [point, s0, s1] })
+}
 
 /// The grid spacing for a view showing `half_height` millimetres above and below its centre:
 /// the power of ten that puts roughly 5 to 50 lines across the view's height.
@@ -85,6 +117,39 @@ impl Overlay {
         lines.push(Line { a: Vec3::ZERO, b: Vec3::new(0.0, 0.0, major), color: style.z_axis });
         Overlay { lines, step, center, radius }
     }
+
+    /// The build plate `x` by `y` mm centred on the origin: its outline, a grid every
+    /// [`PLATE_STEP`] mm from its centre (ten times coarser while that would be too many lines),
+    /// the X and Y axes across it and the +Z axis. `None` for a size that is not a plate.
+    pub fn plate(x: f64, y: f64, style: &OverlayStyle) -> Option<Overlay> {
+        let (hx, hy) = plate_half(x, y)?;
+        let mut step = PLATE_STEP;
+        while hx.max(hy) / step > MAX_HALF_LINES as f64 && step < f64::MAX / 10.0 {
+            step *= 10.0;
+        }
+        let major = step * MAJOR_EVERY as f64;
+        let color = |k: i64| if k % MAJOR_EVERY == 0 { style.major } else { style.minor };
+        let mut lines = Vec::new();
+        // Lines on the edge are the outline's.
+        for i in (1..).take_while(|&i| (i as f64) * step < hx) {
+            for x in [i as f64 * step, -(i as f64) * step] {
+                lines.push(Line { a: Vec3::new(x, -hy, 0.0), b: Vec3::new(x, hy, 0.0), color: color(i) });
+            }
+        }
+        for i in (1..).take_while(|&i| (i as f64) * step < hy) {
+            for y in [i as f64 * step, -(i as f64) * step] {
+                lines.push(Line { a: Vec3::new(-hx, y, 0.0), b: Vec3::new(hx, y, 0.0), color: color(i) });
+            }
+        }
+        let c = [Vec3::new(-hx, -hy, 0.0), Vec3::new(hx, -hy, 0.0), Vec3::new(hx, hy, 0.0), Vec3::new(-hx, hy, 0.0)];
+        lines.extend([0, 1, 2, 3].map(|i| Line { a: c[i], b: c[(i + 1) % 4], color: style.major }));
+        lines.push(Line { a: Vec3::new(-hx, 0.0, 0.0), b: Vec3::new(hx, 0.0, 0.0), color: style.x_axis });
+        lines.push(Line { a: Vec3::new(0.0, -hy, 0.0), b: Vec3::new(0.0, hy, 0.0), color: style.y_axis });
+        lines.push(Line { a: Vec3::ZERO, b: Vec3::new(0.0, 0.0, major), color: style.z_axis });
+        // The shader fades lines from 0.55 of the radius: none fade on the plate.
+        let radius = (2.0 * hx.hypot(hy)).min(f64::MAX);
+        Some(Overlay { lines, step, center: Vec3::ZERO, radius })
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +179,47 @@ mod tests {
             assert!(o.lines.len() <= (MAX_HALF_LINES as usize * 2 + 1) * 2 + 3);
             assert!(o.lines.iter().all(|l| l.a.is_finite() && l.b.is_finite()));
         }
+    }
+
+    #[test]
+    fn the_plate_grid_is_every_ten_millimetres_inside_the_plate() {
+        let o = Overlay::plate(218.88, 122.88, &STYLE).unwrap();
+        assert_eq!(o.step, 10.0);
+        let (hx, hy) = (109.44, 61.44);
+        assert!(o.lines.iter().all(|l| [l.a, l.b].iter().all(|p| p.x.abs() <= hx && p.y.abs() <= hy)));
+        let mut xs: Vec<f64> =
+            o.lines.iter().filter(|l| l.color == STYLE.minor || l.color == STYLE.major).filter(|l| l.a.x == l.b.x).map(|l| l.a.x).collect();
+        xs.sort_by(f64::total_cmp);
+        let inner: Vec<f64> = (-10..=10).filter(|&i| i != 0).map(|i| f64::from(i) * 10.0).collect();
+        assert_eq!(xs, [vec![-hx], inner, vec![hx]].concat(), "every 10 mm, the edges, no line under the Y axis");
+        for axis in [STYLE.x_axis, STYLE.y_axis, STYLE.z_axis] {
+            assert_eq!(o.lines.iter().filter(|l| l.color == axis).count(), 1);
+        }
+        let far = o.lines.iter().flat_map(|l| [l.a, l.b]).map(|p| p.x.hypot(p.y)).fold(0.0, f64::max);
+        assert!(far <= o.radius * 0.55, "no line fades on the plate");
+    }
+
+    #[test]
+    fn a_plate_that_is_not_one_draws_nothing_and_a_huge_one_stays_bounded() {
+        for (x, y) in [(0.0, 100.0), (-1.0, 100.0), (f64::NAN, 100.0), (100.0, f64::INFINITY)] {
+            assert!(Overlay::plate(x, y, &STYLE).is_none() && plate_surface(x, y).is_none());
+        }
+        for size in [1e5, 1e300, f64::MAX] {
+            let o = Overlay::plate(size, size, &STYLE).unwrap();
+            assert!(o.lines.len() <= (MAX_HALF_LINES as usize * 2 + 2) * 2 + 3, "{}", o.lines.len());
+            assert!(o.lines.iter().all(|l| l.a.is_finite() && l.b.is_finite()) && o.radius.is_finite());
+        }
+    }
+
+    #[test]
+    fn the_arrow_points_into_the_plate_from_outside_its_front_edge() {
+        let s = plate_surface(200.0, 120.0).unwrap();
+        let ccw = |[a, b, c]: [Vec3; 3]| (b - a).cross(c - a).z > 0.0;
+        assert!(s.plate.into_iter().chain(s.arrow).all(ccw), "seen from above, every triangle faces up");
+        let ys: Vec<f64> = s.arrow.iter().flatten().map(|p| p.y).collect();
+        assert!(ys.iter().all(|&y| y < -60.0), "outside the front edge");
+        let tip = s.arrow[0][2];
+        assert!(ys.iter().all(|&y| y <= tip.y) && tip.x == 0.0, "pointing at the plate, centred");
     }
 
     #[test]

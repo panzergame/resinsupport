@@ -25,12 +25,14 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 - Commands: `view.standard`, `view.fit`, `view.projection`, `view.turn`
 
 ### Know where the plate is
-**As a** maker, **I want** a ground grid and X/Y/Z axes, **so that** I can tell the model's orientation and size at a glance.
-- The grid's spacing adapts to the zoom; an axis gizmo shows the orientation.
+**As a** maker, **I want** the printer's build plate drawn under my models with X/Y/Z axes, **so that** I can see what fits and tell the model's orientation and size at a glance.
+- The plate is an opaque surface the size of the printer's display, with a grid every 10 mm from its centre; an axis gizmo shows the orientation.
+- An arrow outside the plate's front edge (−Y) points into it, so the printing direction of the models reads at a glance.
+- Seen from below, the plate turns see-through, so the models and their supports stay in view while editing supports.
+- The `build_plate` preference (General) off brings back the ground grid whose spacing follows the zoom, with the plate's outline.
 
 **Not yet**
 - **As a** maker, **I want** a navigation cube I can click, **so that** I can change view without the keyboard.
-- **As a** maker, **I want** the grid to become the printer's build plate, **so that** I can see what fits.
 - **As a** maker with a 3D mouse, **I want** it to drive the camera.
 
 ## Files

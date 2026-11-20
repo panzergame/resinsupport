@@ -77,6 +77,9 @@ pub struct Tokens {
     pub support_unreachable: Color32,
     /// In Support edition, faces looking down: the steeper toward the plate, the more of it.
     pub overhang: Color32,
+    /// The build plate's surface, and the arrow at its front edge.
+    pub plate: Color32,
+    pub plate_arrow: Color32,
     pub grid_minor: Color32,
     pub grid_major: Color32,
     pub axis_x: Color32,
@@ -144,6 +147,8 @@ impl Tokens {
                 support_selected: Color32::from_rgb(0xff, 0x9a, 0x2e),
                 support_unreachable: Color32::from_rgb(0xf0, 0x55, 0x55),
                 overhang: Color32::from_rgb(0xff, 0x78, 0x1e),
+                plate: Color32::from_rgb(0x42, 0x49, 0x55),
+                plate_arrow: Color32::from_rgb(0x9a, 0xa6, 0xb6),
                 grid_minor: Color32::from_rgba_unmultiplied(0x9a, 0xa4, 0xb0, 0x30),
                 grid_major: Color32::from_rgba_unmultiplied(0xb8, 0xc2, 0xce, 0x70),
                 axis_x: Color32::from_rgb(0xe0, 0x4a, 0x4a),
@@ -202,6 +207,8 @@ impl Tokens {
                 support_selected: Color32::from_rgb(0xf0, 0x7a, 0x00),
                 support_unreachable: Color32::from_rgb(0xd0, 0x2a, 0x2a),
                 overhang: Color32::from_rgb(0xf0, 0x64, 0x00),
+                plate: Color32::from_rgb(0xfb, 0xfc, 0xfd),
+                plate_arrow: Color32::from_rgb(0x6e, 0x78, 0x86),
                 grid_minor: Color32::from_rgba_unmultiplied(0x40, 0x48, 0x54, 0x28),
                 grid_major: Color32::from_rgba_unmultiplied(0x30, 0x38, 0x44, 0x60),
                 axis_x: Color32::from_rgb(0xd0, 0x30, 0x30),

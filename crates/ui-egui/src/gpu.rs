@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use egui_wgpu::wgpu;
 use resin_engine::geom::{Affine3, Mesh, Vec3, unit_sphere};
-use resin_engine::render::Line;
+use resin_engine::render::{Line, PlateSurface};
 use wgpu::util::DeviceExt;
 
 use crate::layer_image::{ImageKey, LayerImage, TileRect};
@@ -101,6 +101,15 @@ struct LineVertex {
     color: [f32; 4],
 }
 
+/// The build plate's surface and its front arrow, in linear RGBA: opaque from above, see-through
+/// from below so the models stay in view.
+#[derive(Clone, Copy, Debug)]
+pub struct PlateDraw {
+    pub surface: PlateSurface,
+    pub color: [f32; 4],
+    pub arrow: [f32; 4],
+}
+
 /// A model to draw: its mesh as imported (uploaded once per id), where it sits, its linear RGB
 /// `color`, and whether its faces looking down are tinted in the frame's overhang colour.
 pub struct ModelDraw {
@@ -163,6 +172,7 @@ pub struct ViewFrame {
     pub grid_center: Vec3,
     pub grid_radius: f64,
     pub lines: Vec<Line>,
+    pub plate: Option<PlateDraw>,
     pub spheres: Vec<Sphere>,
     /// The supports' round joints: cut by the lens, as the supports are, and as opaque as their
     /// colour's alpha.
@@ -366,6 +376,11 @@ pub struct Renderer {
     lines: wgpu::RenderPipeline,
     line_buffer: Option<(wgpu::Buffer, u64)>,
     line_count: u32,
+    /// The build plate, after the opaque scene: tested against its depth without writing any,
+    /// so the grid lies on it and, from below, what stands on it shows through.
+    plate: wgpu::RenderPipeline,
+    plate_buffer: Option<(wgpu::Buffer, u64)>,
+    plate_count: u32,
     sphere: wgpu::RenderPipeline,
     /// The unit sphere's vertices, and how many.
     sphere_mesh: (wgpu::Buffer, u32),
@@ -575,10 +590,21 @@ impl Renderer {
             &pipeline_layout,
             "line_vs",
             "line_fs",
-            &[Some(line_layout)],
+            &[Some(line_layout.clone())],
             wgpu::PrimitiveTopology::LineList,
             false,
             wgpu::CompareFunction::LessEqual,
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        );
+        let plate = pipeline(
+            "viewport_plate",
+            &pipeline_layout,
+            "line_vs",
+            "plate_fs",
+            &[Some(line_layout)],
+            wgpu::PrimitiveTopology::TriangleList,
+            false,
+            wgpu::CompareFunction::Less,
             Some(wgpu::BlendState::ALPHA_BLENDING),
         );
         let sphere_layouts = [
@@ -713,6 +739,9 @@ impl Renderer {
             lines,
             line_buffer: None,
             line_count: 0,
+            plate,
+            plate_buffer: None,
+            plate_count: 0,
             sphere,
             sphere_mesh,
             sphere_buffer: None,
@@ -893,6 +922,18 @@ impl Renderer {
         write_growing(device, queue, &mut self.line_buffer, "viewport_lines", bytemuck::cast_slice(&verts));
         self.line_count = verts.len() as u32;
 
+        let verts: Vec<LineVertex> = f
+            .plate
+            .iter()
+            .flat_map(|p| {
+                let plate = p.surface.plate.into_iter().map(|t| (t, p.color));
+                plate.chain(p.surface.arrow.into_iter().map(|t| (t, p.arrow)))
+            })
+            .flat_map(|(t, color)| t.map(|v| LineVertex { pos: v.to_f32(), color }))
+            .collect();
+        write_growing(device, queue, &mut self.plate_buffer, "viewport_plate", bytemuck::cast_slice(&verts));
+        self.plate_count = verts.len() as u32;
+
         let instances = sphere_instances(&f.spheres, None);
         write_growing(device, queue, &mut self.sphere_buffer, "viewport_spheres", bytemuck::cast_slice(&instances));
         self.sphere_count = instances.len() as u32;
@@ -942,6 +983,13 @@ impl Renderer {
             pass.draw(0..self.sphere_mesh.1, 0..self.sphere_count);
         }
         self.draw_joints(pass, &self.joint);
+        if let Some((buffer, _)) = &self.plate_buffer
+            && self.plate_count > 0
+        {
+            pass.set_pipeline(&self.plate);
+            pass.set_vertex_buffer(0, buffer.slice(..));
+            pass.draw(0..self.plate_count, 0..1);
+        }
         if let Some((buffer, _)) = &self.line_buffer
             && self.line_count > 0
         {

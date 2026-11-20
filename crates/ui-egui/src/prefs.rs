@@ -99,6 +99,9 @@ preference_settings! {
     /// In Support edition, the supports' bodies fade as the view looks up at them (off: always
     /// opaque, as before).
     fade_bodies_from_below: bool = true, GENERAL => check("prefs.fade_bodies_from_below", "prefs.fade_bodies_from_below.help");
+    /// The view shows the printer's build plate: opaque, a 10 mm grid, an arrow at its front
+    /// (off: the ground grid following the zoom and the plate's outline, as before).
+    build_plate: bool = true, GENERAL => check("prefs.build_plate", "prefs.build_plate.help");
     /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
     /// page, like `support_settings`.
     lift_height: f64 = resin_engine::DEFAULT_LIFT_HEIGHT;

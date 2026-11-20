@@ -144,6 +144,8 @@
   "open.discard_title": "Discard changes",
   "prefs.arrange_on_import": "Arrange imported models",
   "prefs.arrange_on_import.help": "New models are moved onto the plate, clear of the others, and turned to lie along it; off, they stay where the file puts them",
+  "prefs.build_plate": "Show the build plate",
+  "prefs.build_plate.help": "The view shows the printer's plate as a surface with a 10 mm grid and an arrow at its front edge, see-through from below; off, a ground grid that follows the zoom and the plate's outline",
   "prefs.double_click.fit": "Fit all",
   "prefs.double_click.home": "Home view",
   "prefs.double_click.off": "Nothing",

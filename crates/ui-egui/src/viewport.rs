@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use resin_engine::geom::Vec3;
-use resin_engine::render::{Line, Overlay, StandardView};
+use resin_engine::render::{Line, Overlay, StandardView, plate_surface};
 
-use crate::gpu::{Cap, Clip, Lens, ModelDraw, Sphere, ViewFrame, ViewportCallback};
+use crate::gpu::{Cap, Clip, Lens, ModelDraw, PlateDraw, Sphere, ViewFrame, ViewportCallback};
 use crate::support_routes::{Selection, SupportMesh};
 use crate::supports::Hover;
 use crate::theme::{Tokens, linear};
@@ -106,10 +106,15 @@ pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
 pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens: &Tokens) -> (ViewFrame, f64) {
     let cam = app.session.camera;
     let aspect = f64::from(rect.width().max(1.0)) / f64::from(rect.height().max(1.0));
-    let mut overlay = Overlay::build(&cam, aspect, &tokens.overlay());
     let printer = &app.session.print_config().printer;
-    let plate = plate_outline(printer.display_x, printer.display_y, linear(tokens.grid_major));
-    overlay.lines.extend(plate);
+    let (px, py) = (printer.display_x, printer.display_y);
+    let style = tokens.overlay();
+    let shown = app.prefs.build_plate.then(|| Overlay::plate(px, py, &style).zip(plate_surface(px, py))).flatten();
+    let (mut overlay, plate, outline) = match shown {
+        Some((overlay, surface)) => (overlay, Some(PlateDraw { surface, color: linear(tokens.plate), arrow: linear(tokens.plate_arrow) }), None),
+        None => (Overlay::build(&cam, aspect, &style), None, Some(plate_outline(px, py, linear(tokens.grid_major)))),
+    };
+    overlay.lines.extend(outline.iter().flatten());
     let r = overlay.radius;
     // The axis an amount is typed along, across the grid.
     let typed_axis = transform::typed_axis(app).map(|(c, dir, axis)| {
@@ -142,9 +147,12 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     let mut bounds = solid;
     bounds.add(overlay.center + Vec3::new(-r, -r, 0.0));
     bounds.add(overlay.center + Vec3::new(r, r, overlay.step * 10.0));
-    for l in plate.iter().chain(&typed_axis).chain(&branch).chain(&struts) {
+    for l in outline.iter().flatten().chain(&typed_axis).chain(&branch).chain(&struts) {
         bounds.add(l.a);
         bounds.add(l.b);
+    }
+    for p in plate.iter().flat_map(|p| p.surface.plate.iter().chain(&p.surface.arrow)).flatten() {
+        bounds.add(*p);
     }
     let (right, up, back) = cam.basis();
     // A key light from the viewer's upper left, so faces read apart; a fill from the eye.
@@ -165,6 +173,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         grid_center: overlay.center,
         grid_radius: overlay.radius,
         lines: overlay.lines,
+        plate,
         spheres,
         joints,
         handles,
@@ -221,6 +230,7 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
         grid_center: solid.center(),
         grid_radius: 0.0,
         lines: Vec::new(),
+        plate: None,
         spheres: Vec::new(),
         joints,
         handles: Vec::new(),
@@ -423,5 +433,32 @@ mod tests {
 
         app.mode = EditMode::Support;
         assert!(frame(&mut app, &ctx, rect, &tokens).0.clip.is_none());
+    }
+
+    /// The build plate by default; with the preference off, the ground grid following the zoom
+    /// and the plate's outline, as before.
+    #[test]
+    fn the_build_plate_preference_keeps_the_old_ground_grid() {
+        let mut app = ResinApp::build(Prefs::default(), &[]);
+        let ctx = egui::Context::default();
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let tokens = Tokens::for_dark(true);
+        app.session.camera.distance = 5000.0;
+        let printer = app.session.print_config().printer.clone();
+        let (hx, hy) = (printer.display_x / 2.0, printer.display_y / 2.0);
+
+        let (f, step) = frame(&mut app, &ctx, rect, &tokens);
+        assert_eq!(step, 10.0, "10 mm at any zoom");
+        assert_eq!(f.plate.map(|p| p.surface), plate_surface(printer.display_x, printer.display_y));
+        let on_plate = |l: &Line| [l.a, l.b].iter().all(|p| p.x.abs() <= hx && p.y.abs() <= hy);
+        assert!(f.lines.iter().all(on_plate));
+
+        app.prefs.build_plate = false;
+        let (f, step) = frame(&mut app, &ctx, rect, &tokens);
+        let aspect = 800.0 / 600.0;
+        let mut old = Overlay::build(&app.session.camera, aspect, &tokens.overlay());
+        old.lines.extend(plate_outline(printer.display_x, printer.display_y, linear(tokens.grid_major)));
+        assert!(f.plate.is_none());
+        assert_eq!((f.lines, step), (old.lines, old.step));
     }
 }

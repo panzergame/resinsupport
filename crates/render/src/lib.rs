@@ -6,4 +6,4 @@ pub mod camera;
 pub mod overlay;
 
 pub use camera::{Camera, CameraAnim, Mat4, StandardView, UpAxis};
-pub use overlay::{Line, Overlay, OverlayStyle, grid_step};
+pub use overlay::{Line, Overlay, OverlayStyle, PLATE_STEP, PlateSurface, grid_step, plate_surface};

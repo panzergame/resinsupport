@@ -280,6 +280,17 @@ fn line_fs(in: LineOut) -> @location(0) vec4<f32> {
     return vec4<f32>(encode(in.color.rgb), in.color.a * fade);
 }
 
+// ---- the build plate: a surface under the grid, with the lines' vertices ----
+
+// How opaque the plate is seen from below: the models and supports on it show through.
+const PLATE_FROM_BELOW: f32 = 0.2;
+
+// Its triangles face up: seen from above, the plate hides the ground; from below, it is a veil.
+@fragment
+fn plate_fs(in: LineOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return vec4<f32>(encode(in.color.rgb), in.color.a * select(PLATE_FROM_BELOW, 1.0, front));
+}
+
 // ---- the shown layer: the cap on the cut, and the 2D layer view ----
 
 struct LayerIn {

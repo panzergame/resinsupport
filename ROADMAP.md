@@ -11,7 +11,7 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 
 ## 2. Printer and placement
 - [x] Printer profile (build volume, resolution, pixel size, mirroring), in the print settings
-- The grid becomes the build plate
+- [x] The grid becomes the build plate: an opaque surface with a 10 mm grid and a front arrow, see-through from below (`build_plate` preference)
 - [x] Object edition and Support edition (Tab); model selection by click (through each model's BVH, or on its supports and braces: a model and its supports are one object) or the Models panel
 - [x] Move / Rotate / Scale tools (T, R, S): a gizmo ported from SolidCraft and a live panel, measured from the model as imported; supports follow their model
 - [x] Typed transforms: with Move, Rotate or Scale open, X/Y/Z and an amount (`T X 50`, `R 90`, `S X 2`), shown live; Enter applies and closes the tool, Esc puts back
