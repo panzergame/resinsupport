@@ -3,10 +3,14 @@
 //! a bounded amount of search per frame: a gizmo drag changes the scene every frame, and
 //! re-routing hundreds of supports in one frame would stall the window. Routes not yet redone
 //! are drawn where they were, the oldest redone first. Braces' struts are worked out once every
-//! route is, within the same budget. The raft under them and the models' labels on it are redone
+//! route is, within the same budget. Each model's raft under them and its label on it are redone
 //! once every route is, off the window thread: the old ones are drawn until the new ones are in.
+//!
+//! Everything is built for every model, shown or not, and tagged with its model: hiding a model
+//! only leaves its runs out of the draw ([`Run::shown`]), so nothing is routed or built again.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -88,20 +92,41 @@ pub struct Handle {
     pub center: Vec3,
     pub radius: f32,
     pub selected: bool,
+    /// The model its support holds up.
+    pub model: u64,
 }
 
-/// Every support's solids: triangles grouped by look, the round joints that fill each bend,
-/// drawn as spheres, and the joints' handles.
+/// Vertices of the support mesh drawn alike: in one look, tips or not, and whose they are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub look: Look,
+    pub tip: bool,
+    /// The models they belong to: twice the same but for a brace between two models' supports.
+    pub models: [u64; 2],
+    pub range: Range<u32>,
+}
+
+impl Run {
+    /// Whether it is drawn while the models in `hidden` are hidden: a brace needs both its ends.
+    pub fn shown(&self, hidden: &BTreeSet<u64>) -> bool {
+        !self.models.iter().any(|m| hidden.contains(m))
+    }
+}
+
+/// Every support's solids and every model's raft, hidden models' too: triangles grouped by look,
+/// the round joints that fill each bend, drawn as spheres, and the joints' handles.
 #[derive(Debug, Default)]
 pub struct SupportMesh {
     pub vertices: Vec<ShadedVertex>,
     /// Per [`Look`], the range of `vertices` drawn in it.
-    pub ranges: [std::ops::Range<u32>; 3],
+    pub ranges: [Range<u32>; 3],
     /// Per [`Look`], the start of its range holding the tips: the rest, bodies, bases and braces,
     /// fades when the view looks up at them.
-    pub tips: [std::ops::Range<u32>; 3],
-    /// The round solids: centre, radius, look, and whether it is a tip's contact.
-    pub joints: Vec<(Vec3, f32, Look, bool)>,
+    pub tips: [Range<u32>; 3],
+    /// `vertices` cut by look, tips or not, and model: in order, together `ranges`.
+    pub runs: Vec<Run>,
+    /// The round solids: centre, radius, look, whether it is a tip's contact, and its model.
+    pub joints: Vec<(Vec3, f32, Look, bool, u64)>,
     pub handles: Vec<Handle>,
     pub bounds: Aabb3,
 }
@@ -118,8 +143,9 @@ pub enum Piece {
 
 /// The preset is part of it: a base or a raft setting changes the solids and no route. So is
 /// the raft drawn, which arrives later.
-/// Route changes, rafts drawn, the preset, what is lit, the tip left out and the hidden models.
-type MeshKey = (u64, u64, SupportPreset, Lit, Option<u64>, BTreeSet<u64>);
+/// Route changes, rafts drawn, the preset, what is lit and the tip left out. Not the hidden
+/// models: the mesh holds theirs too.
+type MeshKey = (u64, u64, SupportPreset, Lit, Option<u64>);
 
 /// Which supports and braces a mesh draws in the selected look.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -143,14 +169,14 @@ pub enum Selection {
     Models,
 }
 
-/// What the raft is built from: its settings, the bases' diameter and the feet, as bits; and the
-/// labels with their models' feet.
+/// What a model's raft is built from: its settings, the bases' diameter and the model's feet, as
+/// bits; and its label with those feet.
 type RaftKey = (Raft, u64, Vec<[u64; 2]>, Vec<(Label, Vec<[f64; 2]>)>);
 
-/// A raft being built on its own thread.
+/// Rafts being built on their own thread: every model's key it is for, and those it builds.
 struct RaftJob {
-    key: RaftKey,
-    done: Receiver<Vec<ShadedVertex>>,
+    keys: BTreeMap<u64, RaftKey>,
+    done: Receiver<Vec<(u64, Vec<ShadedVertex>)>>,
 }
 
 /// A brace's struts.
@@ -169,8 +195,8 @@ pub struct RouteCache {
     /// Counts route changes: the solids are stale once it moves.
     changed: u64,
     mesh: Option<(MeshKey, Arc<SupportMesh>)>,
-    /// The raft drawn, and what it was built from.
-    raft: Option<(RaftKey, Arc<Vec<ShadedVertex>>)>,
+    /// Each model's raft drawn, and what it was built from: hidden models' too.
+    raft: BTreeMap<u64, (RaftKey, Arc<Vec<ShadedVertex>>)>,
     /// Counts rafts drawn: the solids are stale once it moves.
     rafts: u64,
     raft_job: Option<RaftJob>,
@@ -182,7 +208,8 @@ impl RouteCache {
     /// Bring the routes towards `scene` under `preset`, within this frame's budget. Whether some
     /// are still out of date.
     pub fn update(&mut self, scene: &Scene, preset: &SupportPreset) -> bool {
-        let key = (scene.revision(), *preset);
+        // Not the revision: showing or hiding a model moves no route.
+        let key = (scene.shape_revision(), *preset);
         if self.key != Some(key) {
             self.key = Some(key);
             self.generation += 1;
@@ -248,34 +275,50 @@ impl RouteCache {
         self.poll_raft(true);
     }
 
-    /// Start building the raft under the supports that reach the plate, and the labels on it, when
-    /// a foot, a label or a setting they depend on changed. One job at a time: while one runs, the feet are looked at again once
-    /// it is in, so a drag builds the latest raft rather than one per frame.
+    /// Each model's raft key and feet: of its supports that reach the plate, shown or not. None
+    /// for a model with no foot, or without a raft.
+    fn raft_inputs(&self, scene: &Scene, preset: &SupportPreset) -> BTreeMap<u64, (RaftKey, Vec<Vec3>)> {
+        if !preset.raft.enabled {
+            return BTreeMap::new();
+        }
+        let grounded = self.grounded(scene);
+        let mut held: BTreeMap<u64, Vec<&Route>> = BTreeMap::new();
+        for s in scene.supports().iter().filter(|s| grounded.contains(&s.id)) {
+            if let Some((r, _)) = self.routes.get(&s.id) {
+                held.entry(s.model).or_default().push(r);
+            }
+        }
+        held.into_iter()
+            .filter_map(|(m, routes)| {
+                let feet = raft_feet(routes.iter().copied());
+                if feet.is_empty() {
+                    return None;
+                }
+                let sites = label_sites(scene, routes.iter().map(|r| (m, *r)));
+                let bits = feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect();
+                Some((m, ((preset.raft, preset.base.diameter.to_bits(), bits, sites), feet)))
+            })
+            .collect()
+    }
+
+    /// Start building the rafts of the models whose feet, label or raft settings changed, and
+    /// their labels. One job at a time: while one runs, the feet are looked at again once it is
+    /// in, so a drag builds the latest rafts rather than one per frame.
     fn refresh_raft(&mut self, scene: &Scene, preset: &SupportPreset) {
         let seen = (self.generation, self.changed);
         if self.raft_checked == Some(seen) {
             return;
         }
-        let grounded = self.grounded(scene);
-        // A hidden model's supports stand on no raft: it is not printed.
-        let held: Vec<(u64, &Route)> = scene
-            .supports()
-            .iter()
-            .filter(|s| grounded.contains(&s.id) && scene.shows(s.model))
-            .filter_map(|s| self.routes.get(&s.id).map(|(r, _)| (s.model, r)))
-            .collect();
-        let feet = raft_feet(held.iter().map(|(_, r)| *r));
-        let sites = label_sites(scene, held.iter().map(|(m, r)| (*m, *r)));
-        let key: RaftKey =
-            (preset.raft, preset.base.diameter.to_bits(), feet.iter().map(|f| [f.x.to_bits(), f.y.to_bits()]).collect(), sites.clone());
-        if self.raft.as_ref().is_some_and(|(k, _)| *k == key) {
-            // A job for other feet would bring back a raft older than this one.
+        let inputs = self.raft_inputs(scene, preset);
+        let keys: BTreeMap<u64, RaftKey> = inputs.iter().map(|(m, (k, _))| (*m, k.clone())).collect();
+        if self.raft.len() == keys.len() && keys.iter().all(|(m, k)| self.raft.get(m).is_some_and(|(d, _)| d == k)) {
+            // A job for other feet would bring back rafts older than these.
             self.raft_job = None;
             self.raft_checked = Some(seen);
             return;
         }
         match &self.raft_job {
-            Some(job) if job.key == key => {
+            Some(job) if job.keys == keys => {
                 self.raft_checked = Some(seen);
                 return;
             }
@@ -283,18 +326,31 @@ impl RouteCache {
             None => {}
         }
         self.raft_checked = Some(seen);
-        if !preset.raft.enabled || feet.is_empty() {
-            self.show_raft(key, Vec::new());
+        // A model left without a raft loses it at once; the others' are drawn until theirs are in.
+        let before = self.raft.len();
+        self.raft.retain(|m, _| keys.contains_key(m));
+        if self.raft.len() != before {
+            self.rafts += 1;
+        }
+        let todo: Vec<(u64, Vec<Vec3>, Vec<(Label, Vec<[f64; 2]>)>)> =
+            inputs.into_iter().filter(|(m, (k, _))| self.raft.get(m).is_none_or(|(d, _)| d != k)).map(|(m, (k, feet))| (m, feet, k.3)).collect();
+        if todo.is_empty() {
             return;
         }
         let (tx, done) = mpsc::channel();
         let preset = *preset;
         // Its walls are cut in many small faces: flat, each would shade apart from its neighbours.
         let job = move || {
-            // The receiver is gone when a newer raft replaced this one: nobody wants it.
-            let mut solid = raft_triangles(&feet, &sites, &preset);
-            solid.extend(label_triangles(&sites, &preset));
-            let _ = tx.send(smooth_shaded(&solid, RAFT_CREASE_DEGREES));
+            let built = todo
+                .into_iter()
+                .map(|(m, feet, sites)| {
+                    let mut solid = raft_triangles(&feet, &sites, &preset);
+                    solid.extend(label_triangles(&sites, &preset));
+                    (m, smooth_shaded(&solid, RAFT_CREASE_DEGREES))
+                })
+                .collect();
+            // The receiver is gone when newer rafts replaced these: nobody wants them.
+            let _ = tx.send(built);
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Err(e) = std::thread::Builder::new().name("raft".into()).spawn(job) {
@@ -302,29 +358,29 @@ impl RouteCache {
         }
         #[cfg(target_arch = "wasm32")]
         job();
-        self.raft_job = Some(RaftJob { key, done });
+        self.raft_job = Some(RaftJob { keys, done });
     }
 
-    /// Draw the raft being built once it is in, waiting for it when `wait`.
+    /// Draw the rafts being built once they are in, waiting for them when `wait`.
     fn poll_raft(&mut self, wait: bool) {
         let Some(job) = self.raft_job.take() else { return };
         let got = if wait { job.done.recv().map_err(|_| TryRecvError::Disconnected) } else { job.done.try_recv() };
         match got {
-            Ok(raft) => {
-                self.show_raft(job.key, raft);
-                // It may be for feet older than the latest: look at them again.
+            Ok(built) => {
+                self.raft.retain(|m, _| job.keys.contains_key(m));
+                for (m, raft) in built {
+                    if let Some(key) = job.keys.get(&m) {
+                        self.raft.insert(m, (key.clone(), Arc::new(raft)));
+                    }
+                }
+                self.rafts += 1;
+                // They may be for feet older than the latest: look at them again.
                 self.raft_checked = None;
             }
             Err(TryRecvError::Empty) => self.raft_job = Some(job),
             // Tried again on the next change, not every frame.
             Err(TryRecvError::Disconnected) => log::error!("the raft could not be built"),
         }
-    }
-
-    fn show_raft(&mut self, key: RaftKey, raft: Vec<ShadedVertex>) {
-        self.raft = Some((key, Arc::new(raft)));
-        self.rafts += 1;
-        self.raft_job = None;
     }
 
     /// Brace `id`'s struts, as last worked out.
@@ -363,9 +419,9 @@ impl RouteCache {
         self.changed
     }
 
-    /// The solids of every routed support on a shown model, those `selection` takes in the
-    /// selected look, and support `hidden`'s tip left out, rebuilt only when a route, the
-    /// selection, `hidden` or the hidden models changed.
+    /// The solids of every routed support and every model's raft, hidden models' too, those
+    /// `selection` takes in the selected look, and support `hidden`'s tip left out, rebuilt only
+    /// when a route, a raft, the selection or `hidden` changed.
     pub fn mesh(&mut self, scene: &Scene, preset: &SupportPreset, selection: Selection, hidden: Option<u64>) -> Arc<SupportMesh> {
         let lit = match selection {
             Selection::None => Lit::default(),
@@ -378,18 +434,18 @@ impl RouteCache {
                 Lit { wholes, braces, ..Lit::default() }
             }
         };
-        let hidden_models: BTreeSet<u64> = scene.models().iter().filter(|m| m.hidden).map(|m| m.id).collect();
-        let key = (self.changed, self.rafts, *preset, lit, hidden, hidden_models);
+        let key = (self.changed, self.rafts, *preset, lit, hidden);
         if let Some((k, mesh)) = &self.mesh
             && *k == key
         {
             return Arc::clone(mesh);
         }
         let lit = &key.3;
-        let mut groups: [Group; 3] = Default::default();
+        // By the models they belong to, so a hidden model's are drawn apart from the others.
+        let mut groups: BTreeMap<[u64; 2], [Group; 3]> = BTreeMap::new();
         let mut handles = Vec::new();
         let grounded = self.grounded(scene);
-        for s in scene.supports().iter().filter(|s| !key.5.contains(&s.model)) {
+        for s in scene.supports() {
             let Some((r, _)) = self.routes.get(&s.id) else { continue };
             let whole = if lit.wholes.contains(&s.id) {
                 Look::Selected
@@ -406,36 +462,55 @@ impl RouteCache {
                 Some(whole)
             };
             let look = |part: SupportPart| if lit.parts.contains(&(s.id, part)) { Look::Selected } else { whole };
-            solids(r, preset, tip, whole, look, &mut groups);
+            solids(r, preset, tip, whole, look, groups.entry([s.model; 2]).or_default());
             let radius = (preset.body.diameter / 2.0) as f32;
             for (i, c) in joints(r) {
-                handles.push(Handle { center: c, radius, selected: look(SupportPart::Joint(i)) == Look::Selected });
+                handles.push(Handle { center: c, radius, selected: look(SupportPart::Joint(i)) == Look::Selected, model: s.model });
             }
         }
-        for b in scene.braces().iter().filter(|b| scene.shows_support(b.a) && scene.shows_support(b.b)) {
-            let Some((struts, _)) = self.braces.get(&b.id) else { continue };
+        let model_of = |id: u64| scene.supports().iter().find(|s| s.id == id).map(|s| s.model);
+        for b in scene.braces() {
+            let (Some((struts, _)), Some(ma), Some(mb)) = (self.braces.get(&b.id), model_of(b.a), model_of(b.b)) else { continue };
             let look = if lit.braces.contains(&b.id) { Look::Selected } else { Look::Plain };
-            let Some(g) = groups.get_mut(look.index()) else { continue };
+            let Some(g) = groups.entry([ma.min(mb), ma.max(mb)]).or_default().get_mut(look.index()) else { continue };
             strut_primitives(struts, b.params.diameter_ratio, preset, |prim| {
                 if let Primitive::Frustum { a, b, ra, rb, sides, smooth, caps } = prim {
                     frustum(a, b, ra, rb, sides, smooth, caps, &mut g.body);
                 }
             });
         }
-        if let (Some(g), Some((_, raft))) = (groups.get_mut(Look::Plain.index()), &self.raft) {
-            g.body.extend(raft.iter());
+        for (m, (_, raft)) in &self.raft {
+            if let Some(g) = groups.entry([*m; 2]).or_default().get_mut(Look::Plain.index()) {
+                g.body.extend(raft.iter());
+            }
         }
         let mut out = SupportMesh { handles, ..Default::default() };
-        for (look, g) in Look::ALL.into_iter().zip(groups) {
+        for look in Look::ALL {
             let start = out.vertices.len() as u32;
-            out.vertices.extend(g.tip);
-            let tips_end = out.vertices.len() as u32;
-            out.vertices.extend(g.body);
+            let mut tips_end = start;
+            for tip in [true, false] {
+                for (models, owned) in &mut groups {
+                    let Some(g) = owned.get_mut(look.index()) else { continue };
+                    let from = out.vertices.len() as u32;
+                    out.vertices.append(if tip { &mut g.tip } else { &mut g.body });
+                    let to = out.vertices.len() as u32;
+                    if to > from {
+                        out.runs.push(Run { look, tip, models: *models, range: from..to });
+                    }
+                }
+                if tip {
+                    tips_end = out.vertices.len() as u32;
+                }
+            }
             if let (Some(range), Some(tips)) = (out.ranges.get_mut(look.index()), out.tips.get_mut(look.index())) {
                 *range = start..out.vertices.len() as u32;
                 *tips = start..tips_end;
             }
-            out.joints.extend(g.joints);
+            for (models, owned) in &mut groups {
+                if let Some(g) = owned.get_mut(look.index()) {
+                    out.joints.extend(g.joints.drain(..).map(|(c, r, l, t)| (c, r, l, t, models[0])));
+                }
+            }
         }
         out.bounds = out.vertices.iter().map(|v| Vec3::from(v.pos)).collect();
         let mesh = Arc::new(out);
@@ -554,21 +629,29 @@ mod tests {
     use resin_engine::{PresetId, Session};
     use serde_json::json;
 
-    /// A hidden model's supports are not drawn, picked or counted, and stand on no raft.
+    /// A floating triangle facing down, imported where it is, with a support under it.
+    fn floating(s: &mut Session, name: &str, x: f64) -> u64 {
+        let path = std::env::temp_dir().join(format!("resin-ui-routes-{name}-{}.stl", std::process::id()));
+        let text = "solid p\nfacet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 20 10\nendloop\nendfacet\nendsolid p\n";
+        std::fs::write(&path, text).unwrap();
+        let m = s.execute("file.import_stl", &json!({ "path": path, "fit": false })).unwrap()["id"].as_u64().unwrap();
+        std::fs::remove_file(&path).ok();
+        let at = s.scene.model(m).unwrap().bounds.min;
+        s.execute("support.add", &json!({ "model": m, "point": [at.x + x, at.y + 10.0, at.z], "normal": [0, 0, -1] })).unwrap();
+        m
+    }
+
+    /// A hidden model's supports are not drawn, picked or counted, and its raft is not drawn.
     #[test]
     fn a_hidden_models_supports_are_out_of_sight() {
         let mut s = Session::new();
-        let path = std::env::temp_dir().join(format!("resin-ui-routes-hidden-{}.stl", std::process::id()));
-        let text = "solid p\nfacet normal 0 0 0\nouter loop\nvertex 0 0 10\nvertex 0 20 10\nvertex 20 20 10\nendloop\nendfacet\nendsolid p\n";
-        std::fs::write(&path, text).unwrap();
-        let m = s.execute("file.import_stl", &json!({ "path": path })).unwrap()["id"].as_u64().unwrap();
-        std::fs::remove_file(&path).ok();
-        s.execute("support.add", &json!({ "model": m, "point": [5, 10, 10], "normal": [0, 0, -1] })).unwrap();
+        let m = floating(&mut s, "hidden", 5.0);
         let preset = PresetId::Medium.defaults();
         let mut cache = RouteCache::default();
         while cache.update(&s.scene, &preset) {}
         cache.wait_raft();
-        let (o, d) = (resin_engine::geom::Vec3::new(5.0, -50.0, 5.0), resin_engine::geom::Vec3::new(0.0, 1.0, 0.0));
+        let tip = s.scene.supports()[0].tip;
+        let (o, d) = (Vec3::new(tip.x, tip.y - 50.0, 5.0), Vec3::new(0.0, 1.0, 0.0));
         assert!(cache.piece_hit(&s.scene, &preset, o, d, true).is_some());
         assert!(!cache.mesh(&s.scene, &preset, Selection::None, None).vertices.is_empty());
 
@@ -576,8 +659,47 @@ mod tests {
         while cache.update(&s.scene, &preset) {}
         cache.wait_raft();
         assert!(cache.piece_hit(&s.scene, &preset, o, d, true).is_none());
-        assert!(cache.mesh(&s.scene, &preset, Selection::None, None).vertices.is_empty(), "no support and no raft");
+        let mesh = cache.mesh(&s.scene, &preset, Selection::None, None);
+        let hidden = s.scene.hidden_models();
+        assert!(!mesh.runs.is_empty() && mesh.runs.iter().all(|r| !r.shown(&hidden)), "no support and no raft drawn");
+        assert!(mesh.joints.iter().all(|j| j.4 == m) && mesh.handles.iter().all(|h| h.model == m));
         assert_eq!(cache.unreachable(&s.scene), 0);
+    }
+
+    /// Showing or hiding a model routes and builds nothing again, undone too: the same solids,
+    /// each model's raft its own, and only the hidden model's runs left out.
+    #[test]
+    fn hiding_a_model_rebuilds_nothing() {
+        let mut s = Session::new();
+        let (a, b) = (floating(&mut s, "a", 5.0), floating(&mut s, "b", 15.0));
+        let preset = PresetId::Medium.defaults();
+        let mut cache = RouteCache::default();
+        while cache.update(&s.scene, &preset) {}
+        cache.wait_raft();
+        assert_eq!(cache.raft.keys().copied().collect::<Vec<_>>(), vec![a, b], "a raft each");
+        assert!(cache.raft.values().all(|(_, r)| !r.is_empty()));
+        let mesh = cache.mesh(&s.scene, &preset, Selection::Models, None);
+        let generation = cache.generation;
+        for (step, params) in [("model.visibility", json!({ "ids": [a], "visible": false })), ("edit.undo", json!({})), ("edit.redo", json!({}))] {
+            s.execute(step, &params).unwrap();
+            assert!(!cache.update(&s.scene, &preset), "{step}: nothing to route");
+            assert!(cache.generation == generation && !cache.raft_pending(), "{step}: no raft built");
+            assert!(Arc::ptr_eq(&mesh, &cache.mesh(&s.scene, &preset, Selection::Models, None)), "{step}: the same solids");
+        }
+        let hidden = s.scene.hidden_models();
+        assert_eq!(hidden, BTreeSet::from([a]));
+        let shown: BTreeSet<[u64; 2]> = mesh.runs.iter().filter(|r| r.shown(&hidden)).map(|r| r.models).collect();
+        assert_eq!(shown, BTreeSet::from([[b, b]]));
+        assert!(mesh.runs.iter().any(|r| r.models == [a, a]));
+        // The runs cover the vertices once, each look's tips first.
+        let mut at = 0;
+        for r in &mesh.runs {
+            assert_eq!(r.range.start, at);
+            at = r.range.end;
+            let look = &mesh.ranges[r.look.index()];
+            assert!(look.start <= r.range.start && r.range.end <= look.end && r.tip == (r.range.end <= mesh.tips[r.look.index()].end));
+        }
+        assert_eq!(at as usize, mesh.vertices.len());
     }
 
     #[test]
@@ -680,7 +802,7 @@ mod tests {
         assert!(cache.struts(brace).is_none());
         // The raft is built off the window thread: the old one is drawn until the new one is in.
         cache.wait_raft();
-        let drawn = |cache: &RouteCache| cache.raft.as_ref().map(|(k, r)| (k.0, r.len()));
+        let drawn = |cache: &RouteCache| cache.raft.values().next().map(|(k, r)| (k.0, r.len()));
         let before = drawn(&cache).unwrap();
         assert!(before.1 > 0 && !cache.raft_pending());
         let mut wider = preset;
@@ -698,7 +820,7 @@ mod tests {
         // Turned off, it goes at once.
         wider.raft.enabled = false;
         while cache.update(&s.scene, &wider) {}
-        assert!(!cache.raft_pending() && drawn(&cache).unwrap().1 == 0);
+        assert!(!cache.raft_pending() && drawn(&cache).is_none());
         std::fs::remove_file(path).ok();
     }
 }

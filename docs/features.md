@@ -115,7 +115,7 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 
 ### The Models card
 **As a** maker, **I want** every model listed on a card I can fold or move, **so that** I can find, name and put aside the parts on my plate.
-- A row per model; its eye hides the model and its supports, which are then neither drawn, picked, selected, sliced nor exported, and kept hidden in the project.
+- A row per model; its eye hides the model, its supports and its raft, which are then neither drawn, picked, selected, sliced nor exported, and kept hidden in the project. Hiding and showing are instant: nothing is rebuilt.
 - A double click or F2 renames a model in its row: Enter keeps the name, Esc puts it back.
 - A right click opens its menu: Duplicate (Ctrl+D) adds a copy with its supports beside the others, Rename, Delete; on a selected model it acts on the whole selection.
 - Commands: `model.visibility`, `model.rename`, `model.duplicate`
@@ -178,8 +178,9 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 - Command: `support.add_braces`
 
 ### Stand everything on a raft
-**As a** maker, **I want** one raft under every base, **so that** the print sticks to the plate and comes off in one piece.
+**As a** maker, **I want** a raft under each model's bases, **so that** the print sticks to the plate and comes off in one piece.
 - The bases' outline widened by a margin, with gaps up to a merge distance filled; straight, undercut or chamfered edge; optional rim. Drawn and printed.
+- Each model has its own raft, never joined with another model's; where two overlap they print as one.
 
 ### Label prints on the raft
 **As a** maker, **I want** a model's name or number standing out of its raft, **so that** I can tell calibration prints apart once they're off the plate.

@@ -1,5 +1,7 @@
-//! The raft: one plate under every base that reaches the plate, widened out to the models' labels,
-//! drawn and printed alike. Like the routes it stands on, it is derived, never stored.
+//! The raft: a plate under each model's bases that reach the plate, widened out to its label,
+//! drawn and printed alike. Each model has its own, never joined with another's, so hiding a
+//! model leaves the others' rafts as they are. Like the routes it stands on, it is derived,
+//! never stored.
 
 use resin_geom::{Field2, Label, LabelLayout, RaftProfile, Vec3, raft_solid};
 

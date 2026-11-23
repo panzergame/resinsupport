@@ -614,6 +614,28 @@ fn a_support_goes_straight_down_when_it_can() {
     assert_eq!(listed["supports"][0]["path"], json!([[10.0, 10.0, 10.0], [10.0, 10.0, 8.0], [10.0, 10.0, 0.0]]));
 }
 
+/// Two models' supports 6 mm apart, which one raft would join: each model stands on its own.
+#[test]
+fn each_model_stands_on_its_own_raft() {
+    let mut s = Session::new();
+    let a = s.scene.add("a".into(), boxes(&[([0.0, 0.0, 10.0], [10.0, 10.0, 12.0])]));
+    let b = s.scene.add("b".into(), boxes(&[([10.5, 0.0, 10.0], [20.0, 10.0, 12.0])]));
+    s.execute("support.add", &json!({ "model": a, "point": [7, 5, 10], "normal": [0, 0, -1] })).unwrap();
+    s.execute("support.add", &json!({ "model": b, "point": [13, 5, 10], "normal": [0, 0, -1] })).unwrap();
+    let p = *s.support_settings().current();
+    let (input, unreachable) = s.slice_input();
+    assert_eq!(unreachable, 0);
+    let supports: Vec<&resin_slice::Solid> = input.solids.iter().filter(|x| x.kind == SolidKind::Support).collect();
+    assert_eq!(supports.len(), 4, "two supports and two rafts");
+    let rafts: Vec<resin_geom::Aabb3> =
+        supports.iter().map(|x| resin_geom::Mesh::new(x.triangles.clone()).bounds()).filter(|b| (b.max.z - p.raft.thickness).abs() < 1e-6).collect();
+    assert_eq!(rafts.len(), 2);
+    let feet = routes(&s).iter().map(|r| r.body.last().unwrap().x).collect::<Vec<_>>();
+    for (raft, foot) in rafts.iter().zip(feet) {
+        assert!((raft.center().x - foot).abs() < 0.05, "one disc under its own foot: {raft:?} {foot}");
+    }
+}
+
 #[test]
 fn joints_and_segments_are_selected_with_their_supports() {
     let mut s = Session::new();
@@ -1163,11 +1185,15 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     let routes: Vec<(u64, crate::Route)> = s.scene.supports().iter().map(|t| (t.model, route(&s.scene, t, &preset))).collect();
     let sites = label_sites(&s.scene, routes.iter().map(|(m, r)| (*m, r)));
     assert_eq!(sites.iter().map(|(l, _)| l.text.as_str()).collect::<Vec<_>>(), ["A\n1", "3"], "the slab's too");
-    let all = label_triangles(&sites, &preset);
-    assert!(
-        input.solids.iter().any(|x| x.kind == SolidKind::Support && x.slicing.is_none() && x.triangles == all),
-        "printed with the plate's settings"
-    );
+    // Each model's letters on its own raft.
+    let own = label_triangles(&sites[..1], &preset);
+    for one in sites.chunks(1) {
+        let letters = label_triangles(one, &preset);
+        assert!(
+            input.solids.iter().any(|x| x.kind == SolidKind::Support && x.slicing.is_none() && x.triangles == letters),
+            "printed with the plate's settings"
+        );
+    }
     let b0 = resin_geom::Mesh::new(label_triangles(&sites[..1], &preset)).bounds();
     let foot = route(&s.scene, &s.scene.supports()[0], &preset).body.last().copied().unwrap();
     let r = preset.base.diameter / 2.0;
@@ -1175,13 +1201,13 @@ fn a_models_label_is_printed_beside_its_raft_and_goes_with_it() {
     assert!((b0.min.y - (foot.y + r + 1.8)).abs() < 0.05, "{b0:?} {foot:?}");
     assert!((b0.min.z - preset.raft.thickness / 2.0).abs() < 1e-4 && (b0.max.z - (preset.raft.thickness + 0.5)).abs() < 1e-4, "{b0:?}");
     // The raft comes just before the letters.
-    let at = input.solids.iter().position(|x| x.triangles == all).unwrap();
+    let at = input.solids.iter().position(|x| x.triangles == own).unwrap();
     let raft = &input.solids[at - 1];
     let rb = resin_geom::Mesh::new(raft.triangles.clone()).bounds();
     assert!(rb.max.y > b0.max.y + 0.95, "the raft reaches round the letters: {rb:?} {b0:?}");
     let before = input.solids.len();
     s.execute("support.configure", &json!({ "raft": { "enabled": false } })).unwrap();
-    assert_eq!(s.slice_input().0.solids.len(), before - 2, "neither raft nor label without a raft");
+    assert_eq!(s.slice_input().0.solids.len(), before - 4, "neither rafts nor labels without a raft");
     s.execute("support.configure", &json!({ "raft": { "enabled": true } })).unwrap();
 
     // A copy has it, so has a saved and reopened project.
@@ -2244,8 +2270,10 @@ fn a_hidden_model_is_out_of_sight_and_out_of_the_print() {
     assert_eq!(s.scene.ray_hit(over_a, -Vec3::Z).map(|(id, _)| id), Some(a));
 
     let depth = s.undo_depth();
+    let (revision, shape) = (s.scene.revision(), s.scene.shape_revision());
     s.execute("model.visibility", &json!({ "visible": false })).unwrap();
     assert_eq!(s.undo_depth(), depth + 1);
+    assert!(s.scene.revision() != revision && s.scene.shape_revision() == shape, "a step, and no shape changed");
     assert!(s.scene.model(a).unwrap().hidden && !s.scene.shows(a) && !s.scene.shows_support(tip));
     assert!(s.scene.selected_models.is_empty() && s.scene.selected.is_empty() && s.scene.selected_parts.is_empty());
     assert!(s.scene.ray_hit(over_a, -Vec3::Z).is_none(), "passed through");
@@ -2274,7 +2302,12 @@ fn a_hidden_model_is_out_of_sight_and_out_of_the_print() {
     let depth = s.undo_depth();
     s.execute("model.visibility", &json!({ "ids": [a], "visible": true })).unwrap();
     assert_eq!(s.undo_depth(), depth, "showing a shown model is no step");
+    let shape = s.scene.shape_revision();
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.scene.model(a).unwrap().hidden);
+    s.execute("edit.redo", &json!({})).unwrap();
+    assert!(s.scene.shows(a));
+    assert_eq!(s.scene.shape_revision(), shape, "nor undone and redone");
+    s.execute("edit.undo", &json!({})).unwrap();
     std::fs::remove_dir_all(dir).ok();
 }

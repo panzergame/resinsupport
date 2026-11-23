@@ -41,7 +41,7 @@ impl SliceSource {
     }
 
     /// The slicer's input: each model placed, each support that reaches the plate (a branch: through
-    /// its parent) as its closed solids, the raft under them and the models' labels on it; and how
+    /// its parent) as its closed solids, each model's raft under its own and its label on it; and how
     /// many supports do not reach it, which are left out. A model with slicing settings of its own
     /// takes them, and so do its supports and the braces between them; the raft and the labels
     /// keep the plate's.
@@ -85,14 +85,18 @@ impl SliceSource {
             let slicing = if ma == mb { own(*ma) } else { None };
             solids.push(Solid { kind: SolidKind::Support, triangles, slicing });
         }
-        let sites = label_sites(&self.scene, printed.values().map(|(r, m)| (*m, r)));
-        let raft = raft_triangles(&raft_feet(printed.values().map(|(r, _)| r)), &sites, &self.preset);
-        if !raft.is_empty() {
-            solids.push(Solid { kind: SolidKind::Support, triangles: raft, slicing: None });
-        }
-        let labels = label_triangles(&sites, &self.preset);
-        if !labels.is_empty() {
-            solids.push(Solid { kind: SolidKind::Support, triangles: labels, slicing: None });
+        // Overlapping rafts of two models print as their union: the slicer fills by the nonzero rule.
+        for m in models {
+            let held = || printed.values().filter(|(_, model)| *model == m.id);
+            let sites = label_sites(&self.scene, held().map(|(r, m)| (*m, r)));
+            let raft = raft_triangles(&raft_feet(held().map(|(r, _)| r)), &sites, &self.preset);
+            if !raft.is_empty() {
+                solids.push(Solid { kind: SolidKind::Support, triangles: raft, slicing: None });
+            }
+            let labels = label_triangles(&sites, &self.preset);
+            if !labels.is_empty() {
+                solids.push(Solid { kind: SolidKind::Support, triangles: labels, slicing: None });
+            }
         }
         let input = SliceInput { solids, profile: self.config.printer.clone(), settings: self.config.settings, stamp: self.stamp };
         (input, unreachable)

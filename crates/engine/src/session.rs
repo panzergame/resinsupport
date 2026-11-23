@@ -173,6 +173,9 @@ pub struct Scene {
     next_support_id: u64,
     next_brace_id: u64,
     revision: u64,
+    /// Like `revision`, but left alone by showing or hiding a model: what is built from the
+    /// scene (routes, rafts) is the same either way, only what is drawn and sliced changes.
+    shape_revision: u64,
 }
 
 impl Default for Scene {
@@ -190,6 +193,7 @@ impl Default for Scene {
             next_support_id: 0,
             next_brace_id: 0,
             revision: 0,
+            shape_revision: 0,
         }
     }
 }
@@ -219,6 +223,15 @@ impl Scene {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    /// Changes with [`Self::revision`], except when a model is only shown or hidden: a cache of
+    /// solids built for every model, shown or not, is stale once it does.
+    pub fn shape_revision(&self) -> u64 {
+        self.shape_revision
+    }
+    fn bump(&mut self) {
+        self.revision += 1;
+        self.shape_revision += 1;
+    }
     /// The box around these models.
     pub fn bounds_of(&self, ids: &[u64]) -> Aabb3 {
         self.models.iter().filter(|m| ids.contains(&m.id)).fold(Aabb3::EMPTY, |b, m| b.union(&m.bounds))
@@ -228,7 +241,7 @@ impl Scene {
     }
     fn add_shared(&mut self, name: String, mesh: Arc<Mesh>) -> u64 {
         self.next_id += 1;
-        self.revision += 1;
+        self.bump();
         let bounds = mesh.bounds();
         let pivot = bounds.center();
         let index = Arc::new(MeshIndex::new(&mesh));
@@ -261,7 +274,7 @@ impl Scene {
         if edits.iter().all(|(id, o)| self.model(*id).is_some_and(|m| m.slicing == *o)) {
             return Ok(());
         }
-        self.revision += 1;
+        self.bump();
         for (id, o) in edits {
             if let Some(m) = self.models.iter_mut().find(|m| m.id == *id) {
                 m.slicing = *o;
@@ -280,7 +293,7 @@ impl Scene {
         if m.label == label {
             return Ok(());
         }
-        self.revision += 1;
+        self.bump();
         if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
             m.label = label;
         }
@@ -304,7 +317,7 @@ impl Scene {
         if m.name == name {
             return Ok(());
         }
-        self.revision += 1;
+        self.bump();
         if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
             m.name = name.to_string();
         }
@@ -327,6 +340,11 @@ impl Scene {
         self.prune_selection();
         Ok(())
     }
+    /// The hidden models' ids: what the view leaves out of the models, their supports and their
+    /// rafts alike.
+    pub fn hidden_models(&self) -> BTreeSet<u64> {
+        self.models.iter().filter(|m| m.hidden).map(|m| m.id).collect()
+    }
     /// Whether model `id` is in the scene and not hidden.
     pub fn shows(&self, id: u64) -> bool {
         self.model(id).is_some_and(|m| !m.hidden)
@@ -339,7 +357,7 @@ impl Scene {
     /// leaves it: what is sliced.
     pub(crate) fn shown(&self, preset: &SupportPreset) -> Scene {
         let mut out = self.clone();
-        let hidden: BTreeSet<u64> = self.models.iter().filter(|m| m.hidden).map(|m| m.id).collect();
+        let hidden = self.hidden_models();
         if !hidden.is_empty() {
             out.remove_models(|id| hidden.contains(&id), preset);
         }
@@ -361,7 +379,7 @@ impl Scene {
         if !placed.iter().any(|(id, p, lifted, ..)| self.model(*id).is_some_and(|m| m.placement != *p || m.lifted != *lifted)) {
             return Ok(());
         }
-        self.revision += 1;
+        self.bump();
         for (id, p, lifted, xf, bounds) in placed {
             let mut shift = None;
             if let Some(m) = self.models.iter_mut().find(|m| m.id == id) {
@@ -450,7 +468,7 @@ impl Scene {
             return Err(e);
         }
         // The height alone is a change too: it decides where the next lifted model goes.
-        self.revision += 1;
+        self.bump();
         Ok(())
     }
     /// A tip at scene point `tip` with scene normal `normal` on `model`, which must exist; when
@@ -466,7 +484,7 @@ impl Scene {
         let local_tip = inv.point(tip);
         let local_normal = inv.normal(normal).unwrap_or(normal);
         self.next_support_id += 1;
-        self.revision += 1;
+        self.bump();
         self.supports.push(Support { id: self.next_support_id, model, tip, normal, corners: None, parent, local_tip, local_normal });
         Ok(self.next_support_id)
     }
@@ -487,7 +505,7 @@ impl Scene {
         if s.parent.is_none() {
             self.drop_braces_of(&[id]);
         }
-        self.revision += 1;
+        self.bump();
         Ok(())
     }
     /// Give each listed support the corners the user placed, or (`None`) its worked-out route
@@ -500,7 +518,7 @@ impl Scene {
         if corners.iter().all(|(id, c)| self.supports.iter().any(|s| s.id == *id && s.corners == *c)) {
             return Ok(());
         }
-        self.revision += 1;
+        self.bump();
         let mut edited = Vec::new();
         for (id, c) in corners {
             if let Some(s) = self.supports.iter_mut().find(|s| s.id == id)
@@ -522,7 +540,7 @@ impl Scene {
         // Removing nothing must not bump: it would make an empty undo step.
         let removed = self.models.len() != before;
         if removed {
-            self.revision += 1;
+            self.bump();
         }
         removed
     }
@@ -534,7 +552,7 @@ impl Scene {
         self.drop_supports(|s| ids.contains(&s.id), preset);
         self.prune_selection();
         if self.supports.len() != before {
-            self.revision += 1;
+            self.bump();
         }
     }
     /// Make `pairs` the braces among supports `among`: every brace joining two of them goes, and
@@ -556,7 +574,7 @@ impl Scene {
         match self.add_braces(pairs) {
             Ok(ids) => {
                 self.prune_selection();
-                self.revision += 1;
+                self.bump();
                 Ok((ids, gone.len()))
             }
             Err(e) => {
@@ -600,7 +618,7 @@ impl Scene {
         }
         if changed {
             self.prune_selection();
-            self.revision += 1;
+            self.bump();
         }
         Ok(ids)
     }
@@ -611,7 +629,7 @@ impl Scene {
         let removed = before - self.braces.len();
         if removed > 0 {
             self.prune_selection();
-            self.revision += 1;
+            self.bump();
         }
         removed
     }
@@ -685,7 +703,7 @@ impl Scene {
         self.supports.clear();
         self.braces.clear();
         self.prune_selection();
-        self.revision += 1;
+        self.bump();
         self.append(p).map(|_| ())
     }
     /// Add the project `p`'s models and supports beside what is there, with new ids, unlifted,
@@ -763,6 +781,11 @@ impl Scene {
         older.next_support_id = older.next_support_id.max(self.next_support_id);
         older.next_brace_id = older.next_brace_id.max(self.next_brace_id);
         older.revision = older.revision.max(self.revision) + 1;
+        // The shape revision only grows, so an equal one is the same shapes: a step that only
+        // showed or hid models.
+        if older.shape_revision != self.shape_revision {
+            older.shape_revision = older.shape_revision.max(self.shape_revision) + 1;
+        }
         std::mem::replace(self, older)
     }
     /// The support whose body `id` shares: itself unless it is a branch. `None` when `id` is unknown.

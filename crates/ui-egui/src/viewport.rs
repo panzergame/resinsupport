@@ -2,6 +2,7 @@
 //! input. In Slice edition with a job, the layer slider over it, the solids cut at the shown
 //! layer, or the 2D layer view in its place.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
@@ -134,10 +135,11 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     }
     let selection = if app.mode == EditMode::Support { Selection::Supports } else { Selection::Models };
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, selection, crate::supports::moving(app));
+    let hidden = app.session.scene.hidden_models();
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
     let spheres = support_spheres(app, tokens);
-    let joints = joint_spheres(&support_mesh, &colors, supports::body_alpha(app));
-    let handles = joint_handles(app, &support_mesh, tokens);
+    let joints = joint_spheres(&support_mesh, &hidden, &colors, supports::body_alpha(app));
+    let handles = joint_handles(app, &support_mesh, &hidden, tokens);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
     for s in spheres.iter().chain(&joints).chain(&handles) {
         let r = f64::from(s.radius);
@@ -178,6 +180,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         joints,
         handles,
         models: model_draws(app, tokens),
+        hidden,
         supports: Some(support_mesh),
         support_colors: colors,
         body_alpha: supports::body_alpha(app),
@@ -200,8 +203,9 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
     app.routes.update(&app.session.scene, &preset);
     app.routes.wait_raft();
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, Selection::None, None);
+    let hidden = app.session.scene.hidden_models();
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
-    let joints = joint_spheres(&support_mesh, &colors, 1.0);
+    let joints = joint_spheres(&support_mesh, &hidden, &colors, 1.0);
     let mut solid = app.session.scene.bounds().union(&support_mesh.bounds);
     for s in &joints {
         let r = f64::from(s.radius);
@@ -219,7 +223,6 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
         .scene
         .models()
         .iter()
-        .filter(|m| !m.hidden)
         .map(|m| ModelDraw { id: m.id, mesh: Arc::clone(&m.mesh), transform: m.transform, color: model, overhang: false })
         .collect();
     ViewFrame {
@@ -236,6 +239,7 @@ pub(crate) fn preview_frame(app: &mut ResinApp, tokens: &Tokens, aspect: f64) ->
         joints,
         handles: Vec::new(),
         models,
+        hidden,
         supports: Some(support_mesh),
         support_colors: colors,
         body_alpha: 1.0,
@@ -278,15 +282,14 @@ fn plate_outline(x: f64, y: f64, color: [f32; 4]) -> [Line; 4] {
     [0, 1, 2, 3].map(|i| Line { a: c[i], b: c[(i + 1) % 4], color })
 }
 
-/// Every shown model, the selected ones in their own colour while in Object or Slice mode; in Support mode,
-/// with the faces that need supports tinted.
+/// Every model, hidden ones too, so their meshes stay uploaded; the selected ones in their own
+/// colour while in Object or Slice mode; in Support mode, with the faces that need supports tinted.
 fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
     let scene = &app.session.scene;
     let (plain, selected) = (linear(tokens.model), linear(tokens.model_selected));
     scene
         .models()
         .iter()
-        .filter(|m| !m.hidden)
         .map(|m| {
             let picked = app.mode != EditMode::Support && scene.selected_models.contains(&m.id);
             ModelDraw {
@@ -300,11 +303,13 @@ fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
         .collect()
 }
 
-/// The supports' round joints in their look's colour, the bodies' as opaque as `body_alpha`.
-fn joint_spheres(mesh: &SupportMesh, colors: &[[f32; 4]; 3], body_alpha: f32) -> Vec<Sphere> {
+/// The supports' round joints but the `hidden` models', in their look's colour, the bodies' as
+/// opaque as `body_alpha`.
+fn joint_spheres(mesh: &SupportMesh, hidden: &BTreeSet<u64>, colors: &[[f32; 4]; 3], body_alpha: f32) -> Vec<Sphere> {
     mesh.joints
         .iter()
-        .filter_map(|&(center, radius, look, tip)| {
+        .filter(|j| !hidden.contains(&j.4))
+        .filter_map(|&(center, radius, look, tip, _)| {
             let [r, g, b, _] = *colors.get(look.index())?;
             Some(Sphere { center, radius, color: [r, g, b, if tip { 1.0 } else { body_alpha }] })
         })
@@ -345,12 +350,13 @@ fn support_spheres(app: &ResinApp, tokens: &Tokens) -> Vec<Sphere> {
 
 /// The selected joints' handles and the selected supports' contact handles, in Support edition
 /// only: the joints and tips are what it edits.
-fn joint_handles(app: &ResinApp, mesh: &SupportMesh, tokens: &Tokens) -> Vec<Sphere> {
+fn joint_handles(app: &ResinApp, mesh: &SupportMesh, hidden: &BTreeSet<u64>, tokens: &Tokens) -> Vec<Sphere> {
     if app.mode != EditMode::Support {
         return Vec::new();
     }
     let color = linear(tokens.support_selected);
-    let joints = mesh.handles.iter().filter(|h| h.selected).map(|h| Sphere { center: h.center, radius: h.radius, color });
+    let joints =
+        mesh.handles.iter().filter(|h| h.selected && !hidden.contains(&h.model)).map(|h| Sphere { center: h.center, radius: h.radius, color });
     let contact = linear(tokens.support_preview);
     let tips = supports::tip_handles(app).into_iter().map(|(_, center, r)| Sphere { center, radius: r as f32, color: contact });
     joints.chain(tips).collect()

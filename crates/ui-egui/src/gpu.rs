@@ -3,7 +3,7 @@
 //! render pass. In Slice edition the solids are cut at the shown layer and the cut is capped with
 //! the layer's image; the 2D layer view draws that image alone, from the same textures.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use egui_wgpu::wgpu;
@@ -179,7 +179,10 @@ pub struct ViewFrame {
     pub joints: Vec<Sphere>,
     /// Joint handles: drawn after everything, faded where the scene hides them.
     pub handles: Vec<Sphere>,
+    /// Every model, hidden ones too: a hidden model's mesh stays uploaded, ready to show again.
     pub models: Vec<ModelDraw>,
+    /// The hidden models: neither they, their supports nor their rafts are drawn.
+    pub hidden: BTreeSet<u64>,
     /// The supports' solids, already in the scene, and the colour of each [`Look`].
     pub supports: Option<Arc<SupportMesh>>,
     pub support_colors: [[f32; 4]; 3],
@@ -951,7 +954,7 @@ impl Renderer {
         pass.draw(0..3, 0..1);
         if let Some((instances, _)) = &self.model_instances {
             pass.set_pipeline(&self.mesh);
-            for (i, m) in f.models.iter().enumerate() {
+            for (i, m) in f.models.iter().enumerate().filter(|(_, m)| !f.hidden.contains(&m.id)) {
                 let Some(gpu) = self.meshes.get(&m.id) else { continue };
                 let at = i as u64 * INSTANCE_STRIDE;
                 pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
@@ -1022,16 +1025,19 @@ impl Renderer {
         };
         pass.set_pipeline(pipeline);
         pass.set_vertex_buffer(0, buffer.slice(..));
-        for look in Look::ALL {
-            let (Some(all), Some(tips)) = (mesh.ranges.get(look.index()), mesh.tips.get(look.index())) else { continue };
-            for (range, instance) in [(tips.clone(), look.index()), (tips.end..all.end, Look::ALL.len() + look.index())] {
-                if range.is_empty() {
-                    continue;
-                }
-                let at = (f.models.len() + instance) as u64 * INSTANCE_STRIDE;
-                pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
-                pass.draw(range, 0..1);
+        // Per look, its tips then its bodies: neighbouring runs of one colour go in one draw.
+        let mut draws: Vec<(std::ops::Range<u32>, usize)> = Vec::new();
+        for run in mesh.runs.iter().filter(|r| r.shown(&f.hidden)) {
+            let instance = if run.tip { run.look.index() } else { Look::ALL.len() + run.look.index() };
+            match draws.last_mut() {
+                Some((range, i)) if *i == instance && range.end == run.range.start => range.end = run.range.end,
+                _ => draws.push((run.range.clone(), instance)),
             }
+        }
+        for (range, instance) in draws {
+            let at = (f.models.len() + instance) as u64 * INSTANCE_STRIDE;
+            pass.set_vertex_buffer(1, instances.slice(at..at + INSTANCE_STRIDE));
+            pass.draw(range, 0..1);
         }
     }
 
