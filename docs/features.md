@@ -116,8 +116,9 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 ### The Models card
 **As a** maker, **I want** every model listed on a card I can fold or move, **so that** I can find, name and put aside the parts on my plate.
 - A row per model; its eye hides the model, its supports and its raft, which are then neither drawn, picked, selected, sliced nor exported, and kept hidden in the project. Hiding and showing are instant: nothing is rebuilt.
+- H hides the selected models, in any edition; Alt+H shows every hidden model again. Each is one undo step.
 - A double click or F2 renames a model in its row: Enter keeps the name, Esc puts it back.
-- A right click opens its menu: Duplicate (Ctrl+D) adds a copy with its supports beside the others, Rename, Delete; on a selected model it acts on the whole selection.
+- A right click opens its menu: Duplicate (Ctrl+D) adds a copy with its supports beside the others, Rename, Hide or Show, Delete; on a selected model it acts on the whole selection.
 - Commands: `model.visibility`, `model.rename`, `model.duplicate`
 
 **Not yet**
@@ -172,7 +173,7 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 
 ### Brace supports together
 **As a** maker, **I want** struts between neighbouring supports, **so that** tall supports don't sway or snap during peeling.
-- H with supports selected; pairs them by chain, spanning tree, or every pair within a reach.
+- Z with supports selected; pairs them by chain, spanning tree, or every pair within a reach.
 - Zig-zag or crossed struts at a set angle, section by section between knees, a share of the body's diameter, clear of heads and bases; struts that would come near a model are left out.
 - Editing a braced support removes its braces.
 - Command: `support.add_braces`

@@ -105,7 +105,7 @@ preference_settings! {
     /// Where lifted models' lowest points sit, mm: tool data of the object settings card, on no
     /// page, like `support_settings`.
     lift_height: f64 = resin_engine::DEFAULT_LIFT_HEIGHT;
-    /// The brace card's settings (H): tool data, on no page, like `support_settings`. A value
+    /// The brace card's settings (Z): tool data, on no page, like `support_settings`. A value
     /// out of range keeps its default ([`crate::support_brace::BraceState::restore`]).
     brace_tool: crate::support_brace::BraceSettings = crate::support_brace::BraceSettings::default();
     /// The tip line's spacing and tips per body (L): tool data, as `brace_tool`.

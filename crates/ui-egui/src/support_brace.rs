@@ -1,9 +1,9 @@
-//! Braces (H in Support edition): struts between the bodies of the selected supports, a selected
+//! Braces (Z in Support edition): struts between the bodies of the selected supports, a selected
 //! segment standing for its support. The card sets the pattern, how supports are paired, the
 //! angle, the struts' diameter, the gaps at the head and above the base, and how far apart braced
 //! supports may stand; the struts show live, and the selection may change while it is open.
 //! Enter (OK) runs `support.add_braces`, one step, in place of the braces already joining the
-//! selected supports, so changing the pairing or a setting and pressing H again rebuilds them; Esc, Cancel or a mode change puts the tool away,
+//! selected supports, so changing the pairing or a setting and pressing Z again rebuilds them; Esc, Cancel or a mode change puts the tool away,
 //! the scene and the undo history untouched. The settings are kept in the preferences.
 
 use egui::vec2;
@@ -288,10 +288,10 @@ mod tests {
     use crate::prefs::Prefs;
     use egui::{Event, Modifiers, Pos2, Rect};
 
-    /// H with supports selected opens the card and shows the struts Enter adds in one step; Esc
+    /// Z with supports selected opens the card and shows the struts Enter adds in one step; Esc
     /// puts it away with no step; the settings stay for the next time.
     #[test]
-    fn h_braces_the_selected_supports_and_enter_adds_them() {
+    fn z_braces_the_selected_supports_and_enter_adds_them() {
         let dir = std::env::temp_dir().join(format!("resin-ui-brace-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("slab.stl");
@@ -326,12 +326,14 @@ mod tests {
             [true, false].map(|pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }).to_vec()
         };
 
-        frame(&mut app, key(egui::Key::H));
-        assert!(tool(&app).is_none(), "Object edition: H does nothing but say so");
+        frame(&mut app, key(egui::Key::Z));
+        assert!(tool(&app).is_none(), "Object edition: Z does nothing but say so");
         app.mode = EditMode::Support;
         // `a` itself, and `b` through a selected segment.
         app.run("support.select", json!({ "ids": [a], "parts": [{ "support": b, "segment": 0 }] }));
         frame(&mut app, key(egui::Key::H));
+        assert!(tool(&app).is_none(), "H hides models, it opens no braces");
+        frame(&mut app, key(egui::Key::Z));
         frame(&mut app, vec![]);
         let preview = tool(&app).expect("the card is open");
         assert_eq!(preview.supports, vec![a, b]);
@@ -347,7 +349,7 @@ mod tests {
         // Again with all three, crossed: Enter adds two braces in one step.
         app.brace.params.pattern = BracePattern::Cross;
         app.run("support.select", json!({ "ids": [a, b, c] }));
-        frame(&mut app, key(egui::Key::H));
+        frame(&mut app, key(egui::Key::Z));
         frame(&mut app, vec![]);
         frame(&mut app, key(egui::Key::Enter));
         let braces = app.session.scene.braces();
@@ -357,11 +359,11 @@ mod tests {
         assert!(tool(&app).is_none());
         assert_eq!(app.brace.params.pattern, BracePattern::Cross, "the settings stay");
 
-        // Every pair in reach, then H again: the tree's two braces give way to three.
+        // Every pair in reach, then Z again: the tree's two braces give way to three.
         app.brace.pairing = BracePairing::All;
         app.brace.max_distance = 20.0;
         app.brace.params.angle = 30.0;
-        frame(&mut app, key(egui::Key::H));
+        frame(&mut app, key(egui::Key::Z));
         frame(&mut app, vec![]);
         let preview = tool(&app).expect("the card is open");
         assert_eq!((preview.braces.len(), preview.replaced), (3, 2));
@@ -369,7 +371,7 @@ mod tests {
         assert_eq!(app.session.scene.braces().len(), 3);
         // Back to the tree: rebuilt, not added to.
         app.brace.pairing = BracePairing::Tree;
-        frame(&mut app, key(egui::Key::H));
+        frame(&mut app, key(egui::Key::Z));
         frame(&mut app, vec![]);
         frame(&mut app, key(egui::Key::Enter));
         let braces = app.session.scene.braces();

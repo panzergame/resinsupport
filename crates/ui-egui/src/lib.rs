@@ -718,6 +718,9 @@ impl ResinApp {
         if self.mode == EditMode::Object && ctx.input_mut(|i| i.consume_shortcut(&models_card::RENAME)) {
             models_card::rename_selected(self);
         }
+        if ctx.input_mut(|i| i.consume_shortcut(&models_card::SHOW_ALL)) {
+            models_card::show_all(self);
+        }
         if self.mode == EditMode::Object && ctx.input_mut(|i| i.consume_shortcut(&SELECT_ALL)) {
             let ids: Vec<u64> = self.session.scene.models().iter().map(|m| m.id).collect();
             self.run("model.select", json!({ "ids": ids }));
@@ -776,10 +779,11 @@ impl ResinApp {
                     self.tool = None;
                     self.boxsel = None;
                 }
-                egui::Key::H if plain => support_brace::open(self),
+                egui::Key::H if plain => models_card::hide_selected(self),
                 egui::Key::L if plain && self.mode == EditMode::Object => object_label::open(self),
                 egui::Key::L if plain => support_line::open(self),
                 egui::Key::T if plain => transform::open(self, transform::Op::Move),
+                egui::Key::Z if plain => support_brace::open(self),
                 egui::Key::R if plain => transform::open(self, transform::Op::Rotate),
                 egui::Key::S if plain => transform::open(self, transform::Op::Scale),
                 // Backspace too: Mac laptops have no Delete key.

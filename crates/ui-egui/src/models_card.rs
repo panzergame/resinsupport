@@ -1,7 +1,8 @@
 //! The Models card, at the viewport's top left in every edition: a row per model, as SolidCraft's
 //! browser lists bodies, one level deep. A click selects (Shift toggles; in Slice edition one model
 //! at a time), the eye hides or shows the model, a double click or F2 renames it in its row, and a
-//! right click opens its menu: Duplicate, Rename, Delete. The chevron folds the card to its header.
+//! right click opens its menu: Duplicate, Rename, Hide or Show, Delete. H hides the
+//! selected models and Alt+H shows every hidden one. The chevron folds the card to its header.
 
 use egui::{Pos2, pos2, vec2};
 use resin_engine::MAX_NAME_CHARS;
@@ -18,6 +19,10 @@ pub(crate) const CARD_ID: &str = "models";
 pub(crate) const DUPLICATE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::D);
 /// F2: rename the selected model.
 pub(crate) const RENAME: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::F2);
+/// H: hide the selected models.
+pub(crate) const HIDE: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::H);
+/// Alt+H: show every hidden model.
+pub(crate) const SHOW_ALL: egui::KeyboardShortcut = egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::H);
 
 /// What the card keeps between frames.
 #[derive(Default)]
@@ -38,7 +43,7 @@ pub(crate) struct Renaming {
 /// What a row asked for, run once the rows are drawn.
 enum Act {
     Select(u64, bool),
-    Visible(u64, bool),
+    Visible(Vec<u64>, bool),
     StartRename(u64),
     Rename(u64, String),
     CancelRename,
@@ -93,6 +98,7 @@ fn rows(app: &mut ResinApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) 
     let shift = ui.input(|i| i.modifiers.shift);
     let shortcut = |s: &egui::KeyboardShortcut| ui.ctx().format_shortcut(s);
     let (duplicate_keys, rename_keys) = (shortcut(&DUPLICATE), shortcut(&RENAME));
+    let hide_keys = shortcut(&HIDE);
     for m in scene.models() {
         let title = object_label::titled(m);
         let selected = scene.selected_models.contains(&m.id);
@@ -107,7 +113,7 @@ fn rows(app: &mut ResinApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) 
         }
         let out = ui_kit::browser_row(ui, t, m.id, &row);
         if out.eye {
-            acts.push(Act::Visible(m.id, m.hidden));
+            acts.push(Act::Visible(vec![m.id], m.hidden));
         } else if out.double_clicked {
             acts.push(Act::StartRename(m.id));
         } else if out.clicked {
@@ -126,6 +132,15 @@ fn rows(app: &mut ResinApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) 
                 }
                 if MenuItem::new(i18n::tr("models.rename")).icon("rename").shortcut(&rename_keys).show(ui, t).clicked() {
                     acts.push(Act::StartRename(m.id));
+                }
+                // A hidden model is never selected: its menu acts on it alone.
+                let visibility = if m.hidden {
+                    MenuItem::new(i18n::tr("models.show")).icon("eye")
+                } else {
+                    MenuItem::new(i18n::tr("models.hide")).icon("suppress").shortcut(&hide_keys)
+                };
+                if visibility.show(ui, t).clicked() {
+                    acts.push(Act::Visible(targets.clone(), m.hidden));
                 }
                 ui_kit::menu_separator(ui, t);
                 let delete = MenuItem::new(i18n::tr("models.delete")).icon("delete").shortcut(i18n::tr("key.delete")).danger();
@@ -160,8 +175,8 @@ fn apply(app: &mut ResinApp, act: Act) {
                 app.run("model.select", json!({ "ids": [id], "mode": if shift { "toggle" } else { "replace" } }));
             }
         }
-        Act::Visible(id, visible) => {
-            app.run("model.visibility", json!({ "ids": [id], "visible": visible }));
+        Act::Visible(ids, visible) => {
+            app.run("model.visibility", json!({ "ids": ids, "visible": visible }));
         }
         Act::StartRename(id) => start_rename(app, id),
         Act::Rename(id, text) => {
@@ -200,6 +215,25 @@ pub(crate) fn rename_selected(app: &mut ResinApp) {
     let selected: Vec<u64> = app.session.scene.selected_models.iter().copied().collect();
     if let [id] = selected[..] {
         start_rename(app, id);
+    }
+}
+
+/// H: hide the selected models and their supports, one step. With none selected, says so.
+pub(crate) fn hide_selected(app: &mut ResinApp) {
+    if let Some(v) = app.run("model.visibility", json!({ "visible": false })) {
+        let n = v["ids"].as_array().map_or(0, Vec::len);
+        app.status = Some((i18n::count("status.hid_models", n, &[]), false));
+    }
+}
+
+/// Alt+H: show every hidden model, one step.
+pub(crate) fn show_all(app: &mut ResinApp) {
+    let ids: Vec<u64> = app.session.scene.models().iter().filter(|m| m.hidden).map(|m| m.id).collect();
+    if ids.is_empty() {
+        return;
+    }
+    if app.run("model.visibility", json!({ "ids": ids, "visible": true })).is_some() {
+        app.status = Some((i18n::count("status.showed_models", ids.len(), &[]), false));
     }
 }
 
@@ -314,7 +348,9 @@ mod tests {
         }
 
         fn key(&mut self, key: Key, modifiers: Modifiers) {
-            self.frame(vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }]);
+            // Released too: egui takes a second press of a key still down for a repeat.
+            let event = |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+            self.frame(vec![event(true), event(false)]);
             self.frame(Vec::new());
         }
 
@@ -372,7 +408,7 @@ mod tests {
         r.click(r.row(1, false), PointerButton::Secondary, Modifiers::NONE);
         assert_eq!(r.selected(), vec![r.ids[1]], "a right click selects the row");
         let menu = r.menu().expect("the menu is open");
-        // Duplicate, Rename, a rule, Delete: 30, 30, 11 and 30 pt tall.
+        // Duplicate, Rename, Hide, a rule, Delete: 30, 30, 30, 11 and 30 pt tall.
         let item = |y: f32| pos2(menu.center().x, menu.top() + 7.0 + y);
         r.click(item(15.0), PointerButton::Primary, Modifiers::NONE);
         assert_eq!(r.app.session.scene.models().len(), 3, "duplicated");
@@ -398,9 +434,38 @@ mod tests {
         assert_eq!(r.selected(), vec![r.ids[0], r.ids[1]], "a right click in the selection keeps it");
         let depth = r.app.session.undo_depth();
         let menu = r.menu().unwrap();
-        r.click(pos2(menu.center().x, menu.top() + 7.0 + 30.0 + 30.0 + 11.0 + 15.0), PointerButton::Primary, Modifiers::NONE);
+        r.click(pos2(menu.center().x, menu.top() + 7.0 + 3.0 * 30.0 + 11.0 + 15.0), PointerButton::Primary, Modifiers::NONE);
         assert_eq!(r.app.session.scene.models().iter().map(|m| m.id).collect::<Vec<_>>(), copy);
         assert_eq!(r.app.session.undo_depth(), depth + 1, "one step");
+    }
+
+    #[test]
+    fn h_hides_the_selection_and_alt_h_shows_every_hidden_model() {
+        let mut r = Rig::new(3);
+        let hidden = |r: &Rig| r.ids.iter().map(|id| r.app.session.scene.model(*id).unwrap().hidden).collect::<Vec<_>>();
+        let depth = r.app.session.undo_depth();
+        r.key(Key::H, Modifiers::NONE);
+        assert_eq!(hidden(&r), [false; 3], "nothing selected, nothing hidden");
+        assert_eq!(r.app.session.undo_depth(), depth);
+
+        r.app.run("model.select", json!({ "ids": [r.ids[0], r.ids[2]] }));
+        r.key(Key::H, Modifiers::NONE);
+        assert_eq!(hidden(&r), [true, false, true]);
+        assert!(r.selected().is_empty());
+        assert_eq!(r.app.session.undo_depth(), depth + 1, "one step");
+
+        r.app.run("model.select", json!({ "ids": [r.ids[1]] }));
+        r.app.set_mode(EditMode::Support);
+        r.key(Key::H, Modifiers::NONE);
+        assert_eq!(hidden(&r), [true; 3], "Support edition hides too");
+        assert!(crate::support_brace::tool(&r.app).is_none());
+
+        r.app.set_mode(EditMode::Slice);
+        r.key(Key::H, Modifiers::ALT);
+        assert_eq!(hidden(&r), [false; 3], "Alt+H shows them all, in any edition");
+        assert_eq!(r.app.session.undo_depth(), depth + 3, "in one step");
+        r.key(Key::H, Modifiers::ALT);
+        assert_eq!(r.app.session.undo_depth(), depth + 3, "none hidden: no step");
     }
 
     #[test]
