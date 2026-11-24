@@ -133,7 +133,8 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
     if app.routes.update(&app.session.scene, &preset) || app.routes.raft_pending() {
         ctx.request_repaint();
     }
-    let selection = if app.mode == EditMode::Support { Selection::Supports } else { Selection::Models };
+    let objects = selected_objects(app);
+    let selection = if app.mode == EditMode::Support { Selection::Supports } else { Selection::Models(&objects) };
     let support_mesh = app.routes.mesh(&app.session.scene, &preset, selection, crate::supports::moving(app));
     let hidden = app.session.scene.hidden_models();
     let colors = [tokens.support, tokens.support_selected, tokens.support_unreachable].map(linear);
@@ -179,7 +180,7 @@ pub(crate) fn frame(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, tokens:
         spheres,
         joints,
         handles,
-        models: model_draws(app, tokens),
+        models: model_draws(app, tokens, &objects),
         hidden,
         supports: Some(support_mesh),
         support_colors: colors,
@@ -282,16 +283,22 @@ fn plate_outline(x: f64, y: f64, color: [f32; 4]) -> [Line; 4] {
     [0, 1, 2, 3].map(|i| Line { a: c[i], b: c[(i + 1) % 4], color })
 }
 
-/// Every model, hidden ones too, so their meshes stay uploaded; the selected ones in their own
-/// colour while in Object or Slice mode; in Support mode, with the faces that need supports tinted.
-fn model_draws(app: &ResinApp, tokens: &Tokens) -> Vec<ModelDraw> {
+/// The models lit as selected objects, each with its supports, braces and raft: the selected
+/// models in Object and Slice mode, none in Support mode, where supports are selected apart.
+fn selected_objects(app: &ResinApp) -> BTreeSet<u64> {
+    if app.mode == EditMode::Support { BTreeSet::new() } else { app.session.scene.selected_models.clone() }
+}
+
+/// Every model, hidden ones too, so their meshes stay uploaded; the `objects` in their own
+/// colour; in Support mode, with the faces that need supports tinted.
+fn model_draws(app: &ResinApp, tokens: &Tokens, objects: &BTreeSet<u64>) -> Vec<ModelDraw> {
     let scene = &app.session.scene;
     let (plain, selected) = (linear(tokens.model), linear(tokens.model_selected));
     scene
         .models()
         .iter()
         .map(|m| {
-            let picked = app.mode != EditMode::Support && scene.selected_models.contains(&m.id);
+            let picked = objects.contains(&m.id);
             ModelDraw {
                 id: m.id,
                 mesh: Arc::clone(&m.mesh),

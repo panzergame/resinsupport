@@ -82,8 +82,8 @@ Each category ends with **Not yet**: stories nobody has built, taken from `ROADM
 ## Placing models
 
 ### Select models
-**As a** maker, **I want** to select a model by clicking it, its supports, or its row on the Models card, **so that** I can act on it.
-- Shift toggles; Ctrl+A selects all; a model and its supports are one object.
+**As a** maker, **I want** to select a model by clicking it, its supports, its raft, or its row on the Models card, **so that** I can act on it.
+- Shift toggles; Ctrl+A selects all; a model, its supports and its raft are one object, lit together.
 - Box selection: dragged right takes what lies wholly inside, dragged left what it touches; Shift adds to the selection.
 - Command: `model.select`
 
