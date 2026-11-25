@@ -56,16 +56,16 @@ Left from SolidCraft's navigation for later: navigation cube and clickable gizmo
 - Print settings, later: waits before cure, after cure and after lift (CTB v4 and up); elephant-foot compensation and minimum width (PrusaSlicer `elefant_foot_compensation`, mslicer `elephant_foot_fixer.rs`); hollowing, Z bleed correction (PrusaSlicer `hollowing_*`, `zcorrection_layers`)
 
 ## 6. Export
-- [x] CTB v2 writer and bounded reader (`io::ctb`): the layer RLE, cipher and previews ported from mslicer, the layout from UVtools' field definitions; printer test files from hand-built jobs (`CTB_OUT_DIR=<dir> cargo test -p resin-io ctb_printer_files -- --ignored`)
+- [x] CTB v2 writer and bounded reader (`io::ctb`): the layer RLE, cipher and previews ported from mslicer, the layout from UVtools' field definitions
 - [x] Cross-check: UVtools 7.1.2 (`UVtoolsCmd print-properties`, `extract`, `compare`) reads the three printer test files as CTB v2, with the header, settings, layers and previews as written
 - Not confirmed: that the Saturn 2 (firmware 4.5.0) reads CTB v2. The earlier check of the three v2 test files was wrong, and a v2 export (`siege-no-belt.ctb`) was refused with "unknown file format"; the image's orientation (no mirror) is unconfirmed with it
 - [x] Encrypted CTB v5 writer and bounded reader (`io::ctb::encrypted`), ported from mslicer: AES-256-CBC settings and signature, per-layer definitions carrying both lift and retract phases; the default (`printer.ctb_format`, Printer tab: CTB format), v2 kept behind it; the AES key and signature checked against UVtools 7.1.2's
-- [ ] Saturn 2: the encrypted test files (`cube-enc.ctb`, `f-enc.ctb` from `ctb_printer_files`) listed with their previews, the F at the plate's +X +Y corner, readable, the cube printed
+- [ ] Saturn 2: an encrypted cube and letter F exported from the app, listed with their previews, the F at the plate's +X +Y corner, readable, the cube printed
 - [x] `file.export_ctb`; Export CTB… in the File menu and Slice edition's ribbon (Ctrl+E): previews drawn off screen by the renderer, the window showing only the layer being written until the file is done
 - Later: CTB v3 and v4 (plain); the waits before cure, after cure and after lift in the encrypted format's fields; `.goo`; layer images in a zip; per-layer settings; importing CTB files into the scene
 
 ## Languages
-- French, then others: one catalog each (`skills/resinsupport-ui-text/SKILL.md`)
+- French, then others: one catalog each (`.agents/skills/resinsupport-ui-text/SKILL.md`)
 
 ## Platforms
 - Web build (`apps/resinsupport-web`): import from bytes (`file.import_stl` takes a path today), wasm CI check

@@ -17,6 +17,7 @@ use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
@@ -194,7 +195,7 @@ pub fn preview_struts(app: &ResinApp) -> impl Iterator<Item = (Vec3, Vec3)> + '_
 
 /// A number field in a row: `value` within `range`, shown with `suffix`.
 fn number(ui: &mut egui::Ui, t: &Tokens, label: &str, tip: &str, value: &mut f64, range: std::ops::RangeInclusive<f64>, suffix: &str) {
-    ui_kit::row(ui, t, label, |ui| ui_kit::number_field(ui, value, range, 0.1, suffix, 2).on_hover_text(tip));
+    ui_kit::row(ui, t, label, |ui| ui_kit::number_field(ui, value, range, 0.1, suffix, 2).tip(tip));
 }
 
 /// The card: the settings, and what Enter would add.

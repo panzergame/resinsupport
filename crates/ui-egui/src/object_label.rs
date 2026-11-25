@@ -21,6 +21,7 @@ use serde_json::{Map, Value, json};
 
 use crate::theme::Tokens;
 use crate::theme::metrics::FORM_CARD_WIDTH;
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, Buttons, Card, PresetAction, PresetRow};
 use crate::{ActiveTool, EditMode, ResinApp, i18n, object_slicing};
 
@@ -114,13 +115,13 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
             };
             preset_action = row.show(ui, &t, rows.state(PRESET_ROW));
             ui_kit::row(ui, &t, i18n::tr("tool.label.size"), |ui| {
-                ui_kit::number_field(ui, &mut size, LABEL_SIZE_RANGE, 0.1, " mm", 2).on_hover_text(i18n::tr("tool.label.size_tip"));
+                ui_kit::number_field(ui, &mut size, LABEL_SIZE_RANGE, 0.1, " mm", 2).tip(i18n::tr("tool.label.size_tip"));
             });
             ui_kit::row(ui, &t, i18n::tr("tool.label.depth"), |ui| {
-                ui_kit::number_field(ui, &mut depth, LABEL_DEPTH_RANGE, 0.05, " mm", 2).on_hover_text(i18n::tr("tool.label.depth_tip"));
+                ui_kit::number_field(ui, &mut depth, LABEL_DEPTH_RANGE, 0.05, " mm", 2).tip(i18n::tr("tool.label.depth_tip"));
             });
             ui_kit::row(ui, &t, i18n::tr("tool.label.margin"), |ui| {
-                ui_kit::number_field(ui, &mut margin, LABEL_MARGIN_RANGE, 0.05, " mm", 2).on_hover_text(i18n::tr("tool.label.margin_tip"));
+                ui_kit::number_field(ui, &mut margin, LABEL_MARGIN_RANGE, 0.05, " mm", 2).tip(i18n::tr("tool.label.margin_tip"));
             });
         });
         ui_kit::section(ui, &t, "label_options", i18n::tr("ui.section.options"), true, |ui| {
@@ -133,7 +134,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                 ui_kit::status_line(ui, &t, why, ui_kit::StatusTone::Warning);
             }
         });
-        delete = ui_kit::action_row(ui, &t, i18n::tr("tool.label.delete")).on_hover_text(i18n::tr("tool.label.delete_tip")).clicked();
+        delete = ui_kit::action_row(ui, &t, i18n::tr("tool.label.delete")).tip(i18n::tr("tool.label.delete_tip")).clicked();
     });
     app.preset_rows = rows;
     if action == Action::Cancel {

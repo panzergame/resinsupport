@@ -2798,7 +2798,6 @@ dependencies = [
 name = "resin-slice"
 version = "0.1.0"
 dependencies = [
- "resin-geom",
  "serde",
  "serde_json",
 ]

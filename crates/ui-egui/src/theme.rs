@@ -178,7 +178,7 @@ impl Tokens {
                 hover: Color32::from_rgb(0x36, 0x3d, 0x4a),
                 field: Color32::from_rgb(0x1e, 0x22, 0x29),
                 control_fill: Color32::from_rgb(0x1c, 0x1f, 0x26),
-                control_border: Color32::from_rgb(0x4a, 0x52, 0x62),
+                control_border: Color32::from_rgb(0x6a, 0x75, 0x8c),
                 on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
                 dialog_body: Color32::from_rgb(0x27, 0x2b, 0x34),
                 dialog_footer: Color32::from_rgb(0x2f, 0x34, 0x3e),
@@ -186,8 +186,8 @@ impl Tokens {
                 dialog_border: Color32::from_rgb(0x3f, 0x45, 0x52),
                 form_ink: Color32::from_rgb(0xde, 0xe2, 0xe8),
                 form_dim: Color32::from_rgb(0xb4, 0xbb, 0xc8),
-                form_primary: Color32::from_rgb(0x3a, 0x88, 0xee),
-                form_primary_fill: Color32::from_rgb(0x3a, 0x88, 0xee),
+                form_primary: Color32::from_rgb(0x86, 0xb6, 0xf5),
+                form_primary_fill: Color32::from_rgb(0x14, 0x71, 0xeb),
                 dialog_label: Color32::from_rgb(0xde, 0xe2, 0xe8),
                 app_bar: Color32::from_rgb(0x1c, 0x1f, 0x26),
                 app_bar_text: Color32::from_rgb(0xe6, 0xea, 0xf2),
@@ -223,9 +223,9 @@ impl Tokens {
                 gizmo_ball_edge: Color32::from_gray(50),
                 dark: false,
                 // design-tokens: Colour/Light (values from design/tokens.json: edit the design file, then `cargo xtask design-pull`)
-                text_dim: Color32::from_rgb(0x6e, 0x74, 0x80),
+                text_dim: Color32::from_rgb(0x6b, 0x71, 0x7d),
                 error: Color32::from_rgb(0xd6, 0x36, 0x36),
-                warning: Color32::from_rgb(0xde, 0x96, 0x1e),
+                warning: Color32::from_rgb(0x9e, 0x6b, 0x15),
                 backdrop: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x50),
                 panel: Color32::from_rgb(0xfa, 0xfb, 0xfc),
                 panel_header: Color32::from_rgb(0xec, 0xee, 0xf2),
@@ -238,7 +238,7 @@ impl Tokens {
                 hover: Color32::from_rgb(0xe2, 0xea, 0xf6),
                 field: Color32::from_rgb(0xff, 0xff, 0xff),
                 control_fill: Color32::from_rgb(0xff, 0xff, 0xff),
-                control_border: Color32::from_rgb(0xc3, 0xcb, 0xd6),
+                control_border: Color32::from_rgb(0x84, 0x95, 0xab),
                 on_accent: Color32::from_rgb(0xff, 0xff, 0xff),
                 dialog_body: Color32::from_rgb(0xff, 0xff, 0xff),
                 dialog_footer: Color32::from_rgb(0xf4, 0xf6, 0xf9),
@@ -336,5 +336,75 @@ pub fn apply(ctx: &egui::Context) {
             s.spacing.item_spacing = egui::vec2(metrics::SPACE_6, metrics::SPACE_4);
             s.spacing.button_padding = egui::vec2(metrics::SPACE_6, metrics::SPACE_3);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WCAG 2's relative luminance of an opaque colour.
+    fn luminance(c: Color32) -> f64 {
+        let channel = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.039_28 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (hi, lo) = (luminance(a).max(luminance(b)), luminance(a).min(luminance(b)));
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// Text reaches 4.5:1 on what it is drawn on, and a control's edge or fill 3:1, in both
+    /// themes (WCAG 1.4.3 and 1.4.11; `.agents/skills/resinsupport-ui/SKILL.md`, Accessibility).
+    /// A new ink or surface adds its pairs here.
+    #[test]
+    fn text_and_controls_meet_contrast_in_both_themes() {
+        type Pair = (&'static str, fn(&Tokens) -> Color32, fn(&Tokens) -> Color32);
+        let text: &[Pair] = &[
+            ("text on panel", |t| t.text, |t| t.panel),
+            ("text on toolbar", |t| t.text, |t| t.toolbar),
+            ("text_dim on panel", |t| t.text_dim, |t| t.panel),
+            ("text_dim on toolbar", |t| t.text_dim, |t| t.toolbar),
+            ("form_ink on dialog_body", |t| t.form_ink, |t| t.dialog_body),
+            ("form_dim on dialog_body", |t| t.form_dim, |t| t.dialog_body),
+            ("dialog_label on dialog_body", |t| t.dialog_label, |t| t.dialog_body),
+            ("form_primary on dialog_body", |t| t.form_primary, |t| t.dialog_body),
+            ("form_primary on selected_bg", |t| t.form_primary, |t| t.selected_bg),
+            ("on_accent on form_primary_fill", |t| t.on_accent, |t| t.form_primary_fill),
+            ("app_bar_text on app_bar", |t| t.app_bar_text, |t| t.app_bar),
+            ("error on dialog_body", |t| t.error, |t| t.dialog_body),
+            ("warning on dialog_body", |t| t.warning, |t| t.dialog_body),
+            ("selected_ink on selected_bg", |t| t.selected_ink, |t| t.selected_bg),
+            ("selected_ink on accent_soft", |t| t.selected_ink, |t| t.accent_soft),
+        ];
+        let controls: &[Pair] = &[
+            ("control_border on field", |t| t.control_border, |t| t.field),
+            ("control_border on dialog_body", |t| t.control_border, |t| t.dialog_body),
+            ("control_border on control_fill", |t| t.control_border, |t| t.control_fill),
+            ("form_primary_fill on dialog_body", |t| t.form_primary_fill, |t| t.dialog_body),
+            ("accent on dialog_body", |t| t.accent, |t| t.dialog_body),
+        ];
+        let mut low = Vec::new();
+        for dark in [false, true] {
+            let t = Tokens::for_dark(dark);
+            for (pairs, need) in [(text, 4.5), (controls, 3.0)] {
+                for (name, ink, ground) in pairs {
+                    let ratio = contrast(ink(&t), ground(&t));
+                    if ratio < need {
+                        low.push(format!("{} {name}: {ratio:.2} (needs {need})", if dark { "dark" } else { "light" }));
+                    }
+                }
+            }
+        }
+        assert!(low.is_empty(), "change these in the design file, then `cargo xtask design-pull`:\n{}", low.join("\n"));
+    }
+
+    #[test]
+    fn contrast_is_wcags() {
+        assert!((contrast(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 1e-9);
+        assert!((contrast(Color32::from_gray(0x77), Color32::WHITE) - 4.48).abs() < 0.01);
     }
 }

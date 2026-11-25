@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 use crate::print_settings::{self, Marks};
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -55,7 +56,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     let action = card.show(ctx, &t, |ui| {
         print_settings::slicing_rows(ui, &t, &mut config, &mut marks);
         ui.add_enabled_ui(!own.is_empty(), |ui| {
-            if ui_kit::action_row(ui, &t, i18n::tr("printing.object.clear_all")).on_hover_text(i18n::tr("printing.object.clear_all.help")).clicked() {
+            if ui_kit::action_row(ui, &t, i18n::tr("printing.object.clear_all")).tip(i18n::tr("printing.object.clear_all.help")).clicked() {
                 clear_all = true;
             }
         });

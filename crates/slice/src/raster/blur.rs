@@ -365,8 +365,6 @@ fn encode_row(segments: &[Segment], active: &[(usize, usize)], pixels: &[u8], ou
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
 
     fn run(len: u64, grey: u8) -> Run {
@@ -412,74 +410,6 @@ mod tests {
             }
         }
         to_runs(&image)
-    }
-
-    /// The same blur, the earlier way: every pixel of the band rows, with running sums. What the
-    /// benchmark measures the spans against.
-    fn whole_rows(runs: &[Run], res: (u32, u32), radius: u32, passes: u8) -> Vec<Run> {
-        let (w, h) = (u64::from(res.0), u64::from(res.1));
-        let reach = u64::from(radius) * u64::from(passes);
-        let Some((first, last)) = lit_span(runs) else { return runs.to_vec() };
-        let top = (first / w).saturating_sub(reach);
-        let bottom = (last / w).saturating_add(reach).min(h - 1);
-        let (width, rows, r) = (w as usize, (bottom - top + 1) as usize, radius as usize);
-        let mut image = Vec::new();
-        decode(runs, top * w, width * rows, &mut image);
-        let mut other = vec![0u8; width * rows];
-        let d = 2 * radius + 1;
-        for _ in 0..passes {
-            for (src, dst) in image.chunks_exact(width).zip(other.chunks_exact_mut(width)) {
-                box_span(src, dst, 0, r);
-            }
-            let mut sums = vec![0u32; width];
-            let line = |y: usize| &other[y * width..(y + 1) * width];
-            for y in 0..r.min(rows) {
-                sums.iter_mut().zip(line(y)).for_each(|(s, &v)| *s += u32::from(v));
-            }
-            for (y, out) in image.chunks_exact_mut(width).enumerate() {
-                if y + r < rows {
-                    sums.iter_mut().zip(line(y + r)).for_each(|(s, &v)| *s += u32::from(v));
-                }
-                if y > r {
-                    sums.iter_mut().zip(line(y - r - 1)).for_each(|(s, &v)| *s -= u32::from(v));
-                }
-                out.iter_mut().zip(&sums).for_each(|(o, &s)| *o = mean(s, d));
-            }
-        }
-        let mut out = Vec::new();
-        push(&mut out, top * w, 0);
-        for run in to_runs(&image) {
-            push(&mut out, run.len, run.grey);
-        }
-        let covered: u64 = out.iter().map(|r| r.len).sum();
-        push(&mut out, w * h - covered, 0);
-        out
-    }
-
-    /// The step down the columns as it was before the running sums: every span's `2r + 1` rows
-    /// summed on each row. What the benchmark measures `box_columns` against.
-    fn box_columns_direct(
-        src: &[u8],
-        dst: &mut [u8],
-        width: usize,
-        spans: &[Vec<(usize, usize)>],
-        r: usize,
-        sums: &mut Vec<u32>,
-        _: &Cancel,
-    ) -> bool {
-        let d = 2 * r as u32 + 1;
-        let rows = spans.len();
-        for (y, (out, row)) in dst.chunks_exact_mut(width).zip(spans).enumerate() {
-            for &(a, b) in row {
-                sums.clear();
-                sums.resize(b - a, 0);
-                for near in y.saturating_sub(r)..(y + r + 1).min(rows) {
-                    sums.iter_mut().zip(&src[near * width + a..near * width + b]).for_each(|(s, &v)| *s += u32::from(v));
-                }
-                out[a..b].iter_mut().zip(sums.iter()).for_each(|(o, &s)| *o = mean(s, d));
-            }
-        }
-        true
     }
 
     /// xorshift64*: test data without a dependency.
@@ -616,103 +546,5 @@ mod tests {
         cancel.cancel();
         let runs = [run(34, 0), run(1, 255), run(45, 0)];
         assert_eq!(blur(&runs, (10, 8), 1, 1, &cancel), runs);
-    }
-
-    /// An 8K layer: anti-aliased discs `(centre x, centre y, radius)` in pixels.
-    fn discs(res: (u32, u32), discs: &[(f64, f64, f64)]) -> Vec<Run> {
-        let (w, h) = (res.0 as usize, res.1 as usize);
-        let mut img = vec![0u8; w * h];
-        for &(cx, cy, rad) in discs {
-            let (y0, y1) = (((cy - rad - 1.0).max(0.0)) as usize, ((cy + rad + 2.0) as usize).min(h));
-            let (x0, x1) = (((cx - rad - 1.0).max(0.0)) as usize, ((cx + rad + 2.0) as usize).min(w));
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let d = ((x as f64 + 0.5 - cx).powi(2) + (y as f64 + 0.5 - cy).powi(2)).sqrt();
-                    let grey = ((rad - d + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
-                    let p = &mut img[y * w + x];
-                    *p = (*p).max(grey);
-                }
-            }
-        }
-        to_runs(&img)
-    }
-
-    /// 8K layers, Saturn 2 pixels: a large part, a field of supports, both.
-    fn scenes() -> ((u32, u32), Vec<(&'static str, Vec<Run>)>) {
-        let res = (7680u32, 4320u32);
-        // Saturn 2 pixels: 0.0285 mm.
-        let mm = 1.0 / 0.0285;
-        let (cx, cy) = (f64::from(res.0) / 2.0, f64::from(res.1) / 2.0);
-        let part = (cx, cy, 50.0 * mm);
-        let supports: Vec<(f64, f64, f64)> = (0..20)
-            .flat_map(|i| (0..12).map(move |j| (cx + (f64::from(i) - 9.5) * 8.0 * mm, cy + (f64::from(j) - 5.5) * 8.0 * mm, 0.4 * mm)))
-            .collect();
-        let scenes = vec![
-            ("part Ø100 mm", discs(res, &[part])),
-            ("240 supports Ø0.8 mm", discs(res, &supports)),
-            ("part Ø40 mm + 240 supports", discs(res, &[supports.as_slice(), &[(cx, cy, 20.0 * mm)]].concat())),
-        ];
-        (res, scenes)
-    }
-
-    const RUNS: usize = 5;
-    const SETTINGS: [(u32, u8); 4] = [(1, 1), (2, 3), (8, 4), (16, 4)];
-
-    /// Median, min and max.
-    fn median(mut v: Vec<f64>) -> (f64, f64, f64) {
-        v.sort_by(f64::total_cmp);
-        (v[v.len() / 2], v[0], v[v.len() - 1])
-    }
-
-    fn shown((m, lo, hi): (f64, f64, f64)) -> String {
-        format!("{m:.1} ({lo:.1}–{hi:.1})")
-    }
-
-    fn ms(t: Instant) -> f64 {
-        t.elapsed().as_secs_f64() * 1000.0
-    }
-
-    /// Run by hand: `cargo test --release -p resin-slice blur_benchmark -- --ignored --nocapture`.
-    /// On 8K layers: the blur over whole rows, the active spans with each column's window summed
-    /// on every row, and with running sums down the columns; the same output asserted.
-    #[test]
-    #[ignore]
-    fn blur_benchmark() {
-        let (res, scenes) = scenes();
-        println!(
-            "{:<28} {:>8} {:>20} {:>20} {:>20} {:>9} {:>9}",
-            "layer", "r × p", "whole rows ms", "spans direct ms", "spans running ms", "vs whole", "vs direct"
-        );
-        for (name, runs) in &scenes {
-            for (radius, passes) in SETTINGS {
-                let mut times = [Vec::new(), Vec::new(), Vec::new()];
-                let mut outputs = None;
-                for _ in 0..RUNS {
-                    let t = Instant::now();
-                    let a = whole_rows(runs, res, radius, passes);
-                    times[0].push(ms(t));
-                    let t = Instant::now();
-                    let b = blur_with(runs, res, radius, passes, &Cancel::default(), box_columns_direct);
-                    times[1].push(ms(t));
-                    let t = Instant::now();
-                    let c = blur(runs, res, radius, passes, &Cancel::default());
-                    times[2].push(ms(t));
-                    outputs = Some((a, b, c));
-                }
-                let (a, b, c) = outputs.unwrap();
-                assert_eq!(a, b, "{name}, {radius} × {passes}");
-                assert_eq!(a, c, "{name}, {radius} × {passes}");
-                let [whole, direct, running] = times.map(median);
-                println!(
-                    "{name:<28} {:>8} {:>20} {:>20} {:>20} {:>8.1}× {:>8.2}×",
-                    format!("{radius} × {passes}"),
-                    shown(whole),
-                    shown(direct),
-                    shown(running),
-                    whole.0 / running.0,
-                    direct.0 / running.0
-                );
-            }
-        }
     }
 }

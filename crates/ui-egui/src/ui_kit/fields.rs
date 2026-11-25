@@ -41,6 +41,7 @@ pub fn number_field<T: Numeric>(ui: &mut Ui, value: &mut T, range: RangeInclusiv
     drag = if T::INTEGRAL { drag.fixed_decimals(0) } else { drag.max_decimals(decimals) };
     let response = ui.add_sized([ui.available_width().max(0.0), CONTROL_HEIGHT], drag);
     super::mark(ui.layer_id(), "number_field", response.rect, "");
+    super::layout::named_by_row(&response.ctx, response.id);
     response
 }
 
@@ -74,6 +75,7 @@ pub fn text_field(ui: &mut Ui, t: &Tokens, value: &mut String, hint: &str, limit
     let edit = text_input(egui::TextEdit::singleline(value)).hint_text(hint).char_limit(limit).background_color(t.field).clip_text(true);
     let response = ui.add_sized([ui.available_width().max(0.0), CONTROL_HEIGHT], edit);
     super::mark(ui.layer_id(), "text_field", response.rect, hint);
+    super::layout::named_by_row(&response.ctx, response.id);
     response
 }
 
@@ -84,6 +86,7 @@ pub fn multiline_text_field(ui: &mut Ui, t: &Tokens, label: &str, value: &mut St
         let edit = egui::TextEdit::multiline(value).margin(vec2(FORM_INSET, SPACE_6)).desired_rows(3).background_color(t.field);
         let response = ui.add_sized([ui.available_width().max(0.0), height], edit);
         super::mark(ui.layer_id(), "multiline_text_field", response.rect, "");
+        super::layout::named_by_row(&response.ctx, response.id);
         response
     })
 }
@@ -100,15 +103,20 @@ fn dropdown_arrow(t: Tokens) -> impl FnOnce(&Ui, egui::Rect, &egui::style::Widge
 /// [`dropdown_item`]). Esc closes an open list without reaching the card.
 pub fn dropdown_menu(ui: &mut Ui, t: &Tokens, id: impl std::hash::Hash + std::fmt::Debug, current: &str, add: impl FnOnce(&mut Ui)) -> Response {
     let width = ui.available_width().max(0.0);
-    let popup = egui::ComboBox::from_id_salt(id)
-        .width(width)
-        .height(SPACE_24 * 14.0)
-        .selected_text(current)
-        .truncate()
-        .icon(dropdown_arrow(*t))
-        .show_ui(ui, add);
+    let popup =
+        egui::ComboBox::from_id_salt(id).width(width).height(SPACE_24 * 14.0).selected_text(current).truncate().icon(dropdown_arrow(*t)).show_ui(
+            ui,
+            |ui| {
+                // The open list's own node (egui's area widget): a list box named as the drop-down is.
+                let list = ui.layer_id().id.with("move");
+                ui.ctx().accesskit_node_builder(list, |node| node.set_role(egui::accesskit::Role::ListBox));
+                super::layout::named_by_row(ui.ctx(), list);
+                add(ui)
+            },
+        );
     let response = popup.response;
     super::mark(ui.layer_id(), "dropdown", response.rect, current);
+    super::layout::named_by_row(&response.ctx, response.id);
     if popup.inner.is_some() && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         response.request_focus();
     }
@@ -193,6 +201,7 @@ pub fn slider<T: Numeric>(ui: &mut Ui, t: &Tokens, value: &mut T, range: RangeIn
         let layer = ui.layer_id();
         let paint_start = ui.ctx().graphics(|g| g.get(layer).map_or(egui::layers::ShapeIdx(0), |list| list.next_idx()));
         let response = ui.add(widget);
+        super::layout::named_by_row_within(ui, response.rect);
         let slider = egui::Rect::from_min_size(response.rect.min, vec2(ui.spacing().slider_width, response.rect.height()));
         // egui 0.36.2 paints the rail, then the round handle, then the value editor: only that
         // pair, positively identified, gives way to the painted track and thumb. Anything else

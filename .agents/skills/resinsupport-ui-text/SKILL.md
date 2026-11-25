@@ -13,11 +13,12 @@ ResinSupport embeds its translations and works offline (`crates/ui-egui/src/i18n
 3. In the code: `i18n::tr("id")` for a fixed message; `i18n::format("id", &[("name", &value)])` for a sentence with named placeholders; `i18n::count("id", n, &[…])` for a counted one, which reads `id.one` or `id.other` and fills `{n}`. Translate the whole sentence, punctuation included, so a translator can reorder its parts; never build a sentence by concatenating messages.
 4. A table of ids (a ribbon button's label, a reason, a preset's name) holds the id; the code calls `i18n::tr` where it draws.
 5. Command labels are `cmd.<command id>`: `cargo xtask i18n --add-missing` writes the missing ones.
+6. Case: names of commands and tools (ribbon, menus, a tool's card), card and dialog titles, and the footer's buttons are Title Case (`Arrange Models`, `Print Settings`, `Restore Defaults`); everything else is sentence case: rows, action rows, tooltips, messages. `titles_and_command_names_are_title_case` checks the ids it can tell by their shape (`cmd.`, ribbon and menu labels, `*.title`, `*_title`, `*.heading`, the footer's buttons): name a new title's id that way.
 
 ## What the tests check
 - `every_id_the_source_names_is_in_the_english_catalog`: every literal in `crates/ui-egui/src` shaped like a message id is in English. Keep command ids (`view.fit`) and message ids apart: messages never use a command's first part.
 - `every_complete_catalog_carries_every_english_message`: each language in `COMPLETE` has every English message.
-- `translations_keep_englishs_placeholders`, `every_command_label_is_in_the_english_catalog`.
+- `translations_keep_englishs_placeholders`, `every_command_label_is_in_the_english_catalog`, `titles_and_command_names_are_title_case`.
 - `cargo xtask lists` (catalogs canonical) and `cargo xtask i18n --check` run in `cargo xtask ci`; `cargo xtask i18n` alone reports every language's gaps.
 
 ## Not messages

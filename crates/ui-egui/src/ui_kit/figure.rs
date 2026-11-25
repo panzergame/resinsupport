@@ -101,7 +101,9 @@ pub fn figure_rows(
                 if !f.enabled {
                     child.disable();
                 }
-                number_field(&mut child, f.value, f.range.clone(), f.speed, f.suffix, f.decimals)
+                let response = number_field(&mut child, f.value, f.range.clone(), f.speed, f.suffix, f.decimals);
+                super::layout::named(&response, f.label);
+                response
             }
             FigureRow::Check { label, help, value } => checkbox(&mut child, t, label, value).on_hover_text(*help),
         };

@@ -22,6 +22,7 @@ mod menu;
 mod preset_row;
 mod section;
 mod status;
+mod tip;
 
 pub use checks::{check_row, checkbox, checkbox_indeterminate, mixed_check_row};
 pub use choice::segmented;
@@ -37,6 +38,7 @@ pub use menu::{MenuItem, menu_list, menu_separator};
 pub use preset_row::{PresetAction, PresetRow, PresetRowState, PresetRows};
 pub use section::section;
 pub use status::progress;
+pub use tip::Tip;
 
 use egui::{Align2, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
@@ -144,6 +146,11 @@ impl Card<'_> {
             Placement::Placed(corner, offset) => window.pivot(corner).default_pos(corner.pos_in_rect(&room) + offset),
         };
         let shown = window.id(self.id).title_bar(false).resizable(false).collapsible(false).frame(frame).show(ctx, |ui| {
+            // The window's own node is egui's area widget, `<id>.with("move")`.
+            ui.ctx().accesskit_node_builder(self.id.with("move"), |node| {
+                node.set_role(egui::accesskit::Role::Dialog);
+                node.set_label(self.title);
+            });
             ui.set_width(self.width);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             action = header(ui, t, self.icon, self.title, self.buttons);
@@ -268,7 +275,9 @@ fn fold_button(ui: &mut Ui, t: &Tokens, at: Pos2, folded: bool) -> bool {
         ui.painter().rect_filled(rect, RADIUS_SM, t.hover);
     }
     icons::paint_turned(ui.painter(), rect.shrink(5.0), "chevron", t.dark, 0.85, !folded);
-    fold.on_hover_text(i18n::tr(if folded { "ui.unfold" } else { "ui.fold" })).clicked()
+    let name = i18n::tr(if folded { "ui.unfold" } else { "ui.fold" });
+    fold.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    fold.tip(name).clicked()
 }
 
 /// The 26 pt close target centred on `at`. Whether it was clicked.
@@ -280,7 +289,8 @@ fn close_button(ui: &mut Ui, t: &Tokens, at: Pos2) -> bool {
         ui.painter().rect_filled(close_rect, RADIUS_SM, t.hover);
     }
     icons::paint(ui.painter(), close_rect.shrink(6.0), "close", t.dark, 1.0);
-    close.on_hover_text(i18n::tr("ui.close")).clicked()
+    close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, i18n::tr("ui.close")));
+    close.tip(i18n::tr("ui.close")).clicked()
 }
 
 /// The 48 pt footer band: its own fill, a rule on top, the primary action and Cancel
@@ -332,7 +342,8 @@ fn action_button(ui: &mut Ui, t: &Tokens, rect: Rect, label: &str, primary: bool
     mark(ui.layer_id(), if primary { "primary_button" } else { "secondary_button" }, rect, label);
     let hot = enabled && response.hovered();
     let (fill, stroke, ink) = if primary && enabled {
-        (if hot { t.form_primary.gamma_multiply(0.85) } else { t.form_primary }, Stroke::NONE, t.on_accent)
+        // The fill, not `form_primary`: that is an ink on the card, too light under white text.
+        (if hot { t.form_primary_fill.gamma_multiply(0.85) } else { t.form_primary_fill }, Stroke::NONE, t.on_accent)
     } else {
         (if hot { t.hover } else { t.control_fill }, Stroke::new(1.0, t.control_border), if enabled { t.form_ink } else { t.form_dim })
     };
@@ -341,6 +352,7 @@ fn action_button(ui: &mut Ui, t: &Tokens, rect: Rect, label: &str, primary: bool
     if hot {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     response
 }
 

@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, Buttons, Card, Confirm};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -95,7 +96,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                 ui.add_enabled_ui(one_model, |ui| {
                     let help = if one_model { i18n::tr("printing.object.open.help") } else { i18n::tr("reason.select_one_model") };
                     let open = ui_kit::action_row(ui, &t, i18n::tr("printing.object.open"));
-                    if open.on_hover_text(help).on_disabled_hover_text(help).clicked() {
+                    if open.tip_always(help).clicked() {
                         overrides = true;
                     }
                 });
@@ -189,7 +190,7 @@ impl Num {
                     ui.add_enabled_ui(enabled, |ui| ui_kit::number_field(ui, &mut v, f.min..=f.max, self.speed, self.suffix, decimals)).inner;
                 let changed = response.changed();
                 if let Some(help) = self.help {
-                    response.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help));
+                    response.tip_always(i18n::tr(help));
                 }
                 changed
             })
@@ -268,7 +269,7 @@ impl Pair {
 
     fn phase(&self, ui: &mut egui::Ui, width: f32, c: &mut PrintConfig, phase: Phase, max: Option<fn(&Motion) -> f64>) {
         let help = |r: egui::Response| match self.help {
-            Some(help) => r.on_hover_text(i18n::tr(help)).on_disabled_hover_text(i18n::tr(help)),
+            Some(help) => r.tip_always(i18n::tr(help)),
             None => r,
         };
         match phase {
@@ -412,7 +413,7 @@ fn gamma_curve(ui: &mut egui::Ui, t: &Tokens, table: &[u8; 256]) {
     ui_kit::sized_row(ui, t, "", CURVE_HEIGHT, |ui| {
         let (plot, response) = ui.allocate_exact_size(vec2(ui.available_width(), CURVE_HEIGHT), Sense::hover());
         plot_gamma(ui, t, plot, table);
-        response.on_hover_text(i18n::tr("printing.gamma.curve.help"));
+        response.tip(i18n::tr("printing.gamma.curve.help"));
     });
 }
 
@@ -428,7 +429,7 @@ fn plot_gamma(ui: &egui::Ui, t: &Tokens, plot: Rect, table: &[u8; 256]) {
 
 fn printer_rows(ui: &mut egui::Ui, t: &Tokens, c: &mut PrintConfig) {
     ui_kit::row(ui, t, i18n::tr("printing.printer.name"), |ui| {
-        ui_kit::text_field(ui, t, &mut c.printer.name, "", MAX_NAME_CHARS).on_hover_text(i18n::tr("printing.printer.name.help"));
+        ui_kit::text_field(ui, t, &mut c.printer.name, "", MAX_NAME_CHARS).tip(i18n::tr("printing.printer.name.help"));
     });
     rows(ui, t, c, PRINTER_ROWS, &mut Marks::default());
     let p = &mut c.printer;

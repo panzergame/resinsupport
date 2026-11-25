@@ -94,6 +94,53 @@ fn control_left(ui: &Ui, text: &str, row: Rect) -> f32 {
     (row.left() + label_column(ui, text, row.width()) + label_gap(row.width())).min(row.right())
 }
 
+thread_local! {
+    /// The label of the row whose control is being drawn: the control's accessible name.
+    static ROW_LABEL: std::cell::Cell<Option<egui::Id>> = const { std::cell::Cell::new(None) };
+}
+
+/// Names `response` by the label of the row it is drawn in, when it has no name of its own, so a
+/// screen reader reads "Diameter, 2 mm" rather than "2 mm".
+pub(crate) fn named_by_row(ctx: &egui::Context, id: egui::Id) {
+    let Some(label) = ROW_LABEL.get() else { return };
+    ctx.accesskit_node_builder(id, |node| {
+        if node.label().is_none_or(str::is_empty) && node.labelled_by().is_empty() {
+            node.push_labelled_by(label.accesskit_id());
+        }
+    });
+}
+
+/// [`named_by_row`] for every control egui drew inside `area` of `ui`'s layer: the parts of a
+/// compound widget whose responses egui keeps to itself (a slider's value editor).
+pub(crate) fn named_by_row_within(ui: &Ui, area: Rect) {
+    let Some(label) = ROW_LABEL.get() else { return };
+    let ids: Vec<egui::Id> = ui.ctx().viewport(|v| {
+        v.this_pass
+            .widgets
+            .get_layer(ui.layer_id())
+            .filter(|w| area.expand(0.5).contains_rect(w.rect) && (w.sense.senses_click() || w.sense.senses_drag()))
+            .map(|w| w.id)
+            .collect()
+    });
+    for id in ids {
+        ui.ctx().accesskit_node_builder(id, |node| {
+            if node.label().is_none_or(str::is_empty) && node.labelled_by().is_empty() {
+                node.push_labelled_by(label.accesskit_id());
+            }
+        });
+    }
+}
+
+/// Names `response` `name` when it has no name of its own: a control whose caption is painted,
+/// not a widget.
+pub(crate) fn named(response: &egui::Response, name: &str) {
+    response.ctx.accesskit_node_builder(response.id, |node| {
+        if node.label().is_none_or(str::is_empty) && node.labelled_by().is_empty() {
+            node.set_label(name);
+        }
+    });
+}
+
 /// One form row, `CONTROL_HEIGHT` tall: `label` in the label column (cut short to fit, whole on
 /// hover), the control in the rest. An empty label keeps the column, so the control lines up.
 pub fn row<R>(ui: &mut Ui, t: &Tokens, label: &str, control: impl FnOnce(&mut Ui) -> R) -> R {
@@ -109,15 +156,19 @@ pub fn sized_row<R>(ui: &mut Ui, t: &Tokens, label: &str, height: f32, control: 
     let layout = egui::Layout::left_to_right(egui::Align::Center);
     // Children, not scopes: a scope allocates what it holds, and a control shorter than the row
     // would move the cursor back up into it.
+    let mut label_id = None;
     if !label.is_empty() {
         let label_rect = Rect::from_min_max(rect.min, pos2((left - label_gap(width)).max(rect.left()), rect.bottom()));
         let mut child = ui.new_child(UiBuilder::new().id_salt((label, "label")).max_rect(label_rect).layout(layout));
-        child.add(egui::Label::new(RichText::new(label).size(FONT_LABEL).color(t.dialog_label)).truncate());
+        label_id = Some(child.add(egui::Label::new(RichText::new(label).size(FONT_LABEL).color(t.dialog_label)).truncate()).id);
     }
     let control_rect = Rect::from_min_max(pos2(left, rect.top()), rect.max);
     let mut child = ui.new_child(UiBuilder::new().id_salt(label).max_rect(control_rect).layout(layout));
     child.set_clip_rect(child.clip_rect().intersect(control_rect));
-    control(&mut child)
+    let outer = ROW_LABEL.replace(label_id);
+    let inner = control(&mut child);
+    ROW_LABEL.set(outer);
+    inner
 }
 
 /// A row of read-only text: the value wraps in the control column and the row grows to hold every

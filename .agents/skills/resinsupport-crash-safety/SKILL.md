@@ -14,6 +14,6 @@ description: "Use when writing or reviewing non-test Rust in ResinSupport, handl
 - Text from a catalog, a file name or a model name is data: placeholders are filled literally (`i18n::format`), never re-read as a template.
 
 ## Proving a crash fix
-- Every crash fix lands with a regression test in the area's existing test file (`skills/resinsupport-tests/SKILL.md`).
+- Every crash fix lands with a regression test in the area's existing test file (`.agents/skills/resinsupport-tests/SKILL.md`).
 - `hostile_params_never_panic` in `crates/engine/src/tests.rs` runs every command with junk parameters; a new command gets it for free. Add a junk row when a command takes a new parameter shape.
 - A file format's hostile-input tests sit in its own file (`crates/io/src/stl.rs`).

@@ -16,6 +16,9 @@ const MENU_WIDTH: f32 = 250.0;
 
 /// A popup's entries, `add`'s [`MenuItem`]s and [`menu_separator`]s, at the list menu's width.
 pub fn menu_list<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    // The popup's own node (egui's area widget, `<layer>.with("move")`): a menu, named by the button
+    // that opened it.
+    ui.ctx().accesskit_node_builder(ui.layer_id().id.with("move"), |node| node.set_role(egui::accesskit::Role::Menu));
     ui.set_width(MENU_WIDTH - SPACE_6 * 2.0 - 2.0);
     ui.spacing_mut().item_spacing.y = 0.0;
     let inner = add(ui);

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::theme::metrics::FORM_CARD_WIDTH;
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -40,7 +41,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
     };
     card.show(ctx, &t, |ui| {
         ui_kit::row(ui, &t, i18n::tr("models.lift_height"), |ui| {
-            ui_kit::number_field(ui, &mut height, LIFT_RANGE, 0.1, " mm", 2).on_hover_text(i18n::tr("models.lift_height.help"));
+            ui_kit::number_field(ui, &mut height, LIFT_RANGE, 0.1, " mm", 2).tip(i18n::tr("models.lift_height.help"));
         });
         ui.add_enabled_ui(selected > 0, |ui| {
             let help = if selected > 0 { i18n::tr("models.lift_selection.help") } else { i18n::tr("reason.select_model") };

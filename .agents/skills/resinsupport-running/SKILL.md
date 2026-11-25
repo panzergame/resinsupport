@@ -20,5 +20,8 @@ ResinSupport has no control channel yet; drive the real window instead.
 - Keys: `xdotool key t` (shortcuts need the window focused and no text field being typed in).
 - Screenshot: `import -window root -crop 1920x1000+0+0 shot.png`, then read the PNG.
 
+## An entry point for agents
+None yet. When a control channel or an MCP server is added (`resinsupport mcp`, as SolidCraft's), it refuses to start without a folder it may read and a folder it may write, and refuses file access outside them; it answers only on this machine.
+
 ## What to check
 After a UI change, look at both the changed piece and its neighbours: the ribbon's dimmed and pressed states, a card's header and footer, the gizmo over a selected model, the status bar. Say in the report what was checked on screen and what was not.

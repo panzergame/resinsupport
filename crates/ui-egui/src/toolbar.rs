@@ -12,6 +12,7 @@ use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, MenuItem};
 use crate::{EditMode, ResinApp, i18n, icons, layer_preview, transform};
 
@@ -233,7 +234,8 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             ui.painter().rect_filled(home.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
         }
         icons::paint(ui.painter(), home.shrink(7.0), "home", true, 1.0);
-        if resp.on_hover_text(i18n::tr("appbar.home")).clicked() {
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, i18n::tr("appbar.home")));
+        if resp.tip(i18n::tr("appbar.home")).clicked() {
             app.animate_home(app.aspect());
         }
         x = home.right() + 8.0;
@@ -243,6 +245,7 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
         let galley = ui.painter().layout_no_wrap(i18n::tr("appbar.file").into(), FontId::proportional(FONT_BUTTON), t.app_bar_text);
         let fr = Rect::from_min_size(pos2(x - 13.0, r.center().y - 13.0), vec2(galley.size().x + 16.0, 26.0));
         let file = ui.interact(fr, ui.id().with("appbar_file"), Sense::click());
+        file.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, i18n::tr("appbar.file")));
         ui_kit::mark(ui.layer_id(), "app_bar_menu", fr, i18n::tr("appbar.file"));
         let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&file));
         if file.hovered() || open {
@@ -262,7 +265,10 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
                 ui.painter().rect_filled(b.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
             }
             icons::paint(ui.painter(), Rect::from_center_size(b.center(), vec2(18.0, 18.0)), icon, true, if enabled { 1.0 } else { 0.35 });
-            if resp.on_hover_text(tip).clicked() && enabled {
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, i18n::tr(if forward { "menu.redo" } else { "menu.undo" }))
+            });
+            if resp.tip(tip).clicked() && enabled {
                 app.step_history(forward);
             }
             x += 34.0;
@@ -279,7 +285,8 @@ pub fn app_bar(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             ui.painter().rect_filled(gear.shrink(3.0), RADIUS_SM, t.app_bar_hover_button);
         }
         icons::paint(ui.painter(), Rect::from_center_size(gear.center(), vec2(18.0, 18.0)), "settings", true, 1.0);
-        if resp.on_hover_text(i18n::tr("appbar.preferences")).clicked() {
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, i18n::tr("appbar.preferences")));
+        if resp.tip(i18n::tr("appbar.preferences")).clicked() {
             app.prefs_open = !app.prefs_open;
         }
     });
@@ -382,7 +389,7 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             FontId::proportional(FONT_SMALL),
             t.text_dim,
         );
-        ui.interact(ws, ui.id().with("workspace"), Sense::hover()).on_hover_text(i18n::tr("workspace.tip"));
+        ui.interact(ws, ui.id().with("workspace"), Sense::hover()).tip(i18n::tr("workspace.tip"));
 
         tabs(app, ui, Rect::from_min_max(pos2(ws.right(), r.top()), pos2(r.right(), r.top() + TAB_ROW_HEIGHT)), t);
 
@@ -410,6 +417,7 @@ pub fn ribbon(app: &mut ResinApp, ui: &mut Ui, t: &Tokens) {
             );
             if g.views {
                 let lresp = ui.interact(lr, ui.id().with(("group", g.name)), Sense::click());
+                lresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, i18n::tr(g.name)));
                 ui_kit::mark(ui.layer_id(), "ribbon_group_menu", lr, i18n::tr(g.name));
                 let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&lresp));
                 if lresp.hovered() || open {
@@ -457,6 +465,7 @@ fn tabs(app: &mut ResinApp, ui: &mut Ui, row: Rect, t: &Tokens) {
         let resp = ui.interact(tr, ui.id().with(("tab", label)), Sense::click());
         ui_kit::mark(ui.layer_id(), "ribbon_tab", tr, label);
         let active = app.mode == mode;
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label));
         let (fill, ink) = match (active, resp.hovered()) {
             (true, _) => (t.accent_soft, t.selected_ink),
             (false, true) => (t.hover, t.text),
@@ -464,7 +473,7 @@ fn tabs(app: &mut ResinApp, ui: &mut Ui, row: Rect, t: &Tokens) {
         };
         ui.painter().rect_filled(tr, CONTROL_RADIUS.saturating_sub(1), fill);
         ui.painter().text(tr.center(), Align2::CENTER_CENTER, label, font.clone(), ink);
-        if resp.on_hover_text(i18n::format("tab.tip", &[("mode", &i18n::tr(mode.label()))])).clicked() {
+        if resp.tip(i18n::format("tab.tip", &[("mode", &i18n::tr(mode.label()))])).clicked() {
             app.set_mode(mode);
         }
         x += width + 2.0;
@@ -511,7 +520,8 @@ fn ribbon_button(ui: &Ui, painter: &egui::Painter, whole: Rect, cmd: Cmd, app: &
     if enabled && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    resp.on_hover_text(tip).clicked() && enabled
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    resp.tip(tip).clicked() && enabled
 }
 
 fn text_width(painter: &egui::Painter, text: &str) -> f32 {

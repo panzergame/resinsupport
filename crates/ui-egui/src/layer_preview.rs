@@ -13,6 +13,7 @@ use crate::layer_image::LayerImage;
 use crate::slice_runner::SliceRunner;
 use crate::theme::Tokens;
 use crate::theme::metrics::*;
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Buttons, Card};
 use crate::{EditMode, ResinApp, i18n};
 
@@ -235,7 +236,8 @@ pub fn slider(app: &mut ResinApp, ctx: &egui::Context, rect: Rect, t: &Tokens) {
     let line_scroll = ctx.options(|o| o.input_options.line_scroll_speed).max(1.0);
     egui::Area::new(egui::Id::new("layer_slider")).order(egui::Order::Middle).fixed_pos(col.min).constrain(false).show(ctx, |ui| {
         let (r, resp) = ui.allocate_exact_size(col.size(), Sense::click_and_drag());
-        let resp = resp.on_hover_text(i18n::tr("preview.slider.tip"));
+        resp.widget_info(|| egui::WidgetInfo::slider(true, p.top as f64, i18n::tr("preview.row.layer")));
+        let resp = resp.tip(i18n::tr("preview.slider.tip"));
         let nearer = |y: f32, p: &LayerPreview| if (y - y_of(p.top)).abs() <= (y - y_of(p.bottom)).abs() { Handle::Top } else { Handle::Bottom };
         if let Some(at) = resp.interact_pointer_pos() {
             if p.grabbed.is_none() {

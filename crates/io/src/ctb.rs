@@ -1632,27 +1632,4 @@ mod tests {
             }
         }
     }
-
-    /// The files for the printer test (`docs/prompts/slicing/04-export-ctb.md`): run by hand with
-    /// `CTB_OUT_DIR=<dir> cargo test -p resin-io ctb_printer_files -- --ignored`.
-    #[test]
-    #[ignore]
-    fn ctb_printer_files() {
-        let dir = std::path::PathBuf::from(std::env::var("CTB_OUT_DIR").expect("set CTB_OUT_DIR to the directory to write to"));
-        let cube = cube();
-        let f = letter_f();
-        let (v2, enc) = (CtbFormat::V2, CtbFormat::Encrypted);
-        for (name, job, format, key) in [
-            ("cube-k67.ctb", &cube, v2, DEFAULT_KEY),
-            ("cube-k0.ctb", &cube, v2, 0),
-            ("f-k67.ctb", &f, v2, DEFAULT_KEY),
-            ("cube-enc.ctb", &cube, enc, DEFAULT_KEY),
-            ("f-enc.ctb", &f, enc, DEFAULT_KEY),
-        ] {
-            let bytes = write_ctb(job, &Previews::plain(job), &CtbOptions { format, encryption_key: key, modified_minutes: 29_000_000 }).unwrap();
-            let back = read_ctb(&bytes).unwrap();
-            assert_eq!(back.layers.len(), job.layers.len());
-            crate::write_atomic(&dir.join(name), &bytes, false).unwrap();
-        }
-    }
 }

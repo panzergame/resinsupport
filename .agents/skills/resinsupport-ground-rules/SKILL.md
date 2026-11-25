@@ -19,13 +19,13 @@ The rules that cannot be broken. `AGENTS.md` lists them in one line each.
 - Code and dependencies taken in must be GPLv3-compatible: permissive (MIT, Apache-2.0, BSD, Zlib), LGPL-3.0, GPL-3.0(-or-later). GPL-2.0-only is not.
 - AGPL-3.0 code (UVtools, PrusaSlicer, CuraEngine) may be ported (the owner allowed it): ported files stay AGPL-3.0 and say so in their header, their `ATTRIBUTION.md` row names AGPL-3.0, and a served web build must offer its complete source.
 - Code taken from a GPL or LGPL project keeps a header naming its source file and commit, and gets a row in `ATTRIBUTION.md`, as SolidCraft ports do.
-- Say which dependency you add and why. Every crate below the apps must stay wasm-friendly (`skills/resinsupport-performance/SKILL.md`).
+- Say which dependency you add and why. Every crate below the apps must stay wasm-friendly (`.agents/skills/resinsupport-performance/SKILL.md`).
 
 ## Code and assets from SolidCraft
 - SolidCraft (MIT OR Apache-2.0) is the reference for conventions, UI and geometry. Code ported from it keeps a header comment naming its source file and commit (`4bdffef0`, and `a34756830` for the UI kit), and gets a row in `ATTRIBUTION.md`.
 - SolidCraft's UI kit (`solidcraft:crates/ui-kit`), theme (`solidcraft:crates/theme`) and look (`solidcraft:crates/look`: icons, glyphs, themes) are under the SolidCraft Brand and Interface Licence from `312454f89` on, which is not GPL-compatible: port them from `a34756830` or earlier, never from a later revision, unless the SolidCraft maintainers have agreed in writing. Its other code stays MIT OR Apache-2.0.
 - Port interaction (gizmos, navigation, dialogs) from SolidCraft rather than imitating another slicer.
-- Every file asset (icon, image, font) is original or openly licensed and has a row in `ATTRIBUTION.md`. UI icons are SolidCraft's SVG masters, copied unchanged into `crates/ui-egui/icons` (`skills/resinsupport-ui/SKILL.md`).
+- Every file asset (icon, image, font) is original or openly licensed and has a row in `ATTRIBUTION.md`. UI icons are SolidCraft's SVG masters, copied unchanged into `crates/ui-egui/icons` (`.agents/skills/resinsupport-ui/SKILL.md`).
 
 ## Units and the name
 - Model units are millimetres, Z up; angles in commands are degrees.

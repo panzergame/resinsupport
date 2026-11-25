@@ -4,6 +4,7 @@
 mod design_export;
 mod design_pull;
 mod design_tokens;
+mod fast;
 mod figcraft;
 mod i18n;
 mod skills;
@@ -33,6 +34,7 @@ fn main() -> ExitCode {
     };
     let ok = match task.as_str() {
         "ci" => ci(&root),
+        "fast" => fast::fast(&root, &args[1..]),
         "layers" => report("layers", layers(&root)),
         "crash-guards" => report("crash-guards", crash_guards(&root)),
         "lists" => report("lists", i18n::lists(&root, flag("--fix"))),
@@ -43,7 +45,7 @@ fn main() -> ExitCode {
         "design-pull" => report("design-pull", design_pull::design_pull(&root)),
         _ => {
             eprintln!(
-                "usage: cargo xtask <{}> (lists --fix, i18n --check | --add-missing, design-tokens --check, design-export --force)",
+                "usage: cargo xtask <{}> (fast [--base REF] [-p PACKAGE]... [--no-tests] [--list], lists --fix, i18n --check | --add-missing, design-tokens --check, design-export --force)",
                 skills::TASKS.join(" | ")
             );
             false

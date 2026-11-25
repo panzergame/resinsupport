@@ -247,6 +247,54 @@ mod tests {
         }
     }
 
+    /// Names of commands and tools, card and dialog titles and the footer's buttons are Title
+    /// Case; every other text is sentence case (`.agents/skills/resinsupport-ui-text/SKILL.md`).
+    #[test]
+    fn titles_and_command_names_are_title_case() {
+        const SMALL: &[&str] = &["a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "per", "the", "to", "vs", "with"];
+        const BUTTONS: &[&str] = &["ui.cancel", "ui.close", "ui.ok", "ui.reset", "ui.restore_defaults"];
+        let titled = |id: &str| {
+            let label = |prefix: &str| id.starts_with(prefix) && !id.ends_with(".tip") && !id.ends_with(".help") && !id.ends_with("_filter");
+            id.starts_with("cmd.")
+                || label("ribbon.")
+                || label("menu.")
+                || (label("tab.") && id.matches('.').count() == 1)
+                || id.ends_with(".title")
+                || id.ends_with("_title")
+                || id.ends_with(".heading")
+                || BUTTONS.contains(&id)
+        };
+        let lower_words = |text: &str| -> Vec<String> {
+            let mut out = Vec::new();
+            let mut in_placeholder = false;
+            for (i, word) in text.split_whitespace().enumerate() {
+                let first = word.trim_start_matches(['(', '"', '\'']).chars().next();
+                if word.starts_with('{') {
+                    in_placeholder = !word.contains('}');
+                    continue;
+                }
+                if in_placeholder {
+                    in_placeholder = !word.contains('}');
+                    continue;
+                }
+                if first.is_some_and(char::is_lowercase) && (i == 0 || !SMALL.contains(&word)) {
+                    out.push(word.to_string());
+                }
+            }
+            out
+        };
+        let wrong: Vec<String> = ENGLISH
+            .messages()
+            .iter()
+            .filter(|(id, _)| titled(id))
+            .filter_map(|(id, text)| {
+                let lower = lower_words(text);
+                (!lower.is_empty()).then(|| format!("{id} = {text:?}: {lower:?}"))
+            })
+            .collect();
+        assert!(wrong.is_empty(), "these are titles or command names, so Title Case:\n{}", wrong.join("\n"));
+    }
+
     /// Every string literal in the UI's source shaped like a message id (`ribbon.move`,
     /// `status.deleted_models` for a counted one) is in English, so no message shows as its id.
     #[test]

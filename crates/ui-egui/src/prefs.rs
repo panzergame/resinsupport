@@ -7,6 +7,7 @@ use egui::Modifiers;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::Tokens;
+use crate::ui_kit::Tip as _;
 use crate::{i18n, ui_kit};
 
 /// The key the app keeps the preferences under in eframe's storage.
@@ -145,7 +146,7 @@ fn nav_row(p: &mut Prefs, ui: &mut egui::Ui, t: &Tokens) {
         let mut chosen = None;
         ui_kit::dropdown_menu(ui, t, "nav", i18n::tr(current.label), |ui| {
             for preset in NAV_PRESETS {
-                if ui_kit::dropdown_item(ui, preset.id == current.id, i18n::tr(preset.label)).on_hover_text(i18n::tr(preset.help)).clicked() {
+                if ui_kit::dropdown_item(ui, preset.id == current.id, i18n::tr(preset.label)).tip(i18n::tr(preset.help)).clicked() {
                     chosen = Some(preset);
                 }
             }

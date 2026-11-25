@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::gizmo::{Change, Drag, Triad};
 use crate::theme::Tokens;
 use crate::theme::metrics::{CONTROL_HEIGHT, FORM_CARD_WIDTH};
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
@@ -482,7 +483,7 @@ pub fn panel(app: &mut ResinApp, ctx: &egui::Context) {
                     edit = Some(json!({ "position": v }));
                 }
                 ui_kit::hint(ui, &t, i18n::tr("tool.move.hint"));
-                if ui_kit::action_row(ui, &t, i18n::tr("ui.reset")).on_hover_text(i18n::tr("tool.move.reset_tip")).clicked() {
+                if ui_kit::action_row(ui, &t, i18n::tr("ui.reset")).tip(i18n::tr("tool.move.reset_tip")).clicked() {
                     edit = Some(json!({ "position": m.pivot }));
                 }
             }

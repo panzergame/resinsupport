@@ -10,6 +10,7 @@ use serde_json::json;
 
 use crate::theme::Tokens;
 use crate::theme::metrics::{FORM_BROWSER_WIDTH, SPACE_12};
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, BrowserRow, Buttons, Card, MenuItem, RenameEnd};
 use crate::{EditMode, ResinApp, i18n, object_label};
 
@@ -150,7 +151,7 @@ fn rows(app: &mut ResinApp, ui: &mut egui::Ui, t: &Tokens, acts: &mut Vec<Act>) 
             });
         });
         let size = m.bounds.size();
-        out.row.on_hover_text(i18n::format(
+        out.row.tip(i18n::format(
             "models.tip",
             &[
                 ("name", &title),

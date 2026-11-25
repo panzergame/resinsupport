@@ -22,6 +22,15 @@ const RAW_METHODS: &[&str] = &[
     "toggle_value",
     "text_edit_singleline",
     "text_edit_multiline",
+    // Tooltips: `ui_kit::Tip`.
+    "on_hover_text",
+    "on_hover_ui",
+    "on_hover_text_at_pointer",
+    "on_hover_ui_at_pointer",
+    "on_disabled_hover_text",
+    "on_disabled_hover_ui",
+    "show_tooltip_text",
+    "show_tooltip_ui",
 ];
 
 fn test_only(attrs: &[syn::Attribute]) -> bool {
@@ -132,11 +141,13 @@ fn the_guard_sees_raw_controls_and_aliases_but_not_tests_or_the_kit() {
             egui::ComboBox::from_id_salt("a");
             ui_kit::number_field(ui, v, 0.0..=1.0, 0.1, "", 2);
             egui::TextEdit::load_state(ui.ctx(), ui.id());
+            ui.label("x").on_hover_text("tip");
+            ui_kit::action_row(ui, t, "x").tip("tip");
         }
         #[cfg(test)]
         mod tests {
             fn t(ui: &mut egui::Ui) { ui.button("x"); }
         }
     "#;
-    assert_eq!(violations(source), ["Drag::new", ".checkbox", "egui::ComboBox::from_id_salt"]);
+    assert_eq!(violations(source), ["Drag::new", ".checkbox", "egui::ComboBox::from_id_salt", ".on_hover_text"]);
 }

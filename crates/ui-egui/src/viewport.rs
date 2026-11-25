@@ -26,6 +26,10 @@ const LENS_ALPHA: f32 = 0.0;
 pub fn show(app: &mut ResinApp, ui: &mut egui::Ui, tokens: &Tokens) {
     let rect = ui.available_rect_before_wrap();
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+    ui.ctx().accesskit_node_builder(resp.id, |node| {
+        node.set_role(egui::accesskit::Role::Canvas);
+        node.set_label(i18n::tr("viewport.name"));
+    });
     app.viewport_rect = Some(rect);
     app.step_view_animation(ui.ctx());
     if !layer_preview::active(app) {

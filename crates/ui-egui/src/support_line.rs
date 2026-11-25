@@ -16,6 +16,7 @@ use serde_json::json;
 use crate::supports::Hover;
 use crate::theme::Tokens;
 use crate::theme::metrics::{FORM_CARD_WIDTH, SPACE_12};
+use crate::ui_kit::Tip as _;
 use crate::ui_kit::{self, Action, Buttons, Card};
 use crate::{ActiveTool, EditMode, ResinApp, i18n};
 
@@ -267,8 +268,8 @@ pub fn card(app: &mut ResinApp, ctx: &egui::Context) {
         ui_kit::row(ui, &t, i18n::tr("tool.line.per_body"), |ui| {
             ui.add_enabled_ui(!same, |ui| ui_kit::number_field(ui, &mut per_body, 1..=MAX_TIPS_PER_BODY, 0.05, "", 0))
                 .inner
-                .on_hover_text(i18n::tr("tool.line.per_body_tip"))
-                .on_disabled_hover_text(i18n::tr("tool.line.same_body"))
+                .tip(i18n::tr("tool.line.per_body_tip"))
+                .disabled_tip(i18n::tr("tool.line.same_body"))
         });
         if to.is_none() {
             ui_kit::hint(ui, &t, i18n::tr("status.line_place"));

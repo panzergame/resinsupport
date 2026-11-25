@@ -151,6 +151,7 @@ pub fn rename_row(
         .clip_text(true)
         .show(&mut field_ui);
     super::mark(ui.layer_id(), "text_field", field, row.label);
+    super::layout::named(&output.response, i18n::tr("ui.name"));
     if *fresh {
         *fresh = false;
         output.response.request_focus();

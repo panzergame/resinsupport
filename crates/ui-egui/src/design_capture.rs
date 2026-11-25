@@ -1,7 +1,8 @@
 //! The design capture: the app driven headlessly into each screen of the design file, in both
 //! themes, recording what every layer painted (egui's shapes) and which kit control painted it
 //! ([`crate::ui_kit::mark`]). `cargo xtask design-export` runs `design_capture` (ignored
-//! otherwise) and builds `design/resinsupport.figcraft` from the files it writes.
+//! otherwise) and builds `design/resinsupport.figcraft` from the files it writes. The same screens
+//! are swept for unnamed controls on every test run (`every_clickable_control_has_a_name`).
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -172,6 +173,8 @@ struct Driver {
     pointer: Pos2,
     marks: Vec<Value>,
     layers: Vec<Value>,
+    /// The last frame's accessibility nodes, while accesskit is on.
+    access: Vec<egui::accesskit::Node>,
 }
 
 impl Driver {
@@ -196,7 +199,7 @@ impl Driver {
         std::fs::write(&path, text).ok();
         app.import(&path);
         std::fs::remove_dir_all(dir).ok();
-        let mut d = Driver { ctx, app, time: 0.0, pointer: pos2(-10.0, -10.0), marks: Vec::new(), layers: Vec::new() };
+        let mut d = Driver { ctx, app, time: 0.0, pointer: pos2(-10.0, -10.0), marks: Vec::new(), layers: Vec::new(), access: Vec::new() };
         d.select_all();
         d.settle(4);
         d
@@ -220,6 +223,7 @@ impl Driver {
         });
         // Nothing renders these frames.
         out.textures_delta.clear();
+        self.access = out.platform_output.accesskit_update.take().map(|u| u.nodes.into_iter().map(|(_, n)| n).collect()).unwrap_or_default();
     }
 
     fn settle(&mut self, frames: usize) {
@@ -287,6 +291,22 @@ impl Driver {
             self.frame(Vec::new());
         }
         false
+    }
+
+    /// The kind and label of the kit control painted over `bounds`, to say which control a node is.
+    fn marked(&self, bounds: Option<egui::accesskit::Rect>) -> String {
+        let Some(b) = bounds else { return "no bounds".into() };
+        let inside = |m: &&Value| {
+            let r: Vec<f64> = m["rect"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+            r.len() == 4 && r[0] <= b.x0 + 1.0 && r[1] <= b.y0 + 1.0 && r[2] >= b.x1 - 1.0 && r[3] >= b.y1 - 1.0
+        };
+        let area = |m: &Value| {
+            m["rect"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>()).map_or(f64::MAX, |r| (r[2] - r[0]) * (r[3] - r[1]))
+        };
+        self.marks.iter().filter(inside).min_by(|a, b| area(a).total_cmp(&area(b))).map_or_else(
+            || format!("unmarked, at {:.0},{:.0} {:.0}×{:.0}", b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0),
+            |m| format!("{} {}", m["kind"], m["label"]),
+        )
     }
 
     fn capture(&mut self, name: &str, dark: bool) -> Value {
@@ -484,4 +504,35 @@ fn design_capture() {
         }
     }
     assert!(missed.is_empty(), "screens not reached: {missed:?}");
+}
+
+/// Every control a screen reader can click, on every screen of the design file, has a role and a
+/// name: the ribbon, the app bar, every card and menu (`.agents/skills/resinsupport-ui/SKILL.md`,
+/// Accessibility). A screen `design_capture` cannot reach is its failure, not this one's.
+#[test]
+fn every_clickable_control_has_a_name() {
+    use egui::accesskit::{Action, Role};
+    let mut unnamed = Vec::new();
+    for (name, setup) in screens() {
+        let mut d = Driver::new(false);
+        d.ctx.enable_accesskit();
+        if !setup(&mut d) {
+            continue;
+        }
+        d.settle(2);
+        for node in &d.access {
+            let text = |t: Option<&str>| t.is_some_and(|t| !t.trim().is_empty());
+            // Text reads as its value; a menu is named by the button that opened it.
+            let named = text(node.label())
+                || !node.labelled_by().is_empty()
+                || (node.role() == Role::Label && text(node.value()))
+                || node.role() == Role::Menu;
+            if node.supports_action(Action::Click) && (node.role() == Role::Unknown || !named) {
+                unnamed.push(format!("{name}: {:?} {:?} ({})", node.role(), node.label(), d.marked(node.bounds())));
+            }
+        }
+    }
+    unnamed.sort();
+    unnamed.dedup();
+    assert!(unnamed.is_empty(), "give these a role and a name (`widget_info`):\n{}", unnamed.join("\n"));
 }
